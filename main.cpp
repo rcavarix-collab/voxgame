@@ -118,10 +118,21 @@ extern "C" bool GenerateGameTextures(
     uint8_t** outAtlasPixelsBGRA, int* outAtlasW, int* outAtlasH,
     uint8_t** outPipePixelsBGRA, int* outPipeSize);
 extern "C" void FreeGeneratedPixels(uint8_t* p);
+// A small monospace font-glyph grid (ASCII 32..126) plus one reserved
+// solid-white cell, generated once at load time the same way as the
+// block atlas -- used to draw every UI panel/border/crosshair/label in
+// the dedicated UI pass (Section 4.6) via a single bound texture and a
+// per-vertex color tint.
+extern "C" bool GenerateUIAtlas(
+    int cellW, int cellH, int cols, int rows,
+    uint8_t** outPixelsBGRA, int* outW, int* outH);
 
 // =======================================================================
 // Part II/III - World representation and block model
 // =======================================================================
+
+static const int SCREEN_W = 1280;
+static const int SCREEN_H = 720;
 
 static const int CHUNK_SIZE = 16;
 static const int CHUNK_CELLS = CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE;
@@ -203,6 +214,82 @@ static void AtlasRect(int slot, float& u0, float& v0, float& u1, float& v1) {
     u1 = (float)((col + 1) * TILE_SIZE) / texW - insetU;
     v0 = (float)(row * TILE_SIZE) / texH + insetV;
     v1 = (float)((row + 1) * TILE_SIZE) / texH - insetV;
+}
+
+// =======================================================================
+// Part 4.6 - UI pass support: font-glyph atlas layout and quad builders.
+// Same generate-once-at-load-time approach as the block atlas (Section
+// 4.3), just with GDI+ drawing glyphs instead of block patterns. Layout
+// is 16 cols x 6 rows = 96 cells: ASCII 32..126 (95 printable chars) at
+// cell index (code-32), plus one reserved solid-white cell at the last
+// index for drawing untextured tinted rectangles through the same
+// texture/shader/draw-call path as text.
+// =======================================================================
+static const int UI_CELL_W = 20;
+static const int UI_CELL_H = 28;
+static const int UI_ATLAS_COLS = 16;
+static const int UI_ATLAS_ROWS = 6;
+static const int UI_WHITE_CELL = UI_ATLAS_COLS * UI_ATLAS_ROWS - 1;
+
+struct UIVertex { float x, y, u, v, r, g, b, a; };
+
+static void UIAtlasRect(int cell, float& u0, float& v0, float& u1, float& v1) {
+    int col = cell % UI_ATLAS_COLS;
+    int row = cell / UI_ATLAS_COLS;
+    float texW = (float)(UI_ATLAS_COLS * UI_CELL_W);
+    float texH = (float)(UI_ATLAS_ROWS * UI_CELL_H);
+    float insetU = 0.5f / texW, insetV = 0.5f / texH;
+    u0 = (float)(col * UI_CELL_W) / texW + insetU;
+    u1 = (float)((col + 1) * UI_CELL_W) / texW - insetU;
+    v0 = (float)(row * UI_CELL_H) / texH + insetV;
+    v1 = (float)((row + 1) * UI_CELL_H) / texH - insetV;
+}
+
+static int UICharCell(char c) {
+    if (c < 32 || c > 126) return -1;
+    return (int)c - 32;
+}
+
+static void UIAddQuad(std::vector<UIVertex>& v, float x0, float y0, float x1, float y1,
+                       float u0, float v0, float u1, float v1,
+                       float r, float g, float b, float a) {
+    v.push_back({ x0, y0, u0, v0, r, g, b, a });
+    v.push_back({ x1, y0, u1, v0, r, g, b, a });
+    v.push_back({ x1, y1, u1, v1, r, g, b, a });
+    v.push_back({ x0, y0, u0, v0, r, g, b, a });
+    v.push_back({ x1, y1, u1, v1, r, g, b, a });
+    v.push_back({ x0, y1, u0, v1, r, g, b, a });
+}
+
+// Untextured tinted rectangle -- samples the reserved white cell.
+static void UIDrawRect(std::vector<UIVertex>& v, float x0, float y0, float x1, float y1,
+                        float r, float g, float b, float a) {
+    float u0, v0, u1, v1;
+    UIAtlasRect(UI_WHITE_CELL, u0, v0, u1, v1);
+    UIAddQuad(v, x0, y0, x1, y1, u0, v0, u1, v1, r, g, b, a);
+}
+
+static float UITextWidth(const std::string& text, float scale) {
+    return (float)text.size() * UI_CELL_W * scale;
+}
+
+// Fixed-advance (monospace-grid) text -- each glyph cell is centered on
+// its own character during atlas generation, so a constant per-char
+// advance is enough for a "rudimentary" HUD/menu without a real text
+// shaping pass.
+static void UIDrawText(std::vector<UIVertex>& v, const std::string& text, float x, float y,
+                        float scale, float r, float g, float b, float a) {
+    float w = UI_CELL_W * scale, h = UI_CELL_H * scale;
+    float curX = x;
+    for (char c : text) {
+        int cell = UICharCell(c);
+        if (cell >= 0) {
+            float u0, v0, u1, v1;
+            UIAtlasRect(cell, u0, v0, u1, v1);
+            UIAddQuad(v, curX, y, curX + w, y + h, u0, v0, u1, v1, r, g, b, a);
+        }
+        curX += w;
+    }
 }
 
 // Floor division exactly as specified in Section 2.2 -- a naive `/`
@@ -469,8 +556,20 @@ static ID3D11Buffer* g_pipeMeshVB = nullptr;
 static ID3D11Buffer* g_pipeMeshIB = nullptr;
 static UINT g_pipeMeshIndexCount = 0;
 
-static const int SCREEN_W = 1280;
-static const int SCREEN_H = 720;
+// Second pass state (Section 4.6): its own shaders, input layout,
+// constant buffer, sampler, blend state and depth-stencil state, kept
+// fully separate from the world pass's pipeline objects rather than
+// overloading them.
+static ID3D11VertexShader* g_uiVS = nullptr;
+static ID3D11PixelShader* g_uiPS = nullptr;
+static ID3D11InputLayout* g_uiLayout = nullptr;
+static ID3D11Buffer* g_uiCBuffer = nullptr;
+static ID3D11SamplerState* g_uiSampler = nullptr;
+static ID3D11BlendState* g_uiBlendState = nullptr;
+static ID3D11DepthStencilState* g_uiDepthState = nullptr;
+static ID3D11ShaderResourceView* g_uiSRV = nullptr; // font-glyph + white-cell atlas
+static ID3D11Buffer* g_uiVB = nullptr;              // dynamic, re-mapped per UI draw batch
+static const UINT UI_VB_CAPACITY = 4096;             // vertices
 
 struct CBData { Mat4 mvp; };
 
@@ -482,6 +581,27 @@ static const char* g_shaderSrc =
     "Texture2D tex0 : register(t0);\n"
     "SamplerState samp0 : register(s0);\n"
     "float4 PSMain(PSIn input) : SV_TARGET { return tex0.Sample(samp0, input.uv); }\n";
+
+// UI pass shader: takes vertex positions already in pixel space and
+// maps them to NDC directly (an orthographic projection in all but
+// name -- Section 4.6), plus a per-vertex color tint so the same
+// textured quad can draw plain glyphs, tinted panels/borders, and
+// full-color icons through one pipeline.
+static const char* g_uiShaderSrc =
+    "cbuffer UICB : register(b0) { float4 screenSize; };\n"
+    "struct VSIn { float2 pos:POSITION; float2 uv:TEXCOORD0; float4 col:COLOR0; };\n"
+    "struct PSIn { float4 pos:SV_POSITION; float2 uv:TEXCOORD0; float4 col:COLOR0; };\n"
+    "PSIn VSMain(VSIn input) {\n"
+    "    PSIn o;\n"
+    "    float2 ndc = float2(input.pos.x / screenSize.x * 2.0f - 1.0f, 1.0f - input.pos.y / screenSize.y * 2.0f);\n"
+    "    o.pos = float4(ndc, 0.0f, 1.0f);\n"
+    "    o.uv = input.uv;\n"
+    "    o.col = input.col;\n"
+    "    return o;\n"
+    "}\n"
+    "Texture2D tex0 : register(t0);\n"
+    "SamplerState samp0 : register(s0);\n"
+    "float4 PSMain(PSIn input) : SV_TARGET { return tex0.Sample(samp0, input.uv) * input.col; }\n";
 
 // Emits one cube face (4 verts + 6 indices) for the given corners.
 static void EmitFace(std::vector<Vertex>& verts, std::vector<uint32_t>& indices,
@@ -1029,6 +1149,71 @@ static bool InitD3D(HWND hwnd) {
     depthStateDesc.DepthFunc = D3D11_COMPARISON_LESS;
     g_device->CreateDepthStencilState(&depthStateDesc, &g_depthState);
 
+    // --- UI pass pipeline objects (Section 4.6: a second pass, its own
+    // shaders, orthographic-in-pixel-space, depth off, alpha blend on) ---
+    ID3DBlob* uiVsBlob = nullptr, * uiPsBlob = nullptr;
+    hr = D3DCompile(g_uiShaderSrc, strlen(g_uiShaderSrc), nullptr, nullptr, nullptr,
+                     "VSMain", "vs_4_0", 0, 0, &uiVsBlob, &errBlob);
+    if (FAILED(hr)) {
+        if (errBlob) OutputDebugStringA((const char*)errBlob->GetBufferPointer());
+        return false;
+    }
+    hr = D3DCompile(g_uiShaderSrc, strlen(g_uiShaderSrc), nullptr, nullptr, nullptr,
+                     "PSMain", "ps_4_0", 0, 0, &uiPsBlob, &errBlob);
+    if (FAILED(hr)) {
+        if (errBlob) OutputDebugStringA((const char*)errBlob->GetBufferPointer());
+        return false;
+    }
+    g_device->CreateVertexShader(uiVsBlob->GetBufferPointer(), uiVsBlob->GetBufferSize(), nullptr, &g_uiVS);
+    g_device->CreatePixelShader(uiPsBlob->GetBufferPointer(), uiPsBlob->GetBufferSize(), nullptr, &g_uiPS);
+
+    D3D11_INPUT_ELEMENT_DESC uiLayoutDesc[] = {
+        { "POSITION", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+        { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 8, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+        { "COLOR", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 16, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+    };
+    g_device->CreateInputLayout(uiLayoutDesc, 3, uiVsBlob->GetBufferPointer(), uiVsBlob->GetBufferSize(), &g_uiLayout);
+    uiVsBlob->Release();
+    uiPsBlob->Release();
+
+    D3D11_BUFFER_DESC uiCbd = {};
+    uiCbd.Usage = D3D11_USAGE_DYNAMIC;
+    uiCbd.ByteWidth = sizeof(float) * 4; // screenSize.xy, padding
+    uiCbd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+    uiCbd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+    g_device->CreateBuffer(&uiCbd, nullptr, &g_uiCBuffer);
+
+    D3D11_BUFFER_DESC uiVbd = {};
+    uiVbd.Usage = D3D11_USAGE_DYNAMIC;
+    uiVbd.ByteWidth = UI_VB_CAPACITY * sizeof(UIVertex);
+    uiVbd.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+    uiVbd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+    g_device->CreateBuffer(&uiVbd, nullptr, &g_uiVB);
+
+    D3D11_SAMPLER_DESC uiSampDesc = {};
+    uiSampDesc.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+    uiSampDesc.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP;
+    uiSampDesc.AddressV = D3D11_TEXTURE_ADDRESS_CLAMP;
+    uiSampDesc.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
+    uiSampDesc.ComparisonFunc = D3D11_COMPARISON_NEVER;
+    g_device->CreateSamplerState(&uiSampDesc, &g_uiSampler);
+
+    D3D11_BLEND_DESC blendDesc = {};
+    blendDesc.RenderTarget[0].BlendEnable = TRUE;
+    blendDesc.RenderTarget[0].SrcBlend = D3D11_BLEND_SRC_ALPHA;
+    blendDesc.RenderTarget[0].DestBlend = D3D11_BLEND_INV_SRC_ALPHA;
+    blendDesc.RenderTarget[0].BlendOp = D3D11_BLEND_OP_ADD;
+    blendDesc.RenderTarget[0].SrcBlendAlpha = D3D11_BLEND_ONE;
+    blendDesc.RenderTarget[0].DestBlendAlpha = D3D11_BLEND_INV_SRC_ALPHA;
+    blendDesc.RenderTarget[0].BlendOpAlpha = D3D11_BLEND_OP_ADD;
+    blendDesc.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
+    g_device->CreateBlendState(&blendDesc, &g_uiBlendState);
+
+    D3D11_DEPTH_STENCIL_DESC uiDepthDesc = {};
+    uiDepthDesc.DepthEnable = FALSE;
+    uiDepthDesc.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ZERO;
+    g_device->CreateDepthStencilState(&uiDepthDesc, &g_uiDepthState);
+
     return true;
 }
 
@@ -1070,6 +1255,27 @@ static bool InitTextures() {
 
     FreeGeneratedPixels(atlasPixels);
     FreeGeneratedPixels(pipePixels);
+
+    uint8_t* uiPixels = nullptr; int uiW = 0, uiH = 0;
+    if (!GenerateUIAtlas(UI_CELL_W, UI_CELL_H, UI_ATLAS_COLS, UI_ATLAS_ROWS, &uiPixels, &uiW, &uiH))
+        return false;
+
+    D3D11_TEXTURE2D_DESC td3 = {};
+    td3.Width = uiW; td3.Height = uiH;
+    td3.MipLevels = 1; td3.ArraySize = 1;
+    td3.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    td3.SampleDesc.Count = 1;
+    td3.Usage = D3D11_USAGE_IMMUTABLE;
+    td3.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+    D3D11_SUBRESOURCE_DATA sd3 = {};
+    sd3.pSysMem = uiPixels;
+    sd3.SysMemPitch = uiW * 4;
+    ID3D11Texture2D* uiTex = nullptr;
+    g_device->CreateTexture2D(&td3, &sd3, &uiTex);
+    g_device->CreateShaderResourceView(uiTex, nullptr, &g_uiSRV);
+    uiTex->Release();
+
+    FreeGeneratedPixels(uiPixels);
     return true;
 }
 
@@ -1081,6 +1287,8 @@ static World g_world;
 static Player g_player;
 static bool g_mouseCaptured = false;
 static bool g_keyDown[256] = {};
+static bool g_menuOpen = false;
+static int g_mouseX = 0, g_mouseY = 0;
 
 static void PickAndAct(bool breakBlock) {
     Vec3 f, r, u;
@@ -1099,34 +1307,105 @@ static void PickAndAct(bool breakBlock) {
     }
 }
 
+// Captures and hides the cursor, re-centering it, to enter FPS look mode.
+static void CaptureMouseForPlay() {
+    g_mouseCaptured = true;
+    ShowCursor(FALSE);
+    SetCapture(g_hwnd);
+    RECT rc; GetClientRect(g_hwnd, &rc);
+    POINT center = { (rc.right - rc.left) / 2, (rc.bottom - rc.top) / 2 };
+    ClientToScreen(g_hwnd, &center);
+    SetCursorPos(center.x, center.y);
+}
+
+// Releases the cursor so it can move freely over menu buttons.
+static void ReleaseMouseForMenu() {
+    g_mouseCaptured = false;
+    ShowCursor(TRUE);
+    ReleaseCapture();
+}
+
+// Pause-menu layout: shared between rendering (RenderUIPass) and click
+// hit-testing (HandleMenuClick) so the two can never drift apart.
+struct UIRect { float x0, y0, x1, y1; };
+static const int MENU_BUTTON_COUNT = 4;
+static const char* g_menuLabels[MENU_BUTTON_COUNT] = { "RESUME", "SAVE GAME", "LOAD GAME", "QUIT" };
+static const float MENU_PANEL_W = 320.0f, MENU_PANEL_H = 280.0f;
+
+static UIRect GetMenuPanelRect() {
+    float px = (SCREEN_W - MENU_PANEL_W) / 2.0f;
+    float py = (SCREEN_H - MENU_PANEL_H) / 2.0f;
+    return { px, py, px + MENU_PANEL_W, py + MENU_PANEL_H };
+}
+static UIRect GetMenuButtonRect(int index) {
+    UIRect panel = GetMenuPanelRect();
+    float bw = 260.0f, bh = 40.0f, gap = 12.0f;
+    float bx = panel.x0 + 30.0f;
+    float by = panel.y0 + 70.0f + index * (bh + gap);
+    return { bx, by, bx + bw, by + bh };
+}
+static bool PointInRect(int px, int py, const UIRect& r) {
+    return px >= r.x0 && px <= r.x1 && py >= r.y0 && py <= r.y1;
+}
+
+static void HandleMenuClick(int mx, int my) {
+    for (int i = 0; i < MENU_BUTTON_COUNT; i++) {
+        if (!PointInRect(mx, my, GetMenuButtonRect(i))) continue;
+        switch (i) {
+        case 0: // RESUME
+            g_menuOpen = false;
+            CaptureMouseForPlay();
+            break;
+        case 1: // SAVE GAME
+            SaveGame(g_world, g_player);
+            break;
+        case 2: // LOAD GAME
+            LoadGame(g_world, g_player);
+            g_menuOpen = false;
+            CaptureMouseForPlay();
+            break;
+        case 3: // QUIT
+            PostQuitMessage(0);
+            break;
+        }
+        return;
+    }
+}
+
 static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
     case WM_DESTROY:
         PostQuitMessage(0);
         return 0;
-    case WM_LBUTTONDOWN:
-        if (!g_mouseCaptured) {
-            g_mouseCaptured = true;
-            ShowCursor(FALSE);
-            SetCapture(hwnd);
-            RECT rc; GetClientRect(hwnd, &rc);
-            POINT center = { (rc.right - rc.left) / 2, (rc.bottom - rc.top) / 2 };
-            ClientToScreen(hwnd, &center);
-            SetCursorPos(center.x, center.y);
+    case WM_MOUSEMOVE:
+        g_mouseX = (int)(short)LOWORD(lParam);
+        g_mouseY = (int)(short)HIWORD(lParam);
+        return 0;
+    case WM_LBUTTONDOWN: {
+        int mx = (int)(short)LOWORD(lParam), my = (int)(short)HIWORD(lParam);
+        if (g_menuOpen) {
+            HandleMenuClick(mx, my);
+        } else if (!g_mouseCaptured) {
+            CaptureMouseForPlay();
         } else {
             PickAndAct(true);
         }
         return 0;
+    }
     case WM_RBUTTONDOWN:
-        if (g_mouseCaptured) PickAndAct(false);
+        if (g_mouseCaptured && !g_menuOpen) PickAndAct(false);
         return 0;
     case WM_KEYDOWN:
         if (wParam < 256) g_keyDown[wParam] = true;
         if (wParam == VK_ESCAPE) {
-            g_mouseCaptured = false;
-            ShowCursor(TRUE);
-            ReleaseCapture();
-        } else if (wParam >= '1' && wParam <= '9') {
+            if (g_menuOpen) {
+                g_menuOpen = false;
+                CaptureMouseForPlay();
+            } else {
+                g_menuOpen = true;
+                ReleaseMouseForMenu();
+            }
+        } else if (wParam >= '1' && wParam <= '9' && !g_menuOpen) {
             int idx = (int)(wParam - '1');
             if (idx < g_placeableCount) g_player.hotbarIndex = idx;
         } else if (wParam == VK_F5) {
@@ -1141,6 +1420,128 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
     default:
         return DefWindowProc(hwnd, msg, wParam, lParam);
     }
+}
+
+// Draws one small dynamic-VB batch through the UI pipeline. Called
+// several times per frame (once per bound texture) since the UI pass
+// mixes the font/white atlas with the block atlases for hotbar icons.
+static void UIDrawBatch(const std::vector<UIVertex>& verts, ID3D11ShaderResourceView* srv) {
+    if (verts.empty()) return;
+    D3D11_MAPPED_SUBRESOURCE mapped;
+    g_context->Map(g_uiVB, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
+    size_t count = std::min<size_t>(verts.size(), UI_VB_CAPACITY);
+    memcpy(mapped.pData, verts.data(), count * sizeof(UIVertex));
+    g_context->Unmap(g_uiVB, 0);
+
+    UINT stride = sizeof(UIVertex), offset = 0;
+    g_context->IASetVertexBuffers(0, 1, &g_uiVB, &stride, &offset);
+    g_context->PSSetShaderResources(0, 1, &srv);
+    g_context->Draw((UINT)count, 0);
+}
+
+// Second pass: orthographic-in-pixel-space, depth off, alpha blend on
+// (Section 4.6). Builds the crosshair, hotbar, "click to play" hint and
+// pause menu as CPU-side quad lists, then draws them through the UI
+// pipeline set up in InitD3D. Assumes the world pass already ran this
+// frame (so g_context's shader/IA state gets fully re-set here rather
+// than assumed).
+static void RenderUIPass() {
+    std::vector<UIVertex> glyphVerts; // font atlas + white cell (panels, borders, text, crosshair)
+
+    if (g_mouseCaptured && !g_menuOpen) {
+        float cx = SCREEN_W / 2.0f, cy = SCREEN_H / 2.0f;
+        UIDrawRect(glyphVerts, cx - 8, cy - 1, cx + 8, cy + 1, 1, 1, 1, 0.85f);
+        UIDrawRect(glyphVerts, cx - 1, cy - 8, cx + 1, cy + 8, 1, 1, 1, 0.85f);
+    }
+
+    struct IconQuad { float x0, y0, x1, y1, u0, v0, u1, v1; bool pipe; };
+    std::vector<IconQuad> icons;
+
+    const int SLOT = 48, GAP = 4;
+    int hotbarN = g_placeableCount;
+    int totalW = hotbarN * SLOT + (hotbarN - 1) * GAP;
+    float hbStartX = (SCREEN_W - totalW) / 2.0f;
+    float hbY0 = SCREEN_H - SLOT - 16.0f;
+    for (int i = 0; i < hotbarN; i++) {
+        float x0 = hbStartX + i * (SLOT + GAP), x1 = x0 + SLOT;
+        float y0 = hbY0, y1 = y0 + SLOT;
+        bool selected = (i == g_player.hotbarIndex);
+        if (selected) UIDrawRect(glyphVerts, x0 - 4, y0 - 4, x1 + 4, y1 + 4, 1.0f, 0.9f, 0.2f, 0.9f);
+        UIDrawRect(glyphVerts, x0, y0, x1, y1, 0.12f, 0.12f, 0.12f, 0.75f);
+
+        BlockID b = g_placeable[i];
+        float iu0, iv0, iu1, iv1;
+        bool pipe = g_info[b].shape != 0;
+        if (pipe) { iu0 = 0.05f; iv0 = 0.05f; iu1 = 0.95f; iv1 = 0.95f; }
+        else AtlasRect(g_info[b].tex, iu0, iv0, iu1, iv1);
+        icons.push_back({ x0 + 6, y0 + 6, x1 - 6, y1 - 6, iu0, iv0, iu1, iv1, pipe });
+    }
+
+    if (!g_menuOpen) {
+        std::string name = g_blockNames[g_placeable[g_player.hotbarIndex]];
+        float scale = 0.8f;
+        float tw = UITextWidth(name, scale);
+        UIDrawText(glyphVerts, name, (SCREEN_W - tw) / 2.0f, hbY0 - 26.0f, scale, 1, 1, 1, 0.9f);
+    }
+
+    if (!g_mouseCaptured && !g_menuOpen) {
+        std::string hint = "CLICK TO PLAY";
+        float scale = 1.3f;
+        float tw = UITextWidth(hint, scale);
+        UIDrawText(glyphVerts, hint, (SCREEN_W - tw) / 2.0f, SCREEN_H * 0.42f, scale, 1, 1, 1, 0.9f);
+    }
+
+    if (g_menuOpen) {
+        UIDrawRect(glyphVerts, 0, 0, (float)SCREEN_W, (float)SCREEN_H, 0, 0, 0, 0.55f);
+        UIRect panel = GetMenuPanelRect();
+        UIDrawRect(glyphVerts, panel.x0, panel.y0, panel.x1, panel.y1, 0.10f, 0.10f, 0.13f, 0.95f);
+
+        std::string title = "PAUSED";
+        float titleScale = 1.3f;
+        float titleW = UITextWidth(title, titleScale);
+        UIDrawText(glyphVerts, title, panel.x0 + (MENU_PANEL_W - titleW) / 2.0f, panel.y0 + 16.0f, titleScale, 1, 1, 1, 1);
+
+        for (int i = 0; i < MENU_BUTTON_COUNT; i++) {
+            UIRect r = GetMenuButtonRect(i);
+            bool hover = PointInRect(g_mouseX, g_mouseY, r);
+            float shade = hover ? 0.32f : 0.22f;
+            UIDrawRect(glyphVerts, r.x0, r.y0, r.x1, r.y1, shade, shade, shade + 0.06f, 1);
+            std::string label = g_menuLabels[i];
+            float lw = UITextWidth(label, 1.0f);
+            UIDrawText(glyphVerts, label, r.x0 + ((r.x1 - r.x0) - lw) / 2.0f, r.y0 + 10.0f, 1.0f, 1, 1, 1, 1);
+        }
+    }
+
+    g_context->OMSetDepthStencilState(g_uiDepthState, 0);
+    float blendFactor[4] = { 0, 0, 0, 0 };
+    g_context->OMSetBlendState(g_uiBlendState, blendFactor, 0xFFFFFFFF);
+    g_context->VSSetShader(g_uiVS, nullptr, 0);
+    g_context->PSSetShader(g_uiPS, nullptr, 0);
+    g_context->IASetInputLayout(g_uiLayout);
+    g_context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    g_context->VSSetConstantBuffers(0, 1, &g_uiCBuffer);
+    g_context->PSSetSamplers(0, 1, &g_uiSampler);
+
+    {
+        D3D11_MAPPED_SUBRESOURCE mapped;
+        g_context->Map(g_uiCBuffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
+        float* f = (float*)mapped.pData;
+        f[0] = (float)SCREEN_W; f[1] = (float)SCREEN_H; f[2] = 0; f[3] = 0;
+        g_context->Unmap(g_uiCBuffer, 0);
+    }
+
+    UIDrawBatch(glyphVerts, g_uiSRV);
+
+    for (auto& ic : icons) {
+        std::vector<UIVertex> iconVerts;
+        UIAddQuad(iconVerts, ic.x0, ic.y0, ic.x1, ic.y1, ic.u0, ic.v0, ic.u1, ic.v1, 1, 1, 1, 1);
+        UIDrawBatch(iconVerts, ic.pipe ? g_pipeSRV : g_atlasSRV);
+    }
+
+    // Restore world-pass defaults so next frame's world draws don't
+    // inherit UI blend/depth state.
+    g_context->OMSetBlendState(nullptr, blendFactor, 0xFFFFFFFF);
+    g_context->OMSetDepthStencilState(g_depthState, 0);
 }
 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
@@ -1203,19 +1604,26 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
         }
 
         // Fixed-timestep simulation, decoupled from render/present rate
-        // (Section 5.3's recommended accumulator approach).
-        while (accumulator >= FIXED_DT) {
-            int pcx = FloorDiv16((int)floor(g_player.x));
-            int pcz = FloorDiv16((int)floor(g_player.z));
-            EnsureChunksLoaded(g_world, pcx, pcz);
+        // (Section 5.3's recommended accumulator approach). While the
+        // pause menu is open the world is frozen and the accumulator is
+        // dropped rather than left to build up, so resuming doesn't
+        // trigger a burst of catch-up ticks for however long it was paused.
+        if (g_menuOpen) {
+            accumulator = 0.0f;
+        } else {
+            while (accumulator >= FIXED_DT) {
+                int pcx = FloorDiv16((int)floor(g_player.x));
+                int pcz = FloorDiv16((int)floor(g_player.z));
+                EnsureChunksLoaded(g_world, pcx, pcz);
 
-            bool fwd = g_keyDown['W'], back = g_keyDown['S'];
-            bool left = g_keyDown['A'], right = g_keyDown['D'];
-            bool jump = g_keyDown[VK_SPACE];
-            UpdatePlayerPhysics(g_world, g_player, FIXED_DT, fwd, back, left, right, jump);
-            ProcessFalls(g_world);
+                bool fwd = g_keyDown['W'], back = g_keyDown['S'];
+                bool left = g_keyDown['A'], right = g_keyDown['D'];
+                bool jump = g_keyDown[VK_SPACE];
+                UpdatePlayerPhysics(g_world, g_player, FIXED_DT, fwd, back, left, right, jump);
+                ProcessFalls(g_world);
 
-            accumulator -= FIXED_DT;
+                accumulator -= FIXED_DT;
+            }
         }
 
         RebuildDirtyChunks(g_world);
@@ -1265,6 +1673,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
                 g_context->DrawIndexed(g_pipeMeshIndexCount, 0, 0);
             }
         }
+
+        RenderUIPass();
 
         g_swapChain->Present(1, 0);
     }

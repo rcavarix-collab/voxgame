@@ -182,3 +182,70 @@ extern "C" bool GenerateGameTextures(
 extern "C" void FreeGeneratedPixels(uint8_t* p) {
     delete[] p;
 }
+
+// UI font-glyph atlas: a cols x rows grid, cell (code-32) holds the
+// glyph for ASCII code `code` (32..126), and the very last cell is left
+// as an opaque solid-white square for drawing untextured tinted
+// rectangles through the same texture/pipeline as text (Section 4.6).
+// Generated once at load time, same as the block atlas -- GDI+ never
+// touches the frame loop.
+extern "C" bool GenerateUIAtlas(
+    int cellW, int cellH, int cols, int rows,
+    uint8_t** outPixelsBGRA, int* outW, int* outH)
+{
+    ULONG_PTR token;
+    GdiplusStartupInput startupInput;
+    if (GdiplusStartup(&token, &startupInput, nullptr) != Ok) return false;
+
+    int w = cellW * cols;
+    int h = cellH * rows;
+    bool ok = true;
+    uint8_t* pixels = nullptr;
+    {
+        // 32bppARGB bitmaps start fully transparent (all-zero), which is
+        // exactly what's wanted here: white glyphs with alpha carrying
+        // the antialiased coverage, over nothing.
+        Bitmap bmp(w, h, PixelFormat32bppARGB);
+        {
+            Graphics g(&bmp);
+            g.SetSmoothingMode(SmoothingModeAntiAlias);
+            g.SetTextRenderingHint(TextRenderingHintAntiAlias);
+
+            FontFamily consolas(L"Consolas");
+            FontFamily* fam = &consolas;
+            if (consolas.GetLastStatus() != Ok) {
+                fam = const_cast<FontFamily*>(FontFamily::GenericMonospace());
+            }
+            Font font(fam, (Gdiplus::REAL)(cellH * 0.62f), FontStyleBold, UnitPixel);
+            SolidBrush white(Color(255, 255, 255, 255));
+            StringFormat fmt;
+            fmt.SetAlignment(StringAlignmentCenter);
+            fmt.SetLineAlignment(StringAlignmentCenter);
+
+            int totalCells = cols * rows;
+            int whiteCell = totalCells - 1;
+            for (int i = 0; i < totalCells; i++) {
+                int col = i % cols, row = i / cols;
+                float cx = (float)(col * cellW), cy = (float)(row * cellH);
+                if (i == whiteCell) {
+                    g.FillRectangle(&white, cx + 1, cy + 1, (float)cellW - 2, (float)cellH - 2);
+                    continue;
+                }
+                int code = i + 32; // ASCII 32..126
+                if (code > 126) continue;
+                wchar_t ch = (wchar_t)code;
+                RectF cellRect(cx, cy, (Gdiplus::REAL)cellW, (Gdiplus::REAL)cellH);
+                g.DrawString(&ch, 1, &font, cellRect, &fmt, &white);
+            }
+        }
+        pixels = CopyBitmapBGRA(bmp, w, h);
+        if (!pixels) ok = false;
+    }
+
+    GdiplusShutdown(token);
+    if (!ok) return false;
+    *outPixelsBGRA = pixels;
+    *outW = w;
+    *outH = h;
+    return true;
+}
