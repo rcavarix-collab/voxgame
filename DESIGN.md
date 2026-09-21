@@ -37,6 +37,7 @@ Y is bounded to a fixed range (0–255 suggested). Rationale: true unbounded ver
 ### 2.4 Chunk loading
 - A radius (`LOAD_RADIUS`, chunks) around the player's current chunk defines the loaded set.
 - The loaded set is recomputed **only when the player's chunk coordinate actually changes**, not every frame — recomputing several hundred hash-set entries every single tick regardless of movement was an identified inefficiency in the reviewed prototype and is explicitly avoided.
+- Newly-visible columns are *enqueued*, not generated immediately — actual terrain generation drains a capped number of columns per tick, the same bounded-work-queue pattern Part V's falling-block system established (Section 5.1). Generating the whole load radius synchronously (unavoidable at least once, for the initial spawn) would otherwise stall the first frame while every chunk in range generates and meshes at once.
 - Chunks leaving the radius are eligible for serialization-and-drop (not implemented in the prototype's fixed small world, but the architecture — sparse map keyed by chunk coordinate — supports it without restructuring).
 
 ---

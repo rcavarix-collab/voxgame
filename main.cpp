@@ -12,8 +12,7 @@
 
 // MSVC's windows.h defines min/max function-like macros unless this is
 // set first -- without it, any bare std::min/std::max call in this file
-// (not just the one used today) would silently break at the token that
-// happens to be followed by '('.
+// would silently break at the token that happens to be followed by '('.
 #define NOMINMAX
 #include <windows.h>
 #include <d3d11.h>
@@ -218,7 +217,7 @@ static void AtlasRect(int slot, float& u0, float& v0, float& u1, float& v1) {
 }
 
 // =======================================================================
-// Part 4.6 - UI pass support: font-glyph atlas layout and quad builders.
+// Section 4.6 - UI pass support: font-glyph atlas layout and quad builders.
 // Same generate-once-at-load-time approach as the block atlas (Section
 // 4.3), just with GDI+ drawing glyphs instead of block patterns. Layout
 // is 16 cols x 6 rows = 96 cells: ASCII 32..126 (95 printable chars) at
@@ -466,7 +465,9 @@ static void LiveEdit(World& w, int x, int y, int z, BlockID id) {
 }
 
 // =======================================================================
-// Part VII - World generation (deterministic, bypasses live gravity)
+// World generation and chunk loading -- deterministic terrain, bypassing
+// live gravity (Section 5.2), and column loading kept sparse per Section
+// 2.1/2.4. Not a numbered Part of its own in the design doc.
 // =======================================================================
 
 static int TerrainHeight(int wx, int wz) {
@@ -490,8 +491,9 @@ static void GenerateColumn(World& w, int cx, int cz) {
 
     int baseX = cx * CHUNK_SIZE, baseZ = cz * CHUNK_SIZE;
 
-    // Compute each height once (not once per cy level) -- avoids
-    // redundantly re-evaluating the same trig 5x per column.
+    // Cached per column and reused below for every vertical chunk level
+    // (both the anyContent check and the fill pass) instead of calling
+    // TerrainHeight -- and re-running its trig -- once per level.
     int heights[CHUNK_SIZE][CHUNK_SIZE];
     int maxHeightInColumn = 0;
     for (int lx = 0; lx < CHUNK_SIZE; lx++) {
@@ -545,8 +547,10 @@ static std::deque<std::pair<int, int>> g_pendingColumns;
 static std::unordered_set<long long> g_pendingColumnSet;
 static const int MAX_COLUMN_GENS_PER_TICK = 4;
 
-static void EnsureChunksLoaded(World& w, int playerChunkX, int playerChunkZ) {
-    (void)w;
+// Only enqueues columns now (Section 5.1's queue pattern applied to
+// generation, below) -- it never touches World directly, unlike its
+// gravity/mesh-rebuild counterparts elsewhere in this file.
+static void EnsureChunksLoaded(int playerChunkX, int playerChunkZ) {
     // Recomputed only when the player's chunk coordinate actually
     // changes (Section 2.4) -- not every frame.
     if (playerChunkX == g_lastPlayerChunkX && playerChunkZ == g_lastPlayerChunkZ) return;
@@ -776,7 +780,7 @@ static void UpdateCBuffer(const Mat4& mvp) {
 }
 
 // =======================================================================
-// Part IV.7 - Camera / player
+// Section 4.7 - Camera / player
 // =======================================================================
 
 struct Player {
@@ -801,8 +805,11 @@ static void GetCameraVectors(const Player& p, Vec3& forward, Vec3& right, Vec3& 
     right = Normalize(Cross(up, forward));
 }
 
-// Player half-width / height used for AABB collision (Section 4.7 /
-// Prismative concept: sample multiple heights against solid voxels).
+// Player half-width / height used for AABB collision. BoxIntersectsSolid
+// below tests every voxel cell the box's full vertical extent overlaps
+// (not just a few discrete height samples), which is the concept
+// Prismative used player collision for -- just done here as a complete
+// AABB-vs-voxel-grid overlap rather than sampled points.
 static const float PLAYER_HALFW = 0.3f;
 static const float PLAYER_HEIGHT = 1.8f;
 static const float PLAYER_EYE = 1.6f;
@@ -855,7 +862,7 @@ static void UpdatePlayerPhysics(World& w, Player& p, float dt, bool fwd, bool ba
 }
 
 // =======================================================================
-// Part 4.5 - Amanatides-Woo exact voxel DDA raycast for block picking
+// Section 4.5 - Amanatides-Woo exact voxel DDA raycast for block picking
 // =======================================================================
 
 static bool Raycast(World& w, float ox, float oy, float oz, float dx, float dy, float dz, float maxDist,
@@ -1720,7 +1727,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
             while (accumulator >= FIXED_DT) {
                 int pcx = FloorDiv16((int)floor(g_player.x));
                 int pcz = FloorDiv16((int)floor(g_player.z));
-                EnsureChunksLoaded(g_world, pcx, pcz);
+                EnsureChunksLoaded(pcx, pcz);
                 ProcessColumnGeneration(g_world);
 
                 bool fwd = g_keyDown['W'], back = g_keyDown['S'];
