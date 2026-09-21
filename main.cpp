@@ -31,6 +31,7 @@
 #include <fstream>
 #include <filesystem>
 #include <algorithm>
+#include <utility>
 
 #pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "dxgi.lib")
@@ -488,7 +489,20 @@ static void GenerateColumn(World& w, int cx, int cz) {
     g_generatedColumns.insert(key);
 
     int baseX = cx * CHUNK_SIZE, baseZ = cz * CHUNK_SIZE;
-    int maxCy = FloorDiv16(60) + 1;
+
+    // Compute each height once (not once per cy level) -- avoids
+    // redundantly re-evaluating the same trig 5x per column.
+    int heights[CHUNK_SIZE][CHUNK_SIZE];
+    int maxHeightInColumn = 0;
+    for (int lx = 0; lx < CHUNK_SIZE; lx++) {
+        for (int lz = 0; lz < CHUNK_SIZE; lz++) {
+            int h = TerrainHeight(baseX + lx, baseZ + lz);
+            heights[lx][lz] = h;
+            if (h > maxHeightInColumn) maxHeightInColumn = h;
+        }
+    }
+
+    int maxCy = FloorDiv16(maxHeightInColumn);
     for (int cy = 0; cy <= maxCy; cy++) {
         int chunkYLow = cy * CHUNK_SIZE;
         // Skip chunks that would contain nothing but air anywhere in this
@@ -497,13 +511,13 @@ static void GenerateColumn(World& w, int cx, int cz) {
         bool anyContent = false;
         for (int lx = 0; lx < CHUNK_SIZE && !anyContent; lx++)
             for (int lz = 0; lz < CHUNK_SIZE && !anyContent; lz++)
-                if (chunkYLow <= TerrainHeight(baseX + lx, baseZ + lz)) anyContent = true;
+                if (chunkYLow <= heights[lx][lz]) anyContent = true;
         if (!anyContent) continue;
 
         for (int lx = 0; lx < CHUNK_SIZE; lx++) {
             for (int lz = 0; lz < CHUNK_SIZE; lz++) {
                 int wx = baseX + lx, wz = baseZ + lz;
-                int h = TerrainHeight(wx, wz);
+                int h = heights[lx][lz];
                 for (int ly = 0; ly < CHUNK_SIZE; ly++) {
                     int wy = chunkYLow + ly;
                     if (wy > h) continue;
@@ -520,16 +534,44 @@ static void GenerateColumn(World& w, int cx, int cz) {
 
 static int g_lastPlayerChunkX = INT32_MIN, g_lastPlayerChunkZ = INT32_MIN;
 
+// Columns queued for generation but not yet generated. Entering view
+// range only enqueues a column; ProcessColumnGeneration below drains a
+// capped number per tick, following the exact pattern the falling-block
+// queue already established (Section 5.1): a hard per-tick work cap
+// instead of an unbounded burst, so crossing into a large unexplored
+// area -- or the initial spawn, which needs the whole load radius at
+// once -- can't spike a single frame.
+static std::deque<std::pair<int, int>> g_pendingColumns;
+static std::unordered_set<long long> g_pendingColumnSet;
+static const int MAX_COLUMN_GENS_PER_TICK = 4;
+
 static void EnsureChunksLoaded(World& w, int playerChunkX, int playerChunkZ) {
+    (void)w;
     // Recomputed only when the player's chunk coordinate actually
     // changes (Section 2.4) -- not every frame.
     if (playerChunkX == g_lastPlayerChunkX && playerChunkZ == g_lastPlayerChunkZ) return;
     g_lastPlayerChunkX = playerChunkX;
     g_lastPlayerChunkZ = playerChunkZ;
 
-    for (int dx = -LOAD_RADIUS; dx <= LOAD_RADIUS; dx++)
-        for (int dz = -LOAD_RADIUS; dz <= LOAD_RADIUS; dz++)
-            GenerateColumn(w, playerChunkX + dx, playerChunkZ + dz);
+    for (int dx = -LOAD_RADIUS; dx <= LOAD_RADIUS; dx++) {
+        for (int dz = -LOAD_RADIUS; dz <= LOAD_RADIUS; dz++) {
+            int cx = playerChunkX + dx, cz = playerChunkZ + dz;
+            long long key = ColumnKey(cx, cz);
+            if (g_generatedColumns.count(key) || g_pendingColumnSet.count(key)) continue;
+            g_pendingColumnSet.insert(key);
+            g_pendingColumns.push_back({ cx, cz });
+        }
+    }
+}
+
+static void ProcessColumnGeneration(World& w) {
+    int n = (int)std::min<size_t>(MAX_COLUMN_GENS_PER_TICK, g_pendingColumns.size());
+    for (int i = 0; i < n; i++) {
+        auto col = g_pendingColumns.front();
+        g_pendingColumns.pop_front();
+        g_pendingColumnSet.erase(ColumnKey(col.first, col.second));
+        GenerateColumn(w, col.first, col.second);
+    }
 }
 
 // =======================================================================
@@ -915,7 +957,7 @@ struct Reader {
     }
 };
 
-static void SaveGame(World& w, Player& p) {
+static bool SaveGame(World& w, Player& p) {
     std::vector<uint8_t> buf;
     AppendU32(buf, ('G' << 24) | ('L' << 16) | ('X' << 8) | 'V'); // magic "VXLG" (little-endian on disk)
     AppendU32(buf, SAVE_VERSION);
@@ -960,9 +1002,9 @@ static void SaveGame(World& w, Player& p) {
     std::string bakPath = std::string(SAVE_PATH) + ".bak";
     {
         std::ofstream out(tmpPath, std::ios::binary | std::ios::trunc);
-        if (!out) return;
+        if (!out) return false;
         out.write((const char*)buf.data(), (std::streamsize)buf.size());
-        if (!out) return;
+        if (!out) return false;
     }
     std::error_code ec;
     if (fs::exists(SAVE_PATH, ec)) {
@@ -970,6 +1012,8 @@ static void SaveGame(World& w, Player& p) {
         fs::rename(SAVE_PATH, bakPath, ec);
     }
     fs::rename(tmpPath, SAVE_PATH, ec);
+    if (ec) return false;
+    return true;
 }
 
 static bool LoadGame(World& w, Player& p) {
@@ -1044,7 +1088,16 @@ static bool LoadGame(World& w, Player& p) {
 
     w.chunks = std::move(fresh.chunks);
     p = loaded;
+
+    // Mark every column present in the loaded world as already
+    // generated, so the next chunk-load pass never re-runs procedural
+    // generation over it and stomps loaded/edited blocks with fresh
+    // terrain -- only genuinely new columns around the player (beyond
+    // what this save covered) will generate normally from here.
     g_generatedColumns.clear();
+    for (auto& kv : w.chunks) g_generatedColumns.insert(ColumnKey(kv.first.x, kv.first.z));
+    g_pendingColumns.clear();
+    g_pendingColumnSet.clear();
     g_lastPlayerChunkX = INT32_MIN;
     g_lastPlayerChunkZ = INT32_MIN;
     return true;
@@ -1289,6 +1342,8 @@ static bool g_mouseCaptured = false;
 static bool g_keyDown[256] = {};
 static bool g_menuOpen = false;
 static int g_mouseX = 0, g_mouseY = 0;
+static std::string g_toastMessage;
+static float g_toastTimer = 0.0f; // seconds remaining; drawn by RenderUIPass
 
 static void PickAndAct(bool breakBlock) {
     Vec3 f, r, u;
@@ -1348,6 +1403,20 @@ static bool PointInRect(int px, int py, const UIRect& r) {
     return px >= r.x0 && px <= r.x1 && py >= r.y0 && py <= r.y1;
 }
 
+// Wrap Save/Load so every call site (F5/F9 and the pause-menu buttons)
+// gets the same on-screen confirmation instead of failing or succeeding
+// silently.
+static void DoSave() {
+    bool ok = SaveGame(g_world, g_player);
+    g_toastMessage = ok ? "GAME SAVED" : "SAVE FAILED";
+    g_toastTimer = 2.0f;
+}
+static void DoLoad() {
+    bool ok = LoadGame(g_world, g_player);
+    g_toastMessage = ok ? "GAME LOADED" : "LOAD FAILED (no save?)";
+    g_toastTimer = 2.0f;
+}
+
 static void HandleMenuClick(int mx, int my) {
     for (int i = 0; i < MENU_BUTTON_COUNT; i++) {
         if (!PointInRect(mx, my, GetMenuButtonRect(i))) continue;
@@ -1357,10 +1426,10 @@ static void HandleMenuClick(int mx, int my) {
             CaptureMouseForPlay();
             break;
         case 1: // SAVE GAME
-            SaveGame(g_world, g_player);
+            DoSave();
             break;
         case 2: // LOAD GAME
-            LoadGame(g_world, g_player);
+            DoLoad();
             g_menuOpen = false;
             CaptureMouseForPlay();
             break;
@@ -1409,13 +1478,30 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             int idx = (int)(wParam - '1');
             if (idx < g_placeableCount) g_player.hotbarIndex = idx;
         } else if (wParam == VK_F5) {
-            SaveGame(g_world, g_player);
+            DoSave();
         } else if (wParam == VK_F9) {
-            LoadGame(g_world, g_player);
+            DoLoad();
         }
         return 0;
     case WM_KEYUP:
         if (wParam < 256) g_keyDown[wParam] = false;
+        return 0;
+    case WM_KILLFOCUS:
+        // Losing focus while a key is held would otherwise leave it
+        // stuck "down" forever -- this window won't get the matching
+        // WM_KEYUP if focus moved elsewhere. And losing focus while the
+        // mouse is captured would otherwise keep yanking the real
+        // cursor back to center every frame even while alt-tabbed away,
+        // since the look-code's recenter loop only checked
+        // g_mouseCaptured, not whether this window was still focused.
+        // Auto-pausing (like most FPS games do on focus loss) fixes
+        // both at once: it releases the cursor immediately, and the
+        // key-state reset below prevents any stuck movement.
+        memset(g_keyDown, 0, sizeof(g_keyDown));
+        if (g_mouseCaptured) {
+            g_menuOpen = true;
+            ReleaseMouseForMenu();
+        }
         return 0;
     default:
         return DefWindowProc(hwnd, msg, wParam, lParam);
@@ -1512,6 +1598,15 @@ static void RenderUIPass() {
         }
     }
 
+    // Transient save/load confirmation -- fades over its last half
+    // second so it doesn't just vanish abruptly.
+    if (g_toastTimer > 0.0f) {
+        float alpha = g_toastTimer < 0.5f ? g_toastTimer / 0.5f : 1.0f;
+        float scale = 1.1f;
+        float tw = UITextWidth(g_toastMessage, scale);
+        UIDrawText(glyphVerts, g_toastMessage, (SCREEN_W - tw) / 2.0f, 40.0f, scale, 1.0f, 0.95f, 0.55f, alpha);
+    }
+
     g_context->OMSetDepthStencilState(g_uiDepthState, 0);
     float blendFactor[4] = { 0, 0, 0, 0 };
     g_context->OMSetBlendState(g_uiBlendState, blendFactor, 0xFFFFFFFF);
@@ -1589,7 +1684,18 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
         if (dt > 0.25f) dt = 0.25f; // clamp huge stalls (e.g. window drag)
         accumulator += dt;
 
-        if (g_mouseCaptured) {
+        if (g_toastTimer > 0.0f) {
+            g_toastTimer -= dt;
+            if (g_toastTimer < 0.0f) g_toastTimer = 0.0f;
+        }
+
+        // The foreground check is defense-in-depth alongside the
+        // WM_KILLFOCUS handler above: without it, a focus change this
+        // same frame that WM_KILLFOCUS hasn't been dispatched for yet
+        // would still let this recenter the real cursor into the
+        // window while some other application is what's actually
+        // focused.
+        if (g_mouseCaptured && GetForegroundWindow() == g_hwnd) {
             POINT cursor; GetCursorPos(&cursor);
             RECT rc; GetClientRect(g_hwnd, &rc);
             POINT center = { (rc.right - rc.left) / 2, (rc.bottom - rc.top) / 2 };
@@ -1615,6 +1721,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
                 int pcx = FloorDiv16((int)floor(g_player.x));
                 int pcz = FloorDiv16((int)floor(g_player.z));
                 EnsureChunksLoaded(g_world, pcx, pcz);
+                ProcessColumnGeneration(g_world);
 
                 bool fwd = g_keyDown['W'], back = g_keyDown['S'];
                 bool left = g_keyDown['A'], right = g_keyDown['D'];

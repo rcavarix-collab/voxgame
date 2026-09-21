@@ -202,12 +202,15 @@ extern "C" bool GenerateUIAtlas(
     bool ok = true;
     uint8_t* pixels = nullptr;
     {
-        // 32bppARGB bitmaps start fully transparent (all-zero), which is
-        // exactly what's wanted here: white glyphs with alpha carrying
-        // the antialiased coverage, over nothing.
         Bitmap bmp(w, h, PixelFormat32bppARGB);
         {
             Graphics g(&bmp);
+            // A freshly constructed Bitmap isn't documented to start
+            // zero-filled -- clear it explicitly rather than relying on
+            // that. Everything not covered by a glyph needs to end up
+            // fully transparent, since white glyphs carry their shape
+            // in the alpha channel alone (Section 4.6).
+            g.Clear(Color(0, 0, 0, 0));
             g.SetSmoothingMode(SmoothingModeAntiAlias);
             g.SetTextRenderingHint(TextRenderingHintAntiAlias);
 
