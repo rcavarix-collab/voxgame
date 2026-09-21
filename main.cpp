@@ -1,6 +1,6 @@
 // main.cpp
 //
-// Voxel Logistics Game - Milestone 1 prototype.
+// Voxistics - Milestone 1 prototype.
 // World storage, chunked meshing with per-block atlas texturing, gravity/
 // falling blocks, exact-DDA block picking, place/break, crash-safe
 // versioned save/load, basic FPS movement and collision.
@@ -1066,7 +1066,7 @@ static float g_masterVolume = 1.0f;
 
 static const uint32_t SAVE_VERSION = 2; // v2 adds the settings block (sensitivity/invert/render distance/FPS/volume/keybindings)
 
-// Resolves (creating if needed) Documents\My Games\VoxelLogistics -- the
+// Resolves (creating if needed) Documents\My Games\Voxistics -- the
 // conventional PC-game save location: visible and easy for players to
 // find, back up, or copy between machines, unlike a hidden AppData
 // folder. Falls back to the current working directory (this prototype's
@@ -1081,7 +1081,7 @@ static std::filesystem::path GetSaveDirectory() {
     HRESULT hr = SHGetKnownFolderPath(FOLDERID_Documents, 0, nullptr, &docsPath);
     fs::path dir;
     if (SUCCEEDED(hr) && docsPath) {
-        dir = fs::path(docsPath) / L"My Games" / L"VoxelLogistics";
+        dir = fs::path(docsPath) / L"My Games" / L"Voxistics";
     }
     if (docsPath) CoTaskMemFree(docsPath);
 
@@ -2296,14 +2296,14 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
     WNDCLASSW wc = {};
     wc.lpfnWndProc = WndProc;
     wc.hInstance = hInstance;
-    wc.lpszClassName = L"VoxelLogisticsWindowClass";
+    wc.lpszClassName = L"VoxisticsWindowClass";
     wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
     RegisterClassW(&wc);
 
     RECT wr = { 0, 0, SCREEN_W, SCREEN_H };
     DWORD style = (WS_OVERLAPPEDWINDOW & ~WS_THICKFRAME & ~WS_MAXIMIZEBOX);
     AdjustWindowRect(&wr, style, FALSE);
-    g_hwnd = CreateWindowW(L"VoxelLogisticsWindowClass", L"Voxel Logistics",
+    g_hwnd = CreateWindowW(L"VoxisticsWindowClass", L"Voxistics",
                             style, CW_USEDEFAULT, CW_USEDEFAULT,
                             wr.right - wr.left, wr.bottom - wr.top,
                             nullptr, nullptr, hInstance, nullptr);

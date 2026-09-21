@@ -1,4 +1,4 @@
-# Voxel Logistics Game — Complete Design Reference
+# Voxistics — Complete Design Reference
 
 ## Part I — Vision and Constraints
 
@@ -187,7 +187,7 @@ checksum (u32)  — FNV-1a over every byte above
 Block identity is written and read via the **name table**, not the enum — this is the direct structural fix for the positional-ID corruption failure mode, and it's the reason `g_blockNames[]` exists as a parallel source of truth to `BlockID`. Keybindings use the exact same name-indexed pattern (`g_actionNames[]` alongside the `GameAction` enum) for the same reason: the action set can grow without shifting what an old save's binding records mean. Gameplay/UI settings (mouse sensitivity, inversion, render distance, the FPS counter toggle, master volume, and every keybinding) are saved with the player rather than in a separate global config file, per an explicit request — a save-and-reload round-trips them exactly. Version bumped from 1 to 2 when this block was added; old v1 saves are rejected cleanly by the version check (Section 7.4) rather than misread.
 
 ### 7.2.1 Save location
-`Documents\My Games\VoxelLogistics\voxelproto.sav` — the conventional PC-game save location (Skyrim and most Bethesda/Paradox titles use the same pattern), chosen over a hidden `%LOCALAPPDATA%` folder specifically because it's visible and easy for players to find, back up, or copy between machines. The directory is resolved fresh on every save/load (`SHGetKnownFolderPath(FOLDERID_Documents, ...)` plus the `My Games\VoxelLogistics` subfolder, created if missing) rather than cached once, so a transient failure doesn't permanently strand the game on a fallback it no longer needs.
+`Documents\My Games\Voxistics\voxelproto.sav` — the conventional PC-game save location (Skyrim and most Bethesda/Paradox titles use the same pattern), chosen over a hidden `%LOCALAPPDATA%` folder specifically because it's visible and easy for players to find, back up, or copy between machines. The directory is resolved fresh on every save/load (`SHGetKnownFolderPath(FOLDERID_Documents, ...)` plus the `My Games\Voxistics` subfolder, created if missing) rather than cached once, so a transient failure doesn't permanently strand the game on a fallback it no longer needs.
 
 Two things can go wrong with a known-folder lookup in the real world, and both are handled by falling back to the current working directory (this prototype's original behavior) rather than failing the save outright: the `SHGetKnownFolderPath` call itself failing (rare, but has no reason to be fatal when a working fallback exists), and something unexpected already occupying part of the intended path — concretely, a plain file sitting where a folder needs to be. The code checks `exists() && !is_directory()` before calling `create_directories()` specifically to catch that second case rather than letting a failed directory creation surface as a mysterious save failure.
 
