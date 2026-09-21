@@ -653,6 +653,27 @@ static const char* g_uiShaderSrc =
     "SamplerState samp0 : register(s0);\n"
     "float4 PSMain(PSIn input) : SV_TARGET { return tex0.Sample(samp0, input.uv) * input.col; }\n";
 
+// Third pass state: a basic skybox, drawn before the world so normal
+// depth-tested opaque geometry always overdraws it. Untextured --
+// just a vertex-colored gradient box -- so its own tiny pipeline
+// (position+color, no sampler/texture) rather than reusing either the
+// world or UI shader.
+struct SkyVertex { float x, y, z, r, g, b; };
+static ID3D11VertexShader* g_skyVS = nullptr;
+static ID3D11PixelShader* g_skyPS = nullptr;
+static ID3D11InputLayout* g_skyLayout = nullptr;
+static ID3D11Buffer* g_skyCBuffer = nullptr;
+static ID3D11Buffer* g_skyVB = nullptr;
+static ID3D11Buffer* g_skyIB = nullptr;
+static UINT g_skyIndexCount = 0;
+
+static const char* g_skyShaderSrc =
+    "cbuffer SkyCB : register(b0) { row_major matrix viewProj; };\n"
+    "struct VSIn { float3 pos:POSITION; float3 col:COLOR0; };\n"
+    "struct PSIn { float4 pos:SV_POSITION; float3 col:COLOR0; };\n"
+    "PSIn VSMain(VSIn input) { PSIn o; o.pos = mul(float4(input.pos,1.0f), viewProj); o.col = input.col; return o; }\n"
+    "float4 PSMain(PSIn input) : SV_TARGET { return float4(input.col, 1.0f); }\n";
+
 // Emits one cube face (4 verts + 6 indices) for the given corners.
 static void EmitFace(std::vector<Vertex>& verts, std::vector<uint32_t>& indices,
                       float x, float y, float z,
@@ -803,6 +824,69 @@ static void BuildPipeMeshes() {
         AddBox(verts, indices, 0.0f, lo, lo, 1.0f, hi, hi, u0, v0, u1, v1);
         g_pipeMeshes[3] = UploadPipeMesh(verts, indices);
     }
+}
+
+// One quad, 4 independently-colored corners -- unlike AddSkyBox's
+// uniform-color faces, the 4 side faces need each corner colored
+// separately to get a smooth vertical gradient across the face.
+static void AddSkyQuad(std::vector<SkyVertex>& v, std::vector<uint32_t>& idx,
+                        float x0, float y0, float z0, float x1, float y1, float z1,
+                        float x2, float y2, float z2, float x3, float y3, float z3,
+                        float r0, float g0, float b0, float r1, float g1, float b1,
+                        float r2, float g2, float b2, float r3, float g3, float b3) {
+    uint32_t base = (uint32_t)v.size();
+    v.push_back({ x0, y0, z0, r0, g0, b0 });
+    v.push_back({ x1, y1, z1, r1, g1, b1 });
+    v.push_back({ x2, y2, z2, r2, g2, b2 });
+    v.push_back({ x3, y3, z3, r3, g3, b3 });
+    idx.push_back(base + 0); idx.push_back(base + 1); idx.push_back(base + 2);
+    idx.push_back(base + 0); idx.push_back(base + 2); idx.push_back(base + 3);
+}
+
+// A large inverted box centered on the camera each frame (Section 4.6-
+// adjacent: a third pass, drawn with depth off before the opaque world
+// pass so normal depth-tested geometry always overdraws it, and with
+// its view matrix's translation stripped so it never appears to move
+// as the player walks -- only as they look around, exactly like a
+// conventional skybox). Top and bottom faces are a flat color; the 4
+// side faces interpolate from the zenith color at their top edge to
+// the horizon color at their bottom edge, which is what actually reads
+// as "sky" since players spend most of their view near-horizontal.
+static void BuildSkyMesh() {
+    std::vector<SkyVertex> verts;
+    std::vector<uint32_t> indices;
+    const float E = 50.0f; // arbitrary -- depth test is off, so size only has to clear the near plane
+    const float zr = 0.25f, zg = 0.45f, zb = 0.85f; // zenith
+    const float hr = 0.65f, hg = 0.75f, hb = 0.95f; // horizon
+
+    AddSkyQuad(verts, indices, -E, E, -E, -E, E, E, E, E, E, E, E, -E,
+               zr, zg, zb, zr, zg, zb, zr, zg, zb, zr, zg, zb); // top
+    AddSkyQuad(verts, indices, -E, -E, E, -E, -E, -E, E, -E, -E, E, -E, E,
+               hr, hg, hb, hr, hg, hb, hr, hg, hb, hr, hg, hb); // bottom
+    AddSkyQuad(verts, indices, E, E, -E, E, E, E, E, -E, E, E, -E, -E,
+               zr, zg, zb, zr, zg, zb, hr, hg, hb, hr, hg, hb); // +X
+    AddSkyQuad(verts, indices, -E, E, E, -E, E, -E, -E, -E, -E, -E, -E, E,
+               zr, zg, zb, zr, zg, zb, hr, hg, hb, hr, hg, hb); // -X
+    AddSkyQuad(verts, indices, E, E, E, -E, E, E, -E, -E, E, E, -E, E,
+               zr, zg, zb, zr, zg, zb, hr, hg, hb, hr, hg, hb); // +Z
+    AddSkyQuad(verts, indices, -E, E, -E, E, E, -E, E, -E, -E, -E, -E, -E,
+               zr, zg, zb, zr, zg, zb, hr, hg, hb, hr, hg, hb); // -Z
+
+    D3D11_BUFFER_DESC vbd = {};
+    vbd.Usage = D3D11_USAGE_DEFAULT;
+    vbd.ByteWidth = (UINT)(verts.size() * sizeof(SkyVertex));
+    vbd.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+    D3D11_SUBRESOURCE_DATA vinit = {}; vinit.pSysMem = verts.data();
+    g_device->CreateBuffer(&vbd, &vinit, &g_skyVB);
+
+    D3D11_BUFFER_DESC ibd = {};
+    ibd.Usage = D3D11_USAGE_DEFAULT;
+    ibd.ByteWidth = (UINT)(indices.size() * sizeof(uint32_t));
+    ibd.BindFlags = D3D11_BIND_INDEX_BUFFER;
+    D3D11_SUBRESOURCE_DATA iinit = {}; iinit.pSysMem = indices.data();
+    g_device->CreateBuffer(&ibd, &iinit, &g_skyIB);
+
+    g_skyIndexCount = (UINT)indices.size();
 }
 
 static void UpdateCBuffer(const Mat4& mvp) {
@@ -1308,6 +1392,40 @@ static bool InitD3D(HWND hwnd) {
     uiDepthDesc.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ZERO;
     g_device->CreateDepthStencilState(&uiDepthDesc, &g_uiDepthState);
 
+    // --- Sky pass pipeline objects: depth off (g_uiDepthState is reused
+    // here -- it's the same DepthEnable=FALSE state the UI pass already
+    // needed, no reason to create a second identical one) ---
+    ID3DBlob* skyVsBlob = nullptr, * skyPsBlob = nullptr;
+    hr = D3DCompile(g_skyShaderSrc, strlen(g_skyShaderSrc), nullptr, nullptr, nullptr,
+                     "VSMain", "vs_4_0", 0, 0, &skyVsBlob, &errBlob);
+    if (FAILED(hr)) {
+        if (errBlob) OutputDebugStringA((const char*)errBlob->GetBufferPointer());
+        return false;
+    }
+    hr = D3DCompile(g_skyShaderSrc, strlen(g_skyShaderSrc), nullptr, nullptr, nullptr,
+                     "PSMain", "ps_4_0", 0, 0, &skyPsBlob, &errBlob);
+    if (FAILED(hr)) {
+        if (errBlob) OutputDebugStringA((const char*)errBlob->GetBufferPointer());
+        return false;
+    }
+    g_device->CreateVertexShader(skyVsBlob->GetBufferPointer(), skyVsBlob->GetBufferSize(), nullptr, &g_skyVS);
+    g_device->CreatePixelShader(skyPsBlob->GetBufferPointer(), skyPsBlob->GetBufferSize(), nullptr, &g_skyPS);
+
+    D3D11_INPUT_ELEMENT_DESC skyLayoutDesc[] = {
+        { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+        { "COLOR", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 12, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+    };
+    g_device->CreateInputLayout(skyLayoutDesc, 2, skyVsBlob->GetBufferPointer(), skyVsBlob->GetBufferSize(), &g_skyLayout);
+    skyVsBlob->Release();
+    skyPsBlob->Release();
+
+    D3D11_BUFFER_DESC skyCbd = {};
+    skyCbd.Usage = D3D11_USAGE_DYNAMIC;
+    skyCbd.ByteWidth = sizeof(Mat4);
+    skyCbd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+    skyCbd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+    g_device->CreateBuffer(&skyCbd, nullptr, &g_skyCBuffer);
+
     return true;
 }
 
@@ -1381,7 +1499,8 @@ static World g_world;
 static Player g_player;
 static bool g_mouseCaptured = false;
 static bool g_keyDown[256] = {};
-static bool g_menuOpen = false;
+enum class MenuScreen { None, Pause, LookSettings };
+static MenuScreen g_menuScreen = MenuScreen::None;
 static int g_mouseX = 0, g_mouseY = 0;
 static std::string g_toastMessage;
 static float g_toastTimer = 0.0f; // seconds remaining; drawn by RenderUIPass
@@ -1424,20 +1543,30 @@ static void ReleaseMouseForMenu() {
 // Pause-menu layout: shared between rendering (RenderUIPass) and click
 // hit-testing (HandleMenuClick) so the two can never drift apart. Rows
 // are addressed by index rather than a flat button list, since the
-// sensitivity row needs two small buttons instead of one full-width one.
+// Look Settings submenu's sliders need more than a single clickable rect.
 struct UIRect { float x0, y0, x1, y1; };
-static const float MENU_PANEL_W = 360.0f, MENU_PANEL_H = 420.0f;
+static const float MENU_PANEL_W = 320.0f, MENU_PANEL_H = 320.0f;
 static const float MENU_ROW_H = 40.0f, MENU_ROW_GAP = 12.0f, MENU_TOP_MARGIN = 70.0f;
 
-enum MenuRow { ROW_RESUME = 0, ROW_SENSITIVITY = 1, ROW_INVERT_Y = 2, ROW_SAVE = 3, ROW_LOAD = 4, ROW_QUIT = 5 };
+enum MenuRow { ROW_RESUME = 0, ROW_LOOK_SETTINGS = 1, ROW_SAVE = 2, ROW_LOAD = 3, ROW_QUIT = 4 };
 
-// Look preferences, adjustable from the pause menu. Not persisted to
-// the save file (Section VII) -- these are player/UI preferences, not
-// world state, so they simply default fresh each run.
-static float g_sensitivityMult = 1.0f; // multiplies BASE_MOUSE_SENS below
-static bool g_invertY = false;
+// Look Settings submenu: separate X/Y sensitivity sliders and separate
+// X/Y inversion, per the request -- the combined single-axis sensitivity
+// stepper this replaced didn't let X and Y be tuned independently.
+static const float SUB_PANEL_W = 400.0f, SUB_PANEL_H = 430.0f;
+static const float SUB_ROW_H = 56.0f, SUB_ROW_GAP = 12.0f, SUB_TOP_MARGIN = 70.0f;
+enum SubRow { SUBROW_INVERT_X = 0, SUBROW_SENS_X = 1, SUBROW_INVERT_Y = 2, SUBROW_SENS_Y = 3, SUBROW_BACK = 4 };
+
+// Look preferences, adjustable from the Look Settings submenu. Not
+// persisted to the save file (Section VII) -- these are player/UI
+// preferences, not world state, so they simply default fresh each run.
+static float g_sensitivityMultX = 1.0f, g_sensitivityMultY = 1.0f; // multiply BASE_MOUSE_SENS
+static bool g_invertX = false, g_invertY = false;
 static const float BASE_MOUSE_SENS = 0.0025f;
-static const float SENS_STEP = 0.25f, SENS_MIN = 0.25f, SENS_MAX = 3.0f;
+static const float SENS_MIN = 0.25f, SENS_MAX = 3.0f;
+
+enum SliderId { SLIDER_NONE = -1, SLIDER_SENS_X = 0, SLIDER_SENS_Y = 1 };
+static int g_draggingSlider = SLIDER_NONE;
 
 static UIRect GetMenuPanelRect() {
     float px = (SCREEN_W - MENU_PANEL_W) / 2.0f;
@@ -1451,14 +1580,29 @@ static UIRect GetMenuRowRect(int rowIndex) {
     float by = panel.y0 + MENU_TOP_MARGIN + rowIndex * (MENU_ROW_H + MENU_ROW_GAP);
     return { bx, by, bx + bw, by + MENU_ROW_H };
 }
-// The sensitivity row's minus/plus buttons sit inset from its right edge.
-static UIRect GetSensitivityMinusRect() {
-    UIRect r = GetMenuRowRect(ROW_SENSITIVITY);
-    return { r.x1 - 76, r.y0 + 4, r.x1 - 44, r.y1 - 4 };
+
+static UIRect GetSubPanelRect() {
+    float px = (SCREEN_W - SUB_PANEL_W) / 2.0f;
+    float py = (SCREEN_H - SUB_PANEL_H) / 2.0f;
+    return { px, py, px + SUB_PANEL_W, py + SUB_PANEL_H };
 }
-static UIRect GetSensitivityPlusRect() {
-    UIRect r = GetMenuRowRect(ROW_SENSITIVITY);
-    return { r.x1 - 36, r.y0 + 4, r.x1 - 4, r.y1 - 4 };
+static UIRect GetSubRowRect(int rowIndex) {
+    UIRect panel = GetSubPanelRect();
+    float bw = SUB_PANEL_W - 60.0f;
+    float bx = panel.x0 + 30.0f;
+    float by = panel.y0 + SUB_TOP_MARGIN + rowIndex * (SUB_ROW_H + SUB_ROW_GAP);
+    return { bx, by, bx + bw, by + SUB_ROW_H };
+}
+// The slider track sits in the lower half of its row, with the label
+// above it. The hit rect is a bit taller than the visible track so it's
+// not fiddly to grab.
+static UIRect GetSliderTrackRect(int rowIndex) {
+    UIRect r = GetSubRowRect(rowIndex);
+    return { r.x0 + 8, r.y0 + 34, r.x1 - 8, r.y0 + 42 };
+}
+static UIRect GetSliderHitRect(int rowIndex) {
+    UIRect r = GetSubRowRect(rowIndex);
+    return { r.x0 + 8, r.y0 + 24, r.x1 - 8, r.y0 + 50 };
 }
 static bool PointInRect(int px, int py, const UIRect& r) {
     return px >= r.x0 && px <= r.x1 && py >= r.y0 && py <= r.y1;
@@ -1479,23 +1623,13 @@ static void DoLoad() {
 }
 
 static void HandleMenuClick(int mx, int my) {
-    if (PointInRect(mx, my, GetSensitivityMinusRect())) {
-        g_sensitivityMult -= SENS_STEP;
-        if (g_sensitivityMult < SENS_MIN) g_sensitivityMult = SENS_MIN;
-        return;
-    }
-    if (PointInRect(mx, my, GetSensitivityPlusRect())) {
-        g_sensitivityMult += SENS_STEP;
-        if (g_sensitivityMult > SENS_MAX) g_sensitivityMult = SENS_MAX;
-        return;
-    }
-    if (PointInRect(mx, my, GetMenuRowRect(ROW_INVERT_Y))) {
-        g_invertY = !g_invertY;
-        return;
-    }
     if (PointInRect(mx, my, GetMenuRowRect(ROW_RESUME))) {
-        g_menuOpen = false;
+        g_menuScreen = MenuScreen::None;
         CaptureMouseForPlay();
+        return;
+    }
+    if (PointInRect(mx, my, GetMenuRowRect(ROW_LOOK_SETTINGS))) {
+        g_menuScreen = MenuScreen::LookSettings;
         return;
     }
     if (PointInRect(mx, my, GetMenuRowRect(ROW_SAVE))) {
@@ -1504,12 +1638,54 @@ static void HandleMenuClick(int mx, int my) {
     }
     if (PointInRect(mx, my, GetMenuRowRect(ROW_LOAD))) {
         DoLoad();
-        g_menuOpen = false;
+        g_menuScreen = MenuScreen::None;
         CaptureMouseForPlay();
         return;
     }
     if (PointInRect(mx, my, GetMenuRowRect(ROW_QUIT))) {
         PostQuitMessage(0);
+        return;
+    }
+}
+
+// Sets a sensitivity value directly from a mouse x position along its
+// slider's track -- shared by the initial click and every subsequent
+// drag update while the button stays held.
+static void ApplySliderDrag(int mx) {
+    if (g_draggingSlider == SLIDER_NONE) return;
+    int row = (g_draggingSlider == SLIDER_SENS_X) ? SUBROW_SENS_X : SUBROW_SENS_Y;
+    UIRect track = GetSliderTrackRect(row);
+    float t = (mx - track.x0) / (track.x1 - track.x0);
+    if (t < 0.0f) t = 0.0f;
+    if (t > 1.0f) t = 1.0f;
+    float value = SENS_MIN + t * (SENS_MAX - SENS_MIN);
+    if (g_draggingSlider == SLIDER_SENS_X) g_sensitivityMultX = value;
+    else g_sensitivityMultY = value;
+}
+
+static void HandleLookSettingsClick(int mx, int my) {
+    if (PointInRect(mx, my, GetSubRowRect(SUBROW_INVERT_X))) {
+        g_invertX = !g_invertX;
+        return;
+    }
+    if (PointInRect(mx, my, GetSubRowRect(SUBROW_INVERT_Y))) {
+        g_invertY = !g_invertY;
+        return;
+    }
+    if (PointInRect(mx, my, GetSliderHitRect(SUBROW_SENS_X))) {
+        g_draggingSlider = SLIDER_SENS_X;
+        SetCapture(g_hwnd); // keep receiving WM_MOUSEMOVE if the drag leaves the client area
+        ApplySliderDrag(mx);
+        return;
+    }
+    if (PointInRect(mx, my, GetSliderHitRect(SUBROW_SENS_Y))) {
+        g_draggingSlider = SLIDER_SENS_Y;
+        SetCapture(g_hwnd);
+        ApplySliderDrag(mx);
+        return;
+    }
+    if (PointInRect(mx, my, GetSubRowRect(SUBROW_BACK))) {
+        g_menuScreen = MenuScreen::Pause;
         return;
     }
 }
@@ -1522,11 +1698,14 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
     case WM_MOUSEMOVE:
         g_mouseX = (int)(short)LOWORD(lParam);
         g_mouseY = (int)(short)HIWORD(lParam);
+        ApplySliderDrag(g_mouseX); // no-op unless a slider is actively held
         return 0;
     case WM_LBUTTONDOWN: {
         int mx = (int)(short)LOWORD(lParam), my = (int)(short)HIWORD(lParam);
-        if (g_menuOpen) {
+        if (g_menuScreen == MenuScreen::Pause) {
             HandleMenuClick(mx, my);
+        } else if (g_menuScreen == MenuScreen::LookSettings) {
+            HandleLookSettingsClick(mx, my);
         } else if (!g_mouseCaptured) {
             CaptureMouseForPlay();
         } else {
@@ -1534,20 +1713,32 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         }
         return 0;
     }
+    case WM_LBUTTONUP:
+        // Only release capture if a slider drag actually set it --
+        // unconditionally releasing here would also kick the player out
+        // of FPS mouse-look capture (CaptureMouseForPlay's SetCapture)
+        // on every ordinary left-click-to-break-block during gameplay.
+        if (g_draggingSlider != SLIDER_NONE) {
+            g_draggingSlider = SLIDER_NONE;
+            ReleaseCapture();
+        }
+        return 0;
     case WM_RBUTTONDOWN:
-        if (g_mouseCaptured && !g_menuOpen) PickAndAct(false);
+        if (g_mouseCaptured && g_menuScreen == MenuScreen::None) PickAndAct(false);
         return 0;
     case WM_KEYDOWN:
         if (wParam < 256) g_keyDown[wParam] = true;
         if (wParam == VK_ESCAPE) {
-            if (g_menuOpen) {
-                g_menuOpen = false;
+            if (g_menuScreen == MenuScreen::LookSettings) {
+                g_menuScreen = MenuScreen::Pause; // one level back, not all the way out
+            } else if (g_menuScreen == MenuScreen::Pause) {
+                g_menuScreen = MenuScreen::None;
                 CaptureMouseForPlay();
             } else {
-                g_menuOpen = true;
+                g_menuScreen = MenuScreen::Pause;
                 ReleaseMouseForMenu();
             }
-        } else if (wParam >= '1' && wParam <= '9' && !g_menuOpen) {
+        } else if (wParam >= '1' && wParam <= '9' && g_menuScreen == MenuScreen::None) {
             int idx = (int)(wParam - '1');
             if (idx < g_placeableCount) g_player.hotbarIndex = idx;
         } else if (wParam == VK_F5) {
@@ -1571,8 +1762,14 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         // both at once: it releases the cursor immediately, and the
         // key-state reset below prevents any stuck movement.
         memset(g_keyDown, 0, sizeof(g_keyDown));
+        // Mouse capture isn't guaranteed to be released automatically
+        // just because keyboard focus was -- release whatever a slider
+        // drag or FPS-look capture left behind explicitly (harmless
+        // no-op if nothing was actually captured).
+        g_draggingSlider = SLIDER_NONE;
+        ReleaseCapture();
         if (g_mouseCaptured) {
-            g_menuOpen = true;
+            g_menuScreen = MenuScreen::Pause;
             ReleaseMouseForMenu();
         }
         return 0;
@@ -1607,7 +1804,9 @@ static void UIDrawBatch(const std::vector<UIVertex>& verts, ID3D11ShaderResource
 static void RenderUIPass() {
     std::vector<UIVertex> glyphVerts; // font atlas + white cell (panels, borders, text, crosshair)
 
-    if (g_mouseCaptured && !g_menuOpen) {
+    bool menuIsOpen = g_menuScreen != MenuScreen::None;
+
+    if (g_mouseCaptured && !menuIsOpen) {
         float cx = SCREEN_W / 2.0f, cy = SCREEN_H / 2.0f;
         UIDrawRect(glyphVerts, cx - 8, cy - 1, cx + 8, cy + 1, 1, 1, 1, 0.85f);
         UIDrawRect(glyphVerts, cx - 1, cy - 8, cx + 1, cy + 8, 1, 1, 1, 0.85f);
@@ -1636,21 +1835,49 @@ static void RenderUIPass() {
         icons.push_back({ x0 + 6, y0 + 6, x1 - 6, y1 - 6, iu0, iv0, iu1, iv1, pipe });
     }
 
-    if (!g_menuOpen) {
+    if (!menuIsOpen) {
         std::string name = g_blockNames[g_placeable[g_player.hotbarIndex]];
         float scale = 0.8f;
         float tw = UITextWidth(name, scale);
         UIDrawText(glyphVerts, name, (SCREEN_W - tw) / 2.0f, hbY0 - 26.0f, scale, 1, 1, 1, 0.9f);
     }
 
-    if (!g_mouseCaptured && !g_menuOpen) {
+    if (!g_mouseCaptured && !menuIsOpen) {
         std::string hint = "CLICK TO PLAY";
         float scale = 1.3f;
         float tw = UITextWidth(hint, scale);
         UIDrawText(glyphVerts, hint, (SCREEN_W - tw) / 2.0f, SCREEN_H * 0.42f, scale, 1, 1, 1, 0.9f);
     }
 
-    if (g_menuOpen) {
+    auto drawRowButton = [&](const UIRect& r, const char* label) {
+        bool hover = PointInRect(g_mouseX, g_mouseY, r);
+        float shade = hover ? 0.32f : 0.22f;
+        UIDrawRect(glyphVerts, r.x0, r.y0, r.x1, r.y1, shade, shade, shade + 0.06f, 1);
+        std::string text = label;
+        float lw = UITextWidth(text, 1.0f);
+        UIDrawText(glyphVerts, text, r.x0 + ((r.x1 - r.x0) - lw) / 2.0f, r.y0 + 10.0f, 1.0f, 1, 1, 1, 1);
+    };
+    // A slider row: label above, track+handle below, both driven by the
+    // same [SENS_MIN, SENS_MAX] range the drag code in HandleLookSettingsClick
+    // and ApplySliderDrag use, so the handle position always matches the
+    // value it represents.
+    auto drawSliderRow = [&](int rowIndex, const char* label, float value) {
+        UIRect r = GetSubRowRect(rowIndex);
+        UIDrawRect(glyphVerts, r.x0, r.y0, r.x1, r.y1, 0.16f, 0.16f, 0.19f, 1);
+        char buf[48];
+        snprintf(buf, sizeof(buf), "%s: %.2fx", label, value);
+        UIDrawText(glyphVerts, buf, r.x0 + 8, r.y0 + 2.0f, 0.8f, 1, 1, 1, 1);
+
+        UIRect track = GetSliderTrackRect(rowIndex);
+        UIDrawRect(glyphVerts, track.x0, track.y0, track.x1, track.y1, 0.08f, 0.08f, 0.10f, 1);
+        float t = (value - SENS_MIN) / (SENS_MAX - SENS_MIN);
+        float handleCx = track.x0 + t * (track.x1 - track.x0);
+        bool hover = PointInRect(g_mouseX, g_mouseY, GetSliderHitRect(rowIndex));
+        float hc = hover ? 1.0f : 0.85f;
+        UIDrawRect(glyphVerts, handleCx - 6, track.y0 - 6, handleCx + 6, track.y1 + 6, hc, hc, 0.2f, 1);
+    };
+
+    if (g_menuScreen == MenuScreen::Pause) {
         UIDrawRect(glyphVerts, 0, 0, (float)SCREEN_W, (float)SCREEN_H, 0, 0, 0, 0.55f);
         UIRect panel = GetMenuPanelRect();
         UIDrawRect(glyphVerts, panel.x0, panel.y0, panel.x1, panel.y1, 0.10f, 0.10f, 0.13f, 0.95f);
@@ -1660,43 +1887,26 @@ static void RenderUIPass() {
         float titleW = UITextWidth(title, titleScale);
         UIDrawText(glyphVerts, title, panel.x0 + (MENU_PANEL_W - titleW) / 2.0f, panel.y0 + 16.0f, titleScale, 1, 1, 1, 1);
 
-        auto drawButtonRow = [&](int rowIndex, const char* label) {
-            UIRect r = GetMenuRowRect(rowIndex);
-            bool hover = PointInRect(g_mouseX, g_mouseY, r);
-            float shade = hover ? 0.32f : 0.22f;
-            UIDrawRect(glyphVerts, r.x0, r.y0, r.x1, r.y1, shade, shade, shade + 0.06f, 1);
-            std::string text = label;
-            float lw = UITextWidth(text, 1.0f);
-            UIDrawText(glyphVerts, text, r.x0 + ((r.x1 - r.x0) - lw) / 2.0f, r.y0 + 10.0f, 1.0f, 1, 1, 1, 1);
-        };
+        drawRowButton(GetMenuRowRect(ROW_RESUME), "RESUME");
+        drawRowButton(GetMenuRowRect(ROW_LOOK_SETTINGS), "LOOK SETTINGS");
+        drawRowButton(GetMenuRowRect(ROW_SAVE), "SAVE GAME");
+        drawRowButton(GetMenuRowRect(ROW_LOAD), "LOAD GAME");
+        drawRowButton(GetMenuRowRect(ROW_QUIT), "QUIT");
+    } else if (g_menuScreen == MenuScreen::LookSettings) {
+        UIDrawRect(glyphVerts, 0, 0, (float)SCREEN_W, (float)SCREEN_H, 0, 0, 0, 0.55f);
+        UIRect panel = GetSubPanelRect();
+        UIDrawRect(glyphVerts, panel.x0, panel.y0, panel.x1, panel.y1, 0.10f, 0.10f, 0.13f, 0.95f);
 
-        drawButtonRow(ROW_RESUME, "RESUME");
+        std::string title = "LOOK SETTINGS";
+        float titleScale = 1.1f;
+        float titleW = UITextWidth(title, titleScale);
+        UIDrawText(glyphVerts, title, panel.x0 + (SUB_PANEL_W - titleW) / 2.0f, panel.y0 + 16.0f, titleScale, 1, 1, 1, 1);
 
-        // Sensitivity: label on the left, minus/plus buttons on the right.
-        {
-            UIRect r = GetMenuRowRect(ROW_SENSITIVITY);
-            UIDrawRect(glyphVerts, r.x0, r.y0, r.x1, r.y1, 0.16f, 0.16f, 0.19f, 1);
-            char buf[32];
-            snprintf(buf, sizeof(buf), "SENSITIVITY: %.2fx", g_sensitivityMult);
-            UIDrawText(glyphVerts, buf, r.x0 + 8, r.y0 + 10.0f, 0.85f, 1, 1, 1, 1);
-
-            UIRect minusR = GetSensitivityMinusRect();
-            bool hoverMinus = PointInRect(g_mouseX, g_mouseY, minusR);
-            UIDrawRect(glyphVerts, minusR.x0, minusR.y0, minusR.x1, minusR.y1,
-                       hoverMinus ? 0.36f : 0.26f, hoverMinus ? 0.36f : 0.26f, hoverMinus ? 0.42f : 0.30f, 1);
-            UIDrawText(glyphVerts, "-", minusR.x0 + (minusR.x1 - minusR.x0) / 2.0f - UI_CELL_W * 0.4f, minusR.y0 + 2, 0.8f, 1, 1, 1, 1);
-
-            UIRect plusR = GetSensitivityPlusRect();
-            bool hoverPlus = PointInRect(g_mouseX, g_mouseY, plusR);
-            UIDrawRect(glyphVerts, plusR.x0, plusR.y0, plusR.x1, plusR.y1,
-                       hoverPlus ? 0.36f : 0.26f, hoverPlus ? 0.36f : 0.26f, hoverPlus ? 0.42f : 0.30f, 1);
-            UIDrawText(glyphVerts, "+", plusR.x0 + (plusR.x1 - plusR.x0) / 2.0f - UI_CELL_W * 0.4f, plusR.y0 + 2, 0.8f, 1, 1, 1, 1);
-        }
-
-        drawButtonRow(ROW_INVERT_Y, g_invertY ? "INVERT Y LOOK: ON" : "INVERT Y LOOK: OFF");
-        drawButtonRow(ROW_SAVE, "SAVE GAME");
-        drawButtonRow(ROW_LOAD, "LOAD GAME");
-        drawButtonRow(ROW_QUIT, "QUIT");
+        drawRowButton(GetSubRowRect(SUBROW_INVERT_X), g_invertX ? "INVERT X LOOK: ON" : "INVERT X LOOK: OFF");
+        drawSliderRow(SUBROW_SENS_X, "X SENSITIVITY", g_sensitivityMultX);
+        drawRowButton(GetSubRowRect(SUBROW_INVERT_Y), g_invertY ? "INVERT Y LOOK: ON" : "INVERT Y LOOK: OFF");
+        drawSliderRow(SUBROW_SENS_Y, "Y SENSITIVITY", g_sensitivityMultY);
+        drawRowButton(GetSubRowRect(SUBROW_BACK), "BACK");
     }
 
     // Transient save/load confirmation -- fades over its last half
@@ -1767,6 +1977,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
     if (!InitD3D(g_hwnd)) return -1;
     if (!InitTextures()) return -1;
     BuildPipeMeshes();
+    BuildSkyMesh();
 
     LARGE_INTEGER freq, lastTime;
     QueryPerformanceFrequency(&freq);
@@ -1808,9 +2019,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
             POINT center = { (rc.right - rc.left) / 2, (rc.bottom - rc.top) / 2 };
             ClientToScreen(g_hwnd, &center);
             int dx = cursor.x - center.x, dy = cursor.y - center.y;
-            float sens = BASE_MOUSE_SENS * g_sensitivityMult;
-            g_player.yaw += dx * sens;
-            g_player.pitch += (g_invertY ? dy : -dy) * sens;
+            float sensX = BASE_MOUSE_SENS * g_sensitivityMultX;
+            float sensY = BASE_MOUSE_SENS * g_sensitivityMultY;
+            g_player.yaw += (g_invertX ? -dx : dx) * sensX;
+            g_player.pitch += (g_invertY ? dy : -dy) * sensY;
             if (g_player.pitch > 1.55f) g_player.pitch = 1.55f;
             if (g_player.pitch < -1.55f) g_player.pitch = -1.55f;
             SetCursorPos(center.x, center.y);
@@ -1821,7 +2033,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
         // pause menu is open the world is frozen and the accumulator is
         // dropped rather than left to build up, so resuming doesn't
         // trigger a burst of catch-up ticks for however long it was paused.
-        if (g_menuOpen) {
+        if (g_menuScreen != MenuScreen::None) {
             accumulator = 0.0f;
         } else {
             while (accumulator >= FIXED_DT) {
@@ -1856,6 +2068,32 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
         const float PI_OVER_4 = 0.78539816339f;
         Mat4 proj = MatPerspectiveFovLH(PI_OVER_4, (float)SCREEN_W / SCREEN_H, 0.1f, 500.0f);
         Mat4 viewProj = MatMul(view, proj);
+
+        // Sky pass: depth off (reusing the UI pass's depth-disabled
+        // state), drawn before the opaque world pass so normal depth-
+        // tested geometry always overdraws it regardless of the sky
+        // box's actual size. Its view matrix drops the eye position
+        // (rotation only) so the sky rotates with the camera but never
+        // translates with it, same as any conventional skybox.
+        {
+            Mat4 skyView = MatLookToLH({ 0, 0, 0 }, f, u);
+            Mat4 skyViewProj = MatMul(skyView, proj);
+            g_context->OMSetDepthStencilState(g_uiDepthState, 0);
+            g_context->VSSetShader(g_skyVS, nullptr, 0);
+            g_context->PSSetShader(g_skyPS, nullptr, 0);
+            g_context->IASetInputLayout(g_skyLayout);
+            g_context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+            g_context->VSSetConstantBuffers(0, 1, &g_skyCBuffer);
+            D3D11_MAPPED_SUBRESOURCE mapped;
+            g_context->Map(g_skyCBuffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
+            *(Mat4*)mapped.pData = skyViewProj;
+            g_context->Unmap(g_skyCBuffer, 0);
+            UINT skyStride = sizeof(SkyVertex), skyOffset = 0;
+            g_context->IASetVertexBuffers(0, 1, &g_skyVB, &skyStride, &skyOffset);
+            g_context->IASetIndexBuffer(g_skyIB, DXGI_FORMAT_R32_UINT, 0);
+            g_context->DrawIndexed(g_skyIndexCount, 0, 0);
+            g_context->OMSetDepthStencilState(g_depthState, 0);
+        }
 
         g_context->VSSetShader(g_vs, nullptr, 0);
         g_context->PSSetShader(g_ps, nullptr, 0);
