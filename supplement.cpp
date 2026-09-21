@@ -20,6 +20,9 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <cmath>
+#include <vector>
+#include <random>
 
 #pragma comment(lib, "gdiplus.lib")
 
@@ -251,4 +254,139 @@ extern "C" bool GenerateUIAtlas(
     *outW = w;
     *outH = h;
     return true;
+}
+
+// ---------------------------------------------------------------------
+// Procedural ambient audio (Section 9). One deterministic, seamlessly-
+// looping background track, synthesized entirely in code -- same "we
+// generate our own assets" approach as the textures above, so there is
+// no external audio asset and nothing to license. It draws on a wider
+// palette of experiments (drones, harmonic pads, filtered-noise "air"
+// beds), but deliberately without any of that palette's randomized
+// bursts/whistles: per an explicit accessibility goal, nothing in this
+// track ever produces a sudden or unpredictable loud event.
+//
+// Loop-seam handling: the tonal pad (root drone + a fifth an octave up
+// + a gently vibratoed shimmer, under a slow amplitude swell) is built
+// by phase accumulation with every oscillation/modulation rate chosen
+// so it completes an exact integer number of cycles across the loop
+// length. That makes it mathematically periodic -- it loops with no
+// seam and needs no crossfade. The noise "air" bed has no such natural
+// periodicity (it's filtered noise, not an oscillator), so its own tail
+// is blended into its own head with a short equal-power crossfade
+// before the two layers are mixed together.
+// ---------------------------------------------------------------------
+
+static const int kAudioSampleRate = 44100;
+static const double kAudioPI = 3.14159265358979323846;
+static const double kLoopSeconds = 20.0;
+static const double kCrossfadeSeconds = 2.0;
+
+struct OnePoleLowpass {
+    double a0 = 1.0, b1 = 0.0, z1 = 0.0;
+    void SetCutoff(double hz) {
+        double x = std::exp(-2.0 * kAudioPI * hz / kAudioSampleRate);
+        b1 = x;
+        a0 = 1.0 - x;
+    }
+    double Process(double in) {
+        double out = a0 * in + b1 * z1;
+        z1 = out;
+        return out;
+    }
+};
+
+// Filtered white noise, its own tail crossfaded into its own head so it
+// loops seamlessly across `n` samples despite having no natural period.
+static std::vector<double> BuildNoiseBed(int n, double cutoffHz, unsigned seed) {
+    std::vector<double> raw(n);
+    std::mt19937 rng(seed);
+    std::uniform_real_distribution<double> dist(-1.0, 1.0);
+    OnePoleLowpass lp;
+    lp.SetCutoff(cutoffHz);
+    for (int i = 0; i < n; i++) raw[i] = lp.Process(dist(rng));
+
+    int xfade = (int)(kCrossfadeSeconds * kAudioSampleRate);
+    if (xfade > 0 && xfade * 2 < n) {
+        for (int k = 0; k < xfade; k++) {
+            double t = (double)k / (double)(xfade - 1);
+            double wIn = std::sin(t * kAudioPI * 0.5);  wIn *= wIn;   // head fades in
+            double wOut = std::cos(t * kAudioPI * 0.5); wOut *= wOut; // tail fades out
+            int i = n - xfade + k;
+            raw[i] = raw[i] * wOut + raw[k] * wIn;
+        }
+    }
+    return raw;
+}
+
+// A calm tonal pad: root drone + a fifth an octave up + a gently
+// vibratoed high shimmer, under a slow overall amplitude swell. Every
+// frequency and modulation rate is chosen so (rate * kLoopSeconds) is
+// an exact integer -- the whole layer is therefore mathematically
+// periodic over the loop and needs no crossfade to avoid a seam.
+static std::vector<double> BuildTonalPad(int n) {
+    std::vector<double> out(n, 0.0);
+
+    const double root = 44.0;          // 44 * 20 = 880 exact cycles
+    const double fifth = 132.0;        // an octave + a perfect fifth above the root
+    const double shimmerBase = 308.0;
+    const double shimmerDepth = 4.0;
+    const double shimmerLfoHz = 0.10;  // 0.10 * 20 = 2 exact cycles
+    const double swellHz = 0.05;       // 0.05 * 20 = 1 exact cycle
+
+    double rootPhase = 0.0, fifthPhase = 0.0, shimmerPhase = 0.0, lfoPhase = 0.0, swellPhase = 0.0;
+    for (int i = 0; i < n; i++) {
+        rootPhase += 2.0 * kAudioPI * root / kAudioSampleRate;
+        fifthPhase += 2.0 * kAudioPI * fifth / kAudioSampleRate;
+        lfoPhase += 2.0 * kAudioPI * shimmerLfoHz / kAudioSampleRate;
+        double instFreq = shimmerBase + shimmerDepth * std::sin(lfoPhase);
+        shimmerPhase += 2.0 * kAudioPI * instFreq / kAudioSampleRate;
+        swellPhase += 2.0 * kAudioPI * swellHz / kAudioSampleRate;
+
+        double swell = 0.85 + 0.15 * std::sin(swellPhase);
+        double tone = std::sin(rootPhase) * 0.50
+                    + std::sin(fifthPhase) * 0.28
+                    + std::sin(shimmerPhase) * 0.12;
+        out[i] = tone * swell;
+    }
+    return out;
+}
+
+extern "C" bool GenerateAmbientTrack(int16_t** outPCM, uint32_t* outSampleCount, uint32_t* outSampleRate) {
+    int n = (int)(kLoopSeconds * kAudioSampleRate);
+
+    std::vector<double> tonal = BuildTonalPad(n);
+    std::vector<double> air = BuildNoiseBed(n, 900.0, 90210u);
+
+    std::vector<double> mix(n);
+    double sumSq = 0.0;
+    for (int i = 0; i < n; i++) {
+        double v = tonal[i] * 0.85 + air[i] * 0.30;
+        mix[i] = v;
+        sumSq += v * v;
+    }
+
+    // RMS-based normalization (rather than peak-based) so loudness stays
+    // consistent if more tracks are added later, with generous headroom
+    // below clipping since Master/Music sliders only ever attenuate.
+    double rms = std::sqrt(sumSq / (double)n);
+    const double targetRms = 0.20;
+    double scale = (rms > 1e-9) ? (targetRms / rms) : 1.0;
+
+    int16_t* pcm = new int16_t[n];
+    for (int i = 0; i < n; i++) {
+        double v = mix[i] * scale;
+        if (v > 1.0) v = 1.0;
+        if (v < -1.0) v = -1.0;
+        pcm[i] = (int16_t)(v * 32767.0);
+    }
+
+    *outPCM = pcm;
+    *outSampleCount = (uint32_t)n;
+    *outSampleRate = (uint32_t)kAudioSampleRate;
+    return true;
+}
+
+extern "C" void FreeGeneratedAudio(int16_t* p) {
+    delete[] p;
 }

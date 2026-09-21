@@ -18,12 +18,15 @@
 #include <shlobj.h> // SHGetKnownFolderPath, for locating the save directory (Section 7)
 #include <d3d11.h>
 #include <d3dcompiler.h>
+#include <xaudio2.h> // procedural music playback (Section 9)
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <cmath>
 #include <cfloat>
 #include <string>
+#include <sstream>
 #include <vector>
 #include <deque>
 #include <unordered_map>
@@ -41,6 +44,7 @@
 #pragma comment(lib, "shell32.lib")
 #pragma comment(lib, "ole32.lib")
 #pragma comment(lib, "uuid.lib") // provides the FOLDERID_* GUID data (declared, not defined, in knownfolders.h)
+#pragma comment(lib, "xaudio2.lib")
 
 // ---------------------------------------------------------------------
 // Minimal linear algebra. The mingw-w64 port of DirectXMath only carries
@@ -130,6 +134,11 @@ extern "C" void FreeGeneratedPixels(uint8_t* p);
 extern "C" bool GenerateUIAtlas(
     int cellW, int cellH, int cols, int rows,
     uint8_t** outPixelsBGRA, int* outW, int* outH);
+// One deterministic, seamlessly-looping ambient track, synthesized
+// entirely in code the same way the textures above are (Section 9) --
+// no external audio asset, nothing to license.
+extern "C" bool GenerateAmbientTrack(int16_t** outPCM, uint32_t* outSampleCount, uint32_t* outSampleRate);
+extern "C" void FreeGeneratedAudio(int16_t* p);
 
 // =======================================================================
 // Part II/III - World representation and block model
@@ -1059,12 +1068,14 @@ static float g_sensitivityMultX = 1.0f, g_sensitivityMultY = 1.0f;
 static bool g_invertX = false, g_invertY = false;
 static bool g_showFPS = false;
 static float g_masterVolume = 1.0f;
+static float g_musicVolume = 1.0f;
+static void ApplyAudioVolumes(); // defined in Section 9 (Audio); LoadGame's legacy-settings path needs it before that section exists
 
 // =======================================================================
 // Part VII - Save / load (crash-safe, versioned, name-indexed)
 // =======================================================================
 
-static const uint32_t SAVE_VERSION = 2; // v2 adds the settings block (sensitivity/invert/render distance/FPS/volume/keybindings)
+static const uint32_t SAVE_VERSION = 3; // v3 drops the embedded settings block -- settings now live in the separate global settings.cfg (Section 7.2.3), independent of any world save. v2 files (the block-in-save format) are still loadable: their settings are migrated into settings.cfg once, on first encounter, rather than rejected.
 
 // Resolves (creating if needed) Documents\My Games\Voxistics -- the
 // conventional PC-game save location: visible and easy for players to
@@ -1112,6 +1123,88 @@ static std::filesystem::path GetSaveFilePath() {
     std::filesystem::path dir = GetSaveDirectory();
     std::filesystem::path filename = L"voxelproto.sav";
     return dir.empty() ? filename : dir / filename;
+}
+
+// =======================================================================
+// Section 7.2.3 - Global settings file
+// =======================================================================
+//
+// Gameplay/UI preferences (sensitivity, inversion, render distance, the
+// FPS toggle, volumes, keybindings) live in their own small text file,
+// separate from any world save, so they're available before any save is
+// loaded (e.g. a title screen's Options) and carry over between saves
+// rather than being tied to one. Plain "key=value" lines rather than the
+// versioned binary format saves use: it's a handful of scalars a player
+// might reasonably want to hand-edit or inspect, and forward/backward
+// compatibility just falls out of "unknown keys are ignored, missing
+// keys keep their compiled-in default" with no version field needed.
+static std::filesystem::path GetSettingsFilePath() {
+    std::filesystem::path dir = GetSaveDirectory(); // same bulletproofed directory as the save file
+    std::filesystem::path filename = L"settings.cfg";
+    return dir.empty() ? filename : dir / filename;
+}
+
+static bool SaveSettings() {
+    std::ostringstream ss;
+    ss << "sensitivityX=" << g_sensitivityMultX << "\n";
+    ss << "sensitivityY=" << g_sensitivityMultY << "\n";
+    ss << "invertX=" << (g_invertX ? 1 : 0) << "\n";
+    ss << "invertY=" << (g_invertY ? 1 : 0) << "\n";
+    ss << "renderDistance=" << g_loadRadius << "\n";
+    ss << "showFPS=" << (g_showFPS ? 1 : 0) << "\n";
+    ss << "masterVolume=" << g_masterVolume << "\n";
+    ss << "musicVolume=" << g_musicVolume << "\n";
+    for (int i = 0; i < ACT_COUNT; i++) {
+        ss << "keybind." << g_actionNames[i] << "=" << g_keyBindings[i] << "\n"; // name-indexed, same reasoning as g_blockNames
+    }
+
+    namespace fs = std::filesystem;
+    fs::path path = GetSettingsFilePath();
+    fs::path tmpPath = path; tmpPath += L".tmp";
+    {
+        std::ofstream out(tmpPath, std::ios::binary | std::ios::trunc);
+        if (!out) return false;
+        std::string data = ss.str();
+        out.write(data.data(), (std::streamsize)data.size());
+        if (!out) return false;
+    }
+    std::error_code ec;
+    fs::rename(tmpPath, path, ec);
+    return !ec;
+}
+
+// Missing file (first run) or missing/unrecognized individual keys
+// (an older settings.cfg from before some setting existed) both just
+// keep whatever the caller's compiled-in default already was -- loading
+// settings can only ever refine current state, never fail outright.
+static void LoadSettings() {
+    std::ifstream in(GetSettingsFilePath());
+    if (!in) return;
+
+    std::unordered_map<std::string, std::string> kv;
+    std::string line;
+    while (std::getline(in, line)) {
+        size_t eq = line.find('=');
+        if (eq == std::string::npos) continue;
+        kv[line.substr(0, eq)] = line.substr(eq + 1);
+    }
+
+    auto getF = [&](const char* k, float def) { auto it = kv.find(k); return it == kv.end() ? def : (float)atof(it->second.c_str()); };
+    auto getI = [&](const char* k, int def) { auto it = kv.find(k); return it == kv.end() ? def : atoi(it->second.c_str()); };
+    auto getB = [&](const char* k, bool def) { auto it = kv.find(k); return it == kv.end() ? def : (atoi(it->second.c_str()) != 0); };
+
+    g_sensitivityMultX = getF("sensitivityX", g_sensitivityMultX);
+    g_sensitivityMultY = getF("sensitivityY", g_sensitivityMultY);
+    g_invertX = getB("invertX", g_invertX);
+    g_invertY = getB("invertY", g_invertY);
+    g_loadRadius = getI("renderDistance", g_loadRadius);
+    g_showFPS = getB("showFPS", g_showFPS);
+    g_masterVolume = getF("masterVolume", g_masterVolume);
+    g_musicVolume = getF("musicVolume", g_musicVolume);
+    for (int i = 0; i < ACT_COUNT; i++) {
+        std::string key = std::string("keybind.") + g_actionNames[i];
+        g_keyBindings[i] = getI(key.c_str(), g_keyBindings[i]);
+    }
 }
 
 static uint32_t Fnv1a(const uint8_t* data, size_t len) {
@@ -1164,18 +1257,8 @@ static bool SaveGame(World& w, Player& p) {
     AppendF32(buf, p.yaw); AppendF32(buf, p.pitch);
     AppendI32(buf, p.hotbarIndex);
 
-    // Settings: gameplay/UI preferences saved alongside player state,
-    // per request, rather than as a separate global config file.
-    AppendF32(buf, g_sensitivityMultX); AppendF32(buf, g_sensitivityMultY);
-    AppendU8(buf, g_invertX ? 1 : 0); AppendU8(buf, g_invertY ? 1 : 0);
-    AppendI32(buf, g_loadRadius);
-    AppendU8(buf, g_showFPS ? 1 : 0);
-    AppendF32(buf, g_masterVolume);
-    AppendU32(buf, ACT_COUNT);
-    for (int i = 0; i < ACT_COUNT; i++) {
-        AppendStr(buf, g_actionNames[i]); // name-indexed, same reasoning as g_blockNames (Section 3.1)
-        AppendI32(buf, g_keyBindings[i]);
-    }
+    // No settings block as of v3 -- gameplay/UI preferences live in the
+    // separate global settings.cfg (Section 7.2.3) now, not here.
 
     AppendU32(buf, BLOCK_COUNT);
     for (int i = 0; i < BLOCK_COUNT; i++) AppendStr(buf, g_blockNames[i]);
@@ -1255,31 +1338,45 @@ static bool LoadGame(World& w, Player& p) {
         return false;
     }
     uint32_t version = r.ReadU32();
-    if (version != SAVE_VERSION) {
+    // v2 (settings embedded in the save) is still loadable, not just v3
+    // (Section 7.2.3) -- its world/player data is identical to v3's,
+    // just followed by a settings block v3 no longer has. Migrating that
+    // block into the new settings.cfg is strictly better for the player
+    // than refusing to load an otherwise-fine world.
+    if (version != 2 && version != SAVE_VERSION) {
         OutputDebugStringA("LoadGame: unsupported version, aborting load\n");
         return false;
     }
+    bool hasLegacySettings = (version == 2);
 
     Player loaded;
     loaded.x = r.ReadF32(); loaded.y = r.ReadF32(); loaded.z = r.ReadF32();
     loaded.yaw = r.ReadF32(); loaded.pitch = r.ReadF32();
     loaded.hotbarIndex = r.ReadI32();
 
-    // Settings: read into locals first, same as the rest of this
-    // function -- nothing gets applied to live state until the whole
-    // load is known to be valid.
-    float loadedSensX = r.ReadF32(), loadedSensY = r.ReadF32();
-    bool loadedInvertX = r.ReadU8() != 0, loadedInvertY = r.ReadU8() != 0;
-    int32_t loadedRenderDist = r.ReadI32();
-    bool loadedShowFPS = r.ReadU8() != 0;
-    float loadedVolume = r.ReadF32();
-    uint32_t bindCount = r.ReadU32();
-    std::vector<std::pair<std::string, int32_t>> loadedBindings(bindCount);
-    for (uint32_t i = 0; i < bindCount; i++) {
-        loadedBindings[i].first = r.ReadStr();
-        loadedBindings[i].second = r.ReadI32();
+    // Legacy (v2-only) settings block: read into locals first, same as
+    // the rest of this function -- nothing gets applied to live state
+    // until the whole load is known to be valid. Absent entirely on v3.
+    float loadedSensX = 0, loadedSensY = 0;
+    bool loadedInvertX = false, loadedInvertY = false;
+    int32_t loadedRenderDist = 0;
+    bool loadedShowFPS = false;
+    float loadedVolume = 0;
+    std::vector<std::pair<std::string, int32_t>> loadedBindings;
+    if (hasLegacySettings) {
+        loadedSensX = r.ReadF32(); loadedSensY = r.ReadF32();
+        loadedInvertX = r.ReadU8() != 0; loadedInvertY = r.ReadU8() != 0;
+        loadedRenderDist = r.ReadI32();
+        loadedShowFPS = r.ReadU8() != 0;
+        loadedVolume = r.ReadF32();
+        uint32_t bindCount = r.ReadU32();
+        loadedBindings.resize(bindCount);
+        for (uint32_t i = 0; i < bindCount; i++) {
+            loadedBindings[i].first = r.ReadStr();
+            loadedBindings[i].second = r.ReadI32();
+        }
+        if (!r.ok) return false;
     }
-    if (!r.ok) return false;
 
     uint32_t nameCount = r.ReadU32();
     std::vector<std::string> savedNames(nameCount);
@@ -1317,25 +1414,36 @@ static bool LoadGame(World& w, Player& p) {
     w.chunks = std::move(fresh.chunks);
     p = loaded;
 
-    g_sensitivityMultX = loadedSensX; g_sensitivityMultY = loadedSensY;
-    g_invertX = loadedInvertX; g_invertY = loadedInvertY;
-    g_loadRadius = loadedRenderDist;
-    g_showFPS = loadedShowFPS;
-    g_masterVolume = loadedVolume;
-    // Remap saved keybinding action names -> current GameAction indices,
-    // the same name-indexed pattern as the block remap above (Section
-    // 3.1): an unrecognized action name is skipped with a warning
-    // instead of corrupting some other action's binding, and any action
-    // absent from the save simply keeps its pre-load value.
-    for (auto& kv : loadedBindings) {
-        bool found = false;
-        for (int a = 0; a < ACT_COUNT; a++) {
-            if (kv.first == g_actionNames[a]) { g_keyBindings[a] = kv.second; found = true; break; }
+    if (hasLegacySettings) {
+        g_sensitivityMultX = loadedSensX; g_sensitivityMultY = loadedSensY;
+        g_invertX = loadedInvertX; g_invertY = loadedInvertY;
+        g_loadRadius = loadedRenderDist;
+        g_showFPS = loadedShowFPS;
+        g_masterVolume = loadedVolume;
+        // Remap saved keybinding action names -> current GameAction indices,
+        // the same name-indexed pattern as the block remap above (Section
+        // 3.1): an unrecognized action name is skipped with a warning
+        // instead of corrupting some other action's binding, and any action
+        // absent from the save simply keeps its pre-load value.
+        for (auto& kv : loadedBindings) {
+            bool found = false;
+            for (int a = 0; a < ACT_COUNT; a++) {
+                if (kv.first == g_actionNames[a]) { g_keyBindings[a] = kv.second; found = true; break; }
+            }
+            if (!found) {
+                char msg[256];
+                snprintf(msg, sizeof(msg), "LoadGame: unknown action name '%s', ignoring binding\n", kv.first.c_str());
+                OutputDebugStringA(msg);
+            }
         }
-        if (!found) {
-            char msg[256];
-            snprintf(msg, sizeof(msg), "LoadGame: unknown action name '%s', ignoring binding\n", kv.first.c_str());
-            OutputDebugStringA(msg);
+        ApplyAudioVolumes();
+
+        // One-time migration (Section 7.2.3): seed the new global config
+        // from this legacy save's settings, but only if nothing has
+        // created settings.cfg yet -- once it exists, it's the source of
+        // truth and this block never overwrites it again.
+        if (!std::filesystem::exists(GetSettingsFilePath())) {
+            SaveSettings();
         }
     }
 
@@ -1616,6 +1724,71 @@ static bool InitTextures() {
 }
 
 // =======================================================================
+// Section 9 - Audio (XAudio2 playback of the procedural ambient track)
+// =======================================================================
+//
+// One persistent source voice loops the single ambient track generated
+// once at startup (supplement.cpp) for as long as the process runs.
+// There is only a "Music" channel so far -- no sound effects -- but
+// Master and Music are already separate settings/sliders so adding SFX
+// voices later is just more source voices under the same mastering
+// voice, not a change to the mixing model.
+
+static IXAudio2* g_xaudio2 = nullptr;
+static IXAudio2MasteringVoice* g_masteringVoice = nullptr;
+static IXAudio2SourceVoice* g_musicVoice = nullptr;
+static int16_t* g_musicPCM = nullptr;
+
+static void ApplyAudioVolumes() {
+    if (g_musicVoice) g_musicVoice->SetVolume(g_masterVolume * g_musicVolume);
+}
+
+// Failure anywhere here (no audio device, driver issue, etc.) leaves
+// every g_* pointer null and every subsequent audio call a silent no-op
+// via the null checks in ApplyAudioVolumes/ShutdownAudio -- a machine
+// with no usable audio device still gets a fully playable game, just a
+// silent one, rather than a startup failure.
+static bool InitAudio() {
+    if (FAILED(XAudio2Create(&g_xaudio2, 0, XAUDIO2_DEFAULT_PROCESSOR))) return false;
+    if (FAILED(g_xaudio2->CreateMasteringVoice(&g_masteringVoice))) return false;
+
+    uint32_t sampleCount = 0, sampleRate = 0;
+    if (!GenerateAmbientTrack(&g_musicPCM, &sampleCount, &sampleRate)) return false;
+
+    WAVEFORMATEX wfx = {};
+    wfx.wFormatTag = WAVE_FORMAT_PCM;
+    wfx.nChannels = 1;
+    wfx.nSamplesPerSec = sampleRate;
+    wfx.wBitsPerSample = 16;
+    wfx.nBlockAlign = (WORD)((wfx.nChannels * wfx.wBitsPerSample) / 8);
+    wfx.nAvgBytesPerSec = wfx.nSamplesPerSec * wfx.nBlockAlign;
+
+    if (FAILED(g_xaudio2->CreateSourceVoice(&g_musicVoice, &wfx))) return false;
+
+    // LoopCount=INFINITE plays this same buffer forever without
+    // re-submitting -- XAudio2 reads pAudioData directly rather than
+    // copying it, so g_musicPCM has to stay alive as long as the voice
+    // does (freed only in ShutdownAudio).
+    XAUDIO2_BUFFER buf = {};
+    buf.AudioBytes = sampleCount * sizeof(int16_t);
+    buf.pAudioData = (const BYTE*)g_musicPCM;
+    buf.LoopCount = XAUDIO2_LOOP_INFINITE;
+    buf.Flags = XAUDIO2_END_OF_STREAM;
+
+    ApplyAudioVolumes();
+    if (FAILED(g_musicVoice->SubmitSourceBuffer(&buf))) return false;
+    g_musicVoice->Start();
+    return true;
+}
+
+static void ShutdownAudio() {
+    if (g_musicVoice) { g_musicVoice->Stop(); g_musicVoice->DestroyVoice(); g_musicVoice = nullptr; }
+    if (g_masteringVoice) { g_masteringVoice->DestroyVoice(); g_masteringVoice = nullptr; }
+    if (g_xaudio2) { g_xaudio2->Release(); g_xaudio2 = nullptr; }
+    if (g_musicPCM) { FreeGeneratedAudio(g_musicPCM); g_musicPCM = nullptr; }
+}
+
+// =======================================================================
 // wWinMain / message loop
 // =======================================================================
 
@@ -1711,13 +1884,12 @@ enum GraphicsRow { GROW_RENDER_DIST = 0, GROW_RESET = 1, GROW_BACK = 2 };
 static const SubmenuLayout DISPLAY_LAYOUT  = { 340.0f, 40.0f, 12.0f, 70.0f, 20.0f, 3 };
 enum DisplayRow { DROW_SHOW_FPS = 0, DROW_RESET = 1, DROW_BACK = 2 };
 
-// Audio: genuinely a placeholder -- there is no audio backend in this
-// prototype at all (no XAudio2/WASAPI, no sound loading), so Master
-// Volume is a value that gets stored and will do something once a real
-// backend exists, not a control with an audible effect today. Labeled
-// as such on-screen rather than implying it already works.
-static const SubmenuLayout AUDIO_LAYOUT    = { 380.0f, 56.0f, 12.0f, 92.0f, 20.0f, 3 }; // extra top margin fits the "no backend" note under the title
-enum AudioRow { AROW_VOLUME = 0, AROW_RESET = 1, AROW_BACK = 2 };
+// Audio: Master and Music sliders, backed by a real XAudio2 voice
+// (Section 9) playing the procedural ambient track. Separate channels
+// now even though Music is the only one with anything to play yet, so a
+// future SFX channel is one more slider, not a remix of this one.
+static const SubmenuLayout AUDIO_LAYOUT    = { 380.0f, 56.0f, 12.0f, 70.0f, 20.0f, 4 };
+enum AudioRow { AROW_MASTER_VOLUME = 0, AROW_MUSIC_VOLUME = 1, AROW_RESET = 2, AROW_BACK = 3 };
 
 // Keybindings: every action bindable to any keyboard key or the left/
 // right/middle mouse button (GameAction/g_actionNames/g_keyBindings/
@@ -1784,12 +1956,12 @@ static void ResetGraphicsSettings() {
     g_lastPlayerChunkX = INT32_MIN; g_lastPlayerChunkZ = INT32_MIN; // force a rescan at the new radius
 }
 static void ResetDisplaySettings() { g_showFPS = false; }
-static void ResetAudioSettings() { g_masterVolume = 1.0f; }
+static void ResetAudioSettings() { g_masterVolume = 1.0f; g_musicVolume = 1.0f; ApplyAudioVolumes(); }
 
 // A handful of settings are sliders rather than toggles/buttons. One
 // small generic slider system (value/range/row-rect all looked up by
 // ID) instead of one-off X-sensitivity-shaped code repeated per slider.
-enum SliderId { SLIDER_NONE = -1, SLIDER_SENS_X = 0, SLIDER_SENS_Y = 1, SLIDER_RENDER_DIST = 2, SLIDER_VOLUME = 3 };
+enum SliderId { SLIDER_NONE = -1, SLIDER_SENS_X = 0, SLIDER_SENS_Y = 1, SLIDER_RENDER_DIST = 2, SLIDER_MASTER_VOLUME = 3, SLIDER_MUSIC_VOLUME = 4 };
 static int g_draggingSlider = SLIDER_NONE;
 
 struct SliderRange { float minV, maxV; };
@@ -1797,7 +1969,7 @@ static SliderRange GetSliderRange(int id) {
     switch (id) {
     case SLIDER_SENS_X: case SLIDER_SENS_Y: return { SENS_MIN, SENS_MAX };
     case SLIDER_RENDER_DIST: return { 1.0f, 8.0f };
-    case SLIDER_VOLUME: return { 0.0f, 1.0f };
+    case SLIDER_MASTER_VOLUME: case SLIDER_MUSIC_VOLUME: return { 0.0f, 1.0f };
     default: return { 0.0f, 1.0f };
     }
 }
@@ -1808,7 +1980,8 @@ static UIRect GetSliderRowRect(int id) {
     case SLIDER_SENS_X: return SubmenuRowRect(LOOK_LAYOUT, LROW_SENS_X);
     case SLIDER_SENS_Y: return SubmenuRowRect(LOOK_LAYOUT, LROW_SENS_Y);
     case SLIDER_RENDER_DIST: return SubmenuRowRect(GRAPHICS_LAYOUT, GROW_RENDER_DIST);
-    case SLIDER_VOLUME: return SubmenuRowRect(AUDIO_LAYOUT, AROW_VOLUME);
+    case SLIDER_MASTER_VOLUME: return SubmenuRowRect(AUDIO_LAYOUT, AROW_MASTER_VOLUME);
+    case SLIDER_MUSIC_VOLUME: return SubmenuRowRect(AUDIO_LAYOUT, AROW_MUSIC_VOLUME);
     default: return { 0, 0, 0, 0 };
     }
 }
@@ -1817,7 +1990,8 @@ static float GetSliderValue(int id) {
     case SLIDER_SENS_X: return g_sensitivityMultX;
     case SLIDER_SENS_Y: return g_sensitivityMultY;
     case SLIDER_RENDER_DIST: return (float)g_loadRadius;
-    case SLIDER_VOLUME: return g_masterVolume;
+    case SLIDER_MASTER_VOLUME: return g_masterVolume;
+    case SLIDER_MUSIC_VOLUME: return g_musicVolume;
     default: return 0.0f;
     }
 }
@@ -1833,7 +2007,8 @@ static void SetSliderValue(int id, float v) {
         }
         break;
     }
-    case SLIDER_VOLUME: g_masterVolume = v; break;
+    case SLIDER_MASTER_VOLUME: g_masterVolume = v; ApplyAudioVolumes(); break;
+    case SLIDER_MUSIC_VOLUME: g_musicVolume = v; ApplyAudioVolumes(); break;
     }
 }
 static std::string GetSliderLabel(int id) {
@@ -1842,7 +2017,8 @@ static std::string GetSliderLabel(int id) {
     case SLIDER_SENS_X: snprintf(buf, sizeof(buf), "X SENSITIVITY: %.2fx", g_sensitivityMultX); break;
     case SLIDER_SENS_Y: snprintf(buf, sizeof(buf), "Y SENSITIVITY: %.2fx", g_sensitivityMultY); break;
     case SLIDER_RENDER_DIST: snprintf(buf, sizeof(buf), "RENDER DISTANCE: %d CHUNKS", g_loadRadius); break;
-    case SLIDER_VOLUME: snprintf(buf, sizeof(buf), "MASTER VOLUME: %d%%", (int)(g_masterVolume * 100.0f + 0.5f)); break;
+    case SLIDER_MASTER_VOLUME: snprintf(buf, sizeof(buf), "MASTER VOLUME: %d%%", (int)(g_masterVolume * 100.0f + 0.5f)); break;
+    case SLIDER_MUSIC_VOLUME: snprintf(buf, sizeof(buf), "MUSIC VOLUME: %d%%", (int)(g_musicVolume * 100.0f + 0.5f)); break;
     default: buf[0] = 0;
     }
     return buf;
@@ -1898,33 +2074,34 @@ static void HandleMenuClick(int mx, int my) {
 }
 
 static void HandleLookSettingsClick(int mx, int my) {
-    if (PointInRect(mx, my, SubmenuRowRect(LOOK_LAYOUT, LROW_INVERT_X))) { g_invertX = !g_invertX; return; }
-    if (PointInRect(mx, my, SubmenuRowRect(LOOK_LAYOUT, LROW_INVERT_Y))) { g_invertY = !g_invertY; return; }
+    if (PointInRect(mx, my, SubmenuRowRect(LOOK_LAYOUT, LROW_INVERT_X))) { g_invertX = !g_invertX; SaveSettings(); return; }
+    if (PointInRect(mx, my, SubmenuRowRect(LOOK_LAYOUT, LROW_INVERT_Y))) { g_invertY = !g_invertY; SaveSettings(); return; }
     if (PointInRect(mx, my, GetSliderHitRect(SubmenuRowRect(LOOK_LAYOUT, LROW_SENS_X)))) { BeginSliderDrag(SLIDER_SENS_X, mx); return; }
     if (PointInRect(mx, my, GetSliderHitRect(SubmenuRowRect(LOOK_LAYOUT, LROW_SENS_Y)))) { BeginSliderDrag(SLIDER_SENS_Y, mx); return; }
-    if (PointInRect(mx, my, SubmenuRowRect(LOOK_LAYOUT, LROW_RESET))) { ResetLookSettings(); return; }
+    if (PointInRect(mx, my, SubmenuRowRect(LOOK_LAYOUT, LROW_RESET))) { ResetLookSettings(); SaveSettings(); return; }
     if (PointInRect(mx, my, SubmenuRowRect(LOOK_LAYOUT, LROW_BACK))) { g_menuScreen = MenuScreen::Pause; return; }
 }
 static void HandleGraphicsClick(int mx, int my) {
     if (PointInRect(mx, my, GetSliderHitRect(SubmenuRowRect(GRAPHICS_LAYOUT, GROW_RENDER_DIST)))) { BeginSliderDrag(SLIDER_RENDER_DIST, mx); return; }
-    if (PointInRect(mx, my, SubmenuRowRect(GRAPHICS_LAYOUT, GROW_RESET))) { ResetGraphicsSettings(); return; }
+    if (PointInRect(mx, my, SubmenuRowRect(GRAPHICS_LAYOUT, GROW_RESET))) { ResetGraphicsSettings(); SaveSettings(); return; }
     if (PointInRect(mx, my, SubmenuRowRect(GRAPHICS_LAYOUT, GROW_BACK))) { g_menuScreen = MenuScreen::Pause; return; }
 }
 static void HandleDisplayClick(int mx, int my) {
-    if (PointInRect(mx, my, SubmenuRowRect(DISPLAY_LAYOUT, DROW_SHOW_FPS))) { g_showFPS = !g_showFPS; return; }
-    if (PointInRect(mx, my, SubmenuRowRect(DISPLAY_LAYOUT, DROW_RESET))) { ResetDisplaySettings(); return; }
+    if (PointInRect(mx, my, SubmenuRowRect(DISPLAY_LAYOUT, DROW_SHOW_FPS))) { g_showFPS = !g_showFPS; SaveSettings(); return; }
+    if (PointInRect(mx, my, SubmenuRowRect(DISPLAY_LAYOUT, DROW_RESET))) { ResetDisplaySettings(); SaveSettings(); return; }
     if (PointInRect(mx, my, SubmenuRowRect(DISPLAY_LAYOUT, DROW_BACK))) { g_menuScreen = MenuScreen::Pause; return; }
 }
 static void HandleAudioClick(int mx, int my) {
-    if (PointInRect(mx, my, GetSliderHitRect(SubmenuRowRect(AUDIO_LAYOUT, AROW_VOLUME)))) { BeginSliderDrag(SLIDER_VOLUME, mx); return; }
-    if (PointInRect(mx, my, SubmenuRowRect(AUDIO_LAYOUT, AROW_RESET))) { ResetAudioSettings(); return; }
+    if (PointInRect(mx, my, GetSliderHitRect(SubmenuRowRect(AUDIO_LAYOUT, AROW_MASTER_VOLUME)))) { BeginSliderDrag(SLIDER_MASTER_VOLUME, mx); return; }
+    if (PointInRect(mx, my, GetSliderHitRect(SubmenuRowRect(AUDIO_LAYOUT, AROW_MUSIC_VOLUME)))) { BeginSliderDrag(SLIDER_MUSIC_VOLUME, mx); return; }
+    if (PointInRect(mx, my, SubmenuRowRect(AUDIO_LAYOUT, AROW_RESET))) { ResetAudioSettings(); SaveSettings(); return; }
     if (PointInRect(mx, my, SubmenuRowRect(AUDIO_LAYOUT, AROW_BACK))) { g_menuScreen = MenuScreen::Pause; return; }
 }
 static void HandleKeybindingsClick(int mx, int my) {
     for (int i = 0; i < ACT_COUNT; i++) {
         if (PointInRect(mx, my, SubmenuRowRect(KEYBIND_LAYOUT, i))) { g_rebindingAction = i; return; }
     }
-    if (PointInRect(mx, my, SubmenuRowRect(KEYBIND_LAYOUT, ACT_COUNT))) { ResetKeybindingsToDefault(); return; }
+    if (PointInRect(mx, my, SubmenuRowRect(KEYBIND_LAYOUT, ACT_COUNT))) { ResetKeybindingsToDefault(); SaveSettings(); return; }
     if (PointInRect(mx, my, SubmenuRowRect(KEYBIND_LAYOUT, ACT_COUNT + 1))) { g_menuScreen = MenuScreen::Pause; return; }
 }
 
@@ -1982,7 +2159,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
     case WM_LBUTTONDOWN: {
         g_mouseButtonDown[0] = true;
         int mx = (int)(short)LOWORD(lParam), my = (int)(short)HIWORD(lParam);
-        if (g_rebindingAction != -1) { g_keyBindings[g_rebindingAction] = MOUSE_LEFT; g_rebindingAction = -1; return 0; }
+        if (g_rebindingAction != -1) { g_keyBindings[g_rebindingAction] = MOUSE_LEFT; g_rebindingAction = -1; SaveSettings(); return 0; }
         if (g_menuScreen != MenuScreen::None) { DispatchMenuClick(mx, my); return 0; }
         if (!g_mouseCaptured) { CaptureMouseForPlay(); return 0; }
         FireBoundAction(MOUSE_LEFT);
@@ -1997,11 +2174,12 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         if (g_draggingSlider != SLIDER_NONE) {
             g_draggingSlider = SLIDER_NONE;
             ReleaseCapture();
+            SaveSettings(); // once per completed drag, not per pixel of motion
         }
         return 0;
     case WM_RBUTTONDOWN:
         g_mouseButtonDown[1] = true;
-        if (g_rebindingAction != -1) { g_keyBindings[g_rebindingAction] = MOUSE_RIGHT; g_rebindingAction = -1; return 0; }
+        if (g_rebindingAction != -1) { g_keyBindings[g_rebindingAction] = MOUSE_RIGHT; g_rebindingAction = -1; SaveSettings(); return 0; }
         FireBoundAction(MOUSE_RIGHT);
         return 0;
     case WM_RBUTTONUP:
@@ -2009,7 +2187,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         return 0;
     case WM_MBUTTONDOWN:
         g_mouseButtonDown[2] = true;
-        if (g_rebindingAction != -1) { g_keyBindings[g_rebindingAction] = MOUSE_MIDDLE; g_rebindingAction = -1; return 0; }
+        if (g_rebindingAction != -1) { g_keyBindings[g_rebindingAction] = MOUSE_MIDDLE; g_rebindingAction = -1; SaveSettings(); return 0; }
         FireBoundAction(MOUSE_MIDDLE);
         return 0;
     case WM_MBUTTONUP:
@@ -2022,7 +2200,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             // input rather than something bindable mid-capture -- every
             // other key or mouse button commits as the new binding,
             // wherever it's pressed (including, e.g., on the Back row).
-            if (wParam != VK_ESCAPE) g_keyBindings[g_rebindingAction] = (int)wParam;
+            if (wParam != VK_ESCAPE) { g_keyBindings[g_rebindingAction] = (int)wParam; SaveSettings(); }
             g_rebindingAction = -1;
             return 0;
         }
@@ -2215,11 +2393,9 @@ static void RenderUIPass() {
         UIRect panel = SubmenuPanelRect(AUDIO_LAYOUT);
         UIDrawRect(glyphVerts, panel.x0, panel.y0, panel.x1, panel.y1, 0.10f, 0.10f, 0.13f, 0.95f);
         drawPanelTitle(panel, AUDIO_LAYOUT.panelW, "AUDIO SETTINGS", 1.0f);
-        std::string note = "(NO AUDIO BACKEND YET)";
-        UIDrawText(glyphVerts, note, panel.x0 + (AUDIO_LAYOUT.panelW - UITextWidth(note, 0.6f)) / 2.0f,
-                   panel.y0 + 44.0f, 0.6f, 0.8f, 0.8f, 0.8f, 0.8f);
 
-        drawSliderRow(SubmenuRowRect(AUDIO_LAYOUT, AROW_VOLUME), SLIDER_VOLUME);
+        drawSliderRow(SubmenuRowRect(AUDIO_LAYOUT, AROW_MASTER_VOLUME), SLIDER_MASTER_VOLUME);
+        drawSliderRow(SubmenuRowRect(AUDIO_LAYOUT, AROW_MUSIC_VOLUME), SLIDER_MUSIC_VOLUME);
         drawRowButton(SubmenuRowRect(AUDIO_LAYOUT, AROW_RESET), "RESET TO DEFAULT");
         drawRowButton(SubmenuRowRect(AUDIO_LAYOUT, AROW_BACK), "BACK");
     } else if (g_menuScreen == MenuScreen::Keybindings) {
@@ -2310,8 +2486,18 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
     if (!g_hwnd) return -1;
     ShowWindow(g_hwnd, nCmdShow);
 
+    LoadSettings(); // before anything reads g_sensitivityMultX/g_loadRadius/g_masterVolume/etc.
+
+    // XAudio2Create requires COM initialized on the calling thread.
+    // Nothing else in this file has needed that so far (SHGetKnownFolderPath
+    // manages its own COM state internally), so this is the first call
+    // that actually needs it.
+    HRESULT comHr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    bool comInitialized = SUCCEEDED(comHr);
+
     if (!InitD3D(g_hwnd)) return -1;
     if (!InitTextures()) return -1;
+    InitAudio(); // a machine with no usable audio device still gets a silent but playable game (Section 9)
     BuildPipeMeshes();
     BuildSkyMesh();
 
@@ -2479,5 +2665,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
         g_swapChain->Present(1, 0);
     }
 
+    ShutdownAudio();
+    if (comInitialized) CoUninitialize();
     return 0;
 }

@@ -175,21 +175,30 @@ All four reference files persisted state via `file.write(reinterpret_cast<const 
 
 ### 7.2 Format actually implemented
 ```
-magic (u32 "VXLG") | version (u32, currently 2)
+magic (u32 "VXLG") | version (u32, currently 3)
 player: pos.x,y,z (f32×3)  yaw,pitch (f32×2)  hotbarSelection (i32)
-settings: sensitivityMultX,Y (f32×2)  invertX,Y (u8×2)  renderDistance (i32)
-          showFPS (u8)  masterVolume (f32)
-          keybindCount (u32) | [ actionNameLen(u16) actionNameBytes  boundCode(i32) ] × count
 blockNameCount (u32) | [ nameLen(u16) nameBytes ] × count
 blockCount (u32) | [ x,y,z (i32×3)  nameTableIndex(u8) ] × count
 checksum (u32)  — FNV-1a over every byte above
 ```
-Block identity is written and read via the **name table**, not the enum — this is the direct structural fix for the positional-ID corruption failure mode, and it's the reason `g_blockNames[]` exists as a parallel source of truth to `BlockID`. Keybindings use the exact same name-indexed pattern (`g_actionNames[]` alongside the `GameAction` enum) for the same reason: the action set can grow without shifting what an old save's binding records mean. Gameplay/UI settings (mouse sensitivity, inversion, render distance, the FPS counter toggle, master volume, and every keybinding) are saved with the player rather than in a separate global config file, per an explicit request — a save-and-reload round-trips them exactly. Version bumped from 1 to 2 when this block was added; old v1 saves are rejected cleanly by the version check (Section 7.4) rather than misread.
+Block identity is written and read via the **name table**, not the enum — this is the direct structural fix for the positional-ID corruption failure mode, and it's the reason `g_blockNames[]` exists as a parallel source of truth to `BlockID`. Version bumped from 1 to 2 when a settings block was first added inline here; bumped again to 3 when that block was pulled back out into the separate global settings file described in 7.2.2 below. A v2 file is still loaded rather than rejected — its world/player data is byte-identical to v3's, just followed by a settings block v3 no longer has — specifically so the migration described in 7.2.2 can run. Only something older than v2, or newer than the running build understands, is rejected cleanly by the version check (Section 7.4).
 
 ### 7.2.1 Save location
 `Documents\My Games\Voxistics\voxelproto.sav` — the conventional PC-game save location (Skyrim and most Bethesda/Paradox titles use the same pattern), chosen over a hidden `%LOCALAPPDATA%` folder specifically because it's visible and easy for players to find, back up, or copy between machines. The directory is resolved fresh on every save/load (`SHGetKnownFolderPath(FOLDERID_Documents, ...)` plus the `My Games\Voxistics` subfolder, created if missing) rather than cached once, so a transient failure doesn't permanently strand the game on a fallback it no longer needs.
 
 Two things can go wrong with a known-folder lookup in the real world, and both are handled by falling back to the current working directory (this prototype's original behavior) rather than failing the save outright: the `SHGetKnownFolderPath` call itself failing (rare, but has no reason to be fatal when a working fallback exists), and something unexpected already occupying part of the intended path — concretely, a plain file sitting where a folder needs to be. The code checks `exists() && !is_directory()` before calling `create_directories()` specifically to catch that second case rather than letting a failed directory creation surface as a mysterious save failure.
+
+### 7.2.2 Global settings file
+Gameplay/UI preferences (mouse sensitivity, inversion, render distance, the FPS counter toggle, master/music volume, and every keybinding) originally lived inside the save file itself (v2, above). They now live in `Documents\My Games\Voxistics\settings.cfg` — the same directory as the save file, resolved through the same bulletproofed `GetSaveDirectory()` — independent of any world save. Two reasons drove the move: a title screen's Options needs to read/write these before any save is loaded or even exists, and preferences arguably belong to the *player*, not to any one world, so they should carry over between saves rather than reset per-world.
+
+The format is plain `key=value` lines (`sensitivityX=1.000000`, `keybind.forward=87`, etc.) rather than the save file's versioned binary encoding — a handful of human-meaningful scalars a player might reasonably want to inspect or hand-edit, where "unknown keys are ignored, a missing key keeps its compiled-in default" gives forward/backward compatibility for free, with no version field needed. It's written via the same temp-file-then-rename pattern as the save file (never a direct in-place write), and re-read once at startup before anything else consults these values.
+
+It's saved incrementally rather than only at one moment: every toggle click, every Reset to Default, every completed slider drag (once when the drag ends, not on every pixel of motion), and every committed keybind rebind writes it immediately, so a preference change survives even if the process is later killed without a clean exit.
+
+**Migration from v2 saves:** loading a v2 save (7.2 above) parses its embedded settings block as before and applies it to the running session, and — only if `settings.cfg` doesn't exist yet — writes it out once via the same `SaveSettings()` used everywhere else. Once that file exists it's the sole source of truth from then on; this path only ever fires for the first v2 save loaded on a machine that hasn't run the new format yet.
+
+### 7.2.3 Write sequence (crash safety) — settings file
+Same shape as the save file's (7.3): the whole file is one `ostringstream`-built buffer, written to `settings.cfg.tmp`, then renamed into place — never edited in-place, so a crash mid-write leaves the previous version of the file intact rather than truncated.
 
 ### 7.3 Write sequence (crash safety)
 1. Serialize the entire save into an in-memory buffer.
@@ -240,7 +249,7 @@ Per-region multi-chunk files (grouping a 16×16 column of chunks behind one smal
 
 ## Part IX — Milestones
 
-**Milestone 1 (current prototype target — implemented):** world storage, chunked meshing with correct per-block atlas texturing, gravity/falling blocks, exact-DDA block picking, place/break, crash-safe versioned save/load (now also carrying gameplay/UI settings, not just world+player state), basic FPS movement and collision, a rudimentary dual-pass UI (crosshair, hotbar with selection highlight, a Pause menu branching into five settings submenus: Look Settings with independent X/Y sensitivity sliders and X/Y inversion, Graphics with a render-distance slider, Display with an FPS-counter toggle, Audio with a stored-but-not-yet-audible master volume, and fully remappable Keybindings covering every keyboard-or-mouse-bound action — each submenu with its own Reset to Default), and a basic camera-following skybox. No items, no crafting, no machines beyond a placeholder block.
+**Milestone 1 (current prototype target — implemented):** world storage, chunked meshing with correct per-block atlas texturing, gravity/falling blocks, exact-DDA block picking, place/break, crash-safe versioned save/load, a separate global settings file (7.2.2) for gameplay/UI preferences, basic FPS movement and collision, a rudimentary dual-pass UI (crosshair, hotbar with selection highlight, a Pause menu branching into five settings submenus: Look Settings with independent X/Y sensitivity sliders and X/Y inversion, Graphics with a render-distance slider, Display with an FPS-counter toggle, Audio with working Master/Music volume sliders, and fully remappable Keybindings covering every keyboard-or-mouse-bound action — each submenu with its own Reset to Default), a basic camera-following skybox, and a looping procedural ambient music track (Part XI). No items, no crafting, no machines beyond a placeholder block.
 
 **Milestone 2:** `IItemHandler` interface implemented for chests and player inventory; basic UI (2D ortho pass) for inventory/hotbar; pipe placement forms visible networks (union-find connectivity, no item flow yet); per-instance oriented, connection-aware pipe geometry replacing the current fixed-orientation per-shape placeholders.
 
@@ -252,19 +261,40 @@ Each milestone is a strict superset of the previous — nothing in Milestone 1's
 
 ---
 
+## Part XI — Audio
+
+### 11.1 Playback backend
+XAudio2 (`xaudio2.h`/`xaudio2.lib`), initialized once at startup (`InitAudio()`) after `CoInitializeEx` — the one thing in this codebase that actually requires COM initialized on the calling thread (`SHGetKnownFolderPath` manages its own COM state internally, so nothing earlier needed this). One `IXAudio2SourceVoice` loops the ambient track (11.2) via `XAUDIO2_LOOP_INFINITE` for the life of the process. There is only a Music channel so far — no sound effects — but Master and Music are already separate settings/sliders specifically so a future SFX channel is just another source voice under the same mastering voice, not a remix of the existing volume model. `InitAudio()` failing (no usable audio device, missing driver, etc.) is non-fatal: every audio entry point is guarded by a null check, so the game is fully playable, just silently, rather than refusing to start.
+
+### 11.2 The ambient track: procedural, not an asset
+Generated once at load time in `supplement.cpp`, the same "bake it in code, never load an external asset" philosophy the block/UI textures already use (8.4) — no audio file exists anywhere in the repo, and there's nothing to license. It's composed from techniques spanning a wider palette of prototyped experiments (drones, harmonic pads, filtered-noise "air" beds) but deliberately without that palette's randomized bursts/whistles: nothing in the shipped track ever produces a sudden or unpredictable loud event, in the same spirit as the "no uncontrolled flashing" rule planned for the visual side under accessibility.
+
+Two layers, mixed together:
+- **Tonal pad** — a root drone (44 Hz) + a fifth an octave up (132 Hz) + a gently vibratoed high shimmer (~308 Hz), under a slow overall amplitude swell. Built by phase accumulation, not closed-form `sin(2πft)`, with every frequency and modulation rate chosen so `rate × loopLength` is an exact integer. That makes the whole layer mathematically periodic over the loop — it closes on itself with no seam and needs no crossfade.
+- **Noise "air" bed** — white noise through a one-pole lowpass, giving a soft texture underneath the pad. Filtered noise has no natural period, so its own tail is blended into its own head with a short equal-power crossfade before mixing, which is the standard technique for looping a stationary noise texture seamlessly.
+
+The mix is normalized by RMS (target ≈0.20), not peak, so loudness stays consistent if more tracks are ever added, with generous headroom below clipping since the Master/Music sliders only ever attenuate afterward. Loop length is 20 seconds at 44.1kHz mono.
+
+### 11.3 Why mono
+The track is generated as a single channel throughout, not stereo collapsed down. There is no stereo field to speak of yet (no positional audio), so there was nothing to lose, and it sidesteps needing a "mono audio" accessibility toggle for this track specifically — there's no stereo image for such a toggle to collapse.
+
+---
+
 ## Part X — Build
 
 Two source files, one compiler invocation, no project file needed:
 
 ```
-cl main.cpp supplement.cpp /link d3d11.lib dxgi.lib d3dcompiler.lib gdiplus.lib gdi32.lib user32.lib /SUBSYSTEM:WINDOWS
+cl main.cpp supplement.cpp /link d3d11.lib dxgi.lib d3dcompiler.lib gdiplus.lib gdi32.lib user32.lib shell32.lib ole32.lib uuid.lib xaudio2.lib /SUBSYSTEM:WINDOWS
 ```
 
-or with MinGW-w64 (used during development to compile-check this prototype on a non-Windows host, since it ships full D3D11/DXGI/D3DCompiler/GDI+ headers and import libraries):
+or with MinGW-w64 (used during development to compile-check this prototype on a non-Windows host, since it ships full D3D11/DXGI/D3DCompiler/GDI+/XAudio2 headers and import libraries):
 
 ```
-x86_64-w64-mingw32-g++ -std=c++17 -O2 -mwindows main.cpp supplement.cpp -o voxelgame.exe \
-  -ld3d11 -ldxgi -ld3dcompiler -lgdiplus -lgdi32 -luser32 -lole32 -static-libgcc -static-libstdc++
+x86_64-w64-mingw32-g++ -std=c++17 -O2 -mwindows -municode -DUNICODE -D_UNICODE main.cpp supplement.cpp -o voxistics.exe \
+  -ld3d11 -ldxgi -ld3dcompiler -lgdiplus -lgdi32 -luser32 -lole32 -lshell32 -luuid -lxaudio2_8 -static-libgcc -static-libstdc++
 ```
+
+(`-lxaudio2_8` is MinGW's import-lib name for the same XAudio2 2.8 API that the Windows SDK's `xaudio2.lib` provides — a MinGW-only naming difference, same idea as `-municode` above it.)
 
 Default controls (all fully remappable to any keyboard key or the left/right/middle mouse button via Pause → Keybindings — click a row, then press the new input; Esc cancels a rebind in progress): WASD to move, mouse to look (click once to capture the cursor), Space to jump, left-click to break the targeted block, right-click to place the selected hotbar block, number keys 1–9 to select a hotbar block (fixed, not remappable in this pass), F5 to save, F9 to load, Esc to open/close the Pause menu or back out one level from any of its submenus (Look Settings, Graphics, Display, Audio, Keybindings, each with its own Reset to Default), all clickable with the freed cursor.
