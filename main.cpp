@@ -598,9 +598,13 @@ static ID3D11DepthStencilState* g_depthState = nullptr;
 static ID3D11ShaderResourceView* g_atlasSRV = nullptr;
 static ID3D11ShaderResourceView* g_pipeSRV = nullptr;
 
-static ID3D11Buffer* g_pipeMeshVB = nullptr;
-static ID3D11Buffer* g_pipeMeshIB = nullptr;
-static UINT g_pipeMeshIndexCount = 0;
+// One mesh per pipe shape (index by BlockInfo.shape: 1 straight, 2
+// corner, 3 junction; [0] unused). Distinct silhouettes per shape, but
+// still a fixed canonical orientation -- real per-instance orientation
+// and connection-aware geometry is still Milestone 2 work alongside
+// network connectivity (Section 4.4).
+struct PipeMesh { ID3D11Buffer* vb = nullptr; ID3D11Buffer* ib = nullptr; UINT indexCount = 0; };
+static PipeMesh g_pipeMeshes[4];
 
 // Second pass state (Section 4.6): its own shaders, input layout,
 // constant buffer, sampler, blend state and depth-stencil state, kept
@@ -738,37 +742,67 @@ static void RebuildDirtyChunks(World& w) {
     }
 }
 
-// Small placeholder mesh shared by every pipe instance regardless of
-// shape -- distinct L/plus geometry per shape is left for Milestone 2
-// alongside real network connectivity (Section 4.4 flags per-instance
-// draw calls as a known scaling limit already).
-static void BuildPipeMesh() {
-    std::vector<Vertex> verts;
-    std::vector<uint32_t> indices;
-    float s = 0.3f, lo = 0.5f - s, hi = 0.5f + s;
-    float u0 = 0.05f, v0 = 0.05f, u1 = 0.95f, v1 = 0.95f;
-    EmitFace(verts, indices, 0,0,0, hi,lo,lo, hi,hi,lo, hi,hi,hi, hi,lo,hi, u0,v0,u1,v1);
-    EmitFace(verts, indices, 0,0,0, lo,lo,hi, lo,hi,hi, lo,hi,lo, lo,lo,lo, u0,v0,u1,v1);
-    EmitFace(verts, indices, 0,0,0, lo,hi,lo, lo,hi,hi, hi,hi,hi, hi,hi,lo, u0,v0,u1,v1);
-    EmitFace(verts, indices, 0,0,0, lo,lo,hi, lo,lo,lo, hi,lo,lo, hi,lo,hi, u0,v0,u1,v1);
-    EmitFace(verts, indices, 0,0,0, hi,lo,hi, hi,hi,hi, lo,hi,hi, lo,lo,hi, u0,v0,u1,v1);
-    EmitFace(verts, indices, 0,0,0, lo,lo,lo, lo,hi,lo, hi,hi,lo, hi,lo,lo, u0,v0,u1,v1);
+// Emits a full 6-faced box between two corners, in the same local
+// unit-cube space EmitFace's callers already use (the box origin passed
+// to EmitFace is always 0,0,0 and the corners carry the real offsets).
+static void AddBox(std::vector<Vertex>& verts, std::vector<uint32_t>& indices,
+                    float x0, float y0, float z0, float x1, float y1, float z1,
+                    float u0, float v0, float u1, float v1) {
+    EmitFace(verts, indices, 0,0,0, x1,y0,z0, x1,y1,z0, x1,y1,z1, x1,y0,z1, u0,v0,u1,v1); // +X
+    EmitFace(verts, indices, 0,0,0, x0,y0,z1, x0,y1,z1, x0,y1,z0, x0,y0,z0, u0,v0,u1,v1); // -X
+    EmitFace(verts, indices, 0,0,0, x0,y1,z0, x0,y1,z1, x1,y1,z1, x1,y1,z0, u0,v0,u1,v1); // +Y
+    EmitFace(verts, indices, 0,0,0, x0,y0,z1, x0,y0,z0, x1,y0,z0, x1,y0,z1, u0,v0,u1,v1); // -Y
+    EmitFace(verts, indices, 0,0,0, x1,y0,z1, x1,y1,z1, x0,y1,z1, x0,y0,z1, u0,v0,u1,v1); // +Z
+    EmitFace(verts, indices, 0,0,0, x0,y0,z0, x0,y1,z0, x1,y1,z0, x1,y0,z0, u0,v0,u1,v1); // -Z
+}
 
+static PipeMesh UploadPipeMesh(const std::vector<Vertex>& verts, const std::vector<uint32_t>& indices) {
+    PipeMesh mesh;
     D3D11_BUFFER_DESC vbd = {};
     vbd.Usage = D3D11_USAGE_DEFAULT;
     vbd.ByteWidth = (UINT)(verts.size() * sizeof(Vertex));
     vbd.BindFlags = D3D11_BIND_VERTEX_BUFFER;
     D3D11_SUBRESOURCE_DATA vinit = {}; vinit.pSysMem = verts.data();
-    g_device->CreateBuffer(&vbd, &vinit, &g_pipeMeshVB);
+    g_device->CreateBuffer(&vbd, &vinit, &mesh.vb);
 
     D3D11_BUFFER_DESC ibd = {};
     ibd.Usage = D3D11_USAGE_DEFAULT;
     ibd.ByteWidth = (UINT)(indices.size() * sizeof(uint32_t));
     ibd.BindFlags = D3D11_BIND_INDEX_BUFFER;
     D3D11_SUBRESOURCE_DATA iinit = {}; iinit.pSysMem = indices.data();
-    g_device->CreateBuffer(&ibd, &iinit, &g_pipeMeshIB);
+    g_device->CreateBuffer(&ibd, &iinit, &mesh.ib);
 
-    g_pipeMeshIndexCount = (UINT)indices.size();
+    mesh.indexCount = (UINT)indices.size();
+    return mesh;
+}
+
+static void BuildPipeMeshes() {
+    const float u0 = 0.05f, v0 = 0.05f, u1 = 0.95f, v1 = 0.95f;
+    const float lo = 0.35f, hi = 0.65f; // pipe cross-section: 0.3 thick, centered
+
+    // Straight: a through-pipe spanning the full cell vertically.
+    {
+        std::vector<Vertex> verts; std::vector<uint32_t> indices;
+        AddBox(verts, indices, lo, 0.0f, lo, hi, 1.0f, hi, u0, v0, u1, v1);
+        g_pipeMeshes[1] = UploadPipeMesh(verts, indices);
+    }
+    // Corner: a vertical stub from the floor up to mid-height, elbowing
+    // into a horizontal stub out to the +X face at that height.
+    {
+        std::vector<Vertex> verts; std::vector<uint32_t> indices;
+        AddBox(verts, indices, lo, 0.0f, lo, hi, 0.5f, hi, u0, v0, u1, v1);
+        AddBox(verts, indices, lo, lo, lo, 1.0f, hi, hi, u0, v0, u1, v1);
+        g_pipeMeshes[2] = UploadPipeMesh(verts, indices);
+    }
+    // Junction: a full vertical through-pipe crossed by a full
+    // horizontal through-pipe at mid-height, suggesting multiple
+    // connections branching through this cell.
+    {
+        std::vector<Vertex> verts; std::vector<uint32_t> indices;
+        AddBox(verts, indices, lo, 0.0f, lo, hi, 1.0f, hi, u0, v0, u1, v1);
+        AddBox(verts, indices, 0.0f, lo, lo, 1.0f, hi, hi, u0, v0, u1, v1);
+        g_pipeMeshes[3] = UploadPipeMesh(verts, indices);
+    }
 }
 
 static void UpdateCBuffer(const Mat4& mvp) {
@@ -1340,7 +1374,7 @@ static bool InitTextures() {
 }
 
 // =======================================================================
-// WinMain / message loop
+// wWinMain / message loop
 // =======================================================================
 
 static World g_world;
@@ -1388,23 +1422,43 @@ static void ReleaseMouseForMenu() {
 }
 
 // Pause-menu layout: shared between rendering (RenderUIPass) and click
-// hit-testing (HandleMenuClick) so the two can never drift apart.
+// hit-testing (HandleMenuClick) so the two can never drift apart. Rows
+// are addressed by index rather than a flat button list, since the
+// sensitivity row needs two small buttons instead of one full-width one.
 struct UIRect { float x0, y0, x1, y1; };
-static const int MENU_BUTTON_COUNT = 4;
-static const char* g_menuLabels[MENU_BUTTON_COUNT] = { "RESUME", "SAVE GAME", "LOAD GAME", "QUIT" };
-static const float MENU_PANEL_W = 320.0f, MENU_PANEL_H = 280.0f;
+static const float MENU_PANEL_W = 360.0f, MENU_PANEL_H = 420.0f;
+static const float MENU_ROW_H = 40.0f, MENU_ROW_GAP = 12.0f, MENU_TOP_MARGIN = 70.0f;
+
+enum MenuRow { ROW_RESUME = 0, ROW_SENSITIVITY = 1, ROW_INVERT_Y = 2, ROW_SAVE = 3, ROW_LOAD = 4, ROW_QUIT = 5 };
+
+// Look preferences, adjustable from the pause menu. Not persisted to
+// the save file (Section VII) -- these are player/UI preferences, not
+// world state, so they simply default fresh each run.
+static float g_sensitivityMult = 1.0f; // multiplies BASE_MOUSE_SENS below
+static bool g_invertY = false;
+static const float BASE_MOUSE_SENS = 0.0025f;
+static const float SENS_STEP = 0.25f, SENS_MIN = 0.25f, SENS_MAX = 3.0f;
 
 static UIRect GetMenuPanelRect() {
     float px = (SCREEN_W - MENU_PANEL_W) / 2.0f;
     float py = (SCREEN_H - MENU_PANEL_H) / 2.0f;
     return { px, py, px + MENU_PANEL_W, py + MENU_PANEL_H };
 }
-static UIRect GetMenuButtonRect(int index) {
+static UIRect GetMenuRowRect(int rowIndex) {
     UIRect panel = GetMenuPanelRect();
-    float bw = 260.0f, bh = 40.0f, gap = 12.0f;
+    float bw = MENU_PANEL_W - 60.0f;
     float bx = panel.x0 + 30.0f;
-    float by = panel.y0 + 70.0f + index * (bh + gap);
-    return { bx, by, bx + bw, by + bh };
+    float by = panel.y0 + MENU_TOP_MARGIN + rowIndex * (MENU_ROW_H + MENU_ROW_GAP);
+    return { bx, by, bx + bw, by + MENU_ROW_H };
+}
+// The sensitivity row's minus/plus buttons sit inset from its right edge.
+static UIRect GetSensitivityMinusRect() {
+    UIRect r = GetMenuRowRect(ROW_SENSITIVITY);
+    return { r.x1 - 76, r.y0 + 4, r.x1 - 44, r.y1 - 4 };
+}
+static UIRect GetSensitivityPlusRect() {
+    UIRect r = GetMenuRowRect(ROW_SENSITIVITY);
+    return { r.x1 - 36, r.y0 + 4, r.x1 - 4, r.y1 - 4 };
 }
 static bool PointInRect(int px, int py, const UIRect& r) {
     return px >= r.x0 && px <= r.x1 && py >= r.y0 && py <= r.y1;
@@ -1425,25 +1479,37 @@ static void DoLoad() {
 }
 
 static void HandleMenuClick(int mx, int my) {
-    for (int i = 0; i < MENU_BUTTON_COUNT; i++) {
-        if (!PointInRect(mx, my, GetMenuButtonRect(i))) continue;
-        switch (i) {
-        case 0: // RESUME
-            g_menuOpen = false;
-            CaptureMouseForPlay();
-            break;
-        case 1: // SAVE GAME
-            DoSave();
-            break;
-        case 2: // LOAD GAME
-            DoLoad();
-            g_menuOpen = false;
-            CaptureMouseForPlay();
-            break;
-        case 3: // QUIT
-            PostQuitMessage(0);
-            break;
-        }
+    if (PointInRect(mx, my, GetSensitivityMinusRect())) {
+        g_sensitivityMult -= SENS_STEP;
+        if (g_sensitivityMult < SENS_MIN) g_sensitivityMult = SENS_MIN;
+        return;
+    }
+    if (PointInRect(mx, my, GetSensitivityPlusRect())) {
+        g_sensitivityMult += SENS_STEP;
+        if (g_sensitivityMult > SENS_MAX) g_sensitivityMult = SENS_MAX;
+        return;
+    }
+    if (PointInRect(mx, my, GetMenuRowRect(ROW_INVERT_Y))) {
+        g_invertY = !g_invertY;
+        return;
+    }
+    if (PointInRect(mx, my, GetMenuRowRect(ROW_RESUME))) {
+        g_menuOpen = false;
+        CaptureMouseForPlay();
+        return;
+    }
+    if (PointInRect(mx, my, GetMenuRowRect(ROW_SAVE))) {
+        DoSave();
+        return;
+    }
+    if (PointInRect(mx, my, GetMenuRowRect(ROW_LOAD))) {
+        DoLoad();
+        g_menuOpen = false;
+        CaptureMouseForPlay();
+        return;
+    }
+    if (PointInRect(mx, my, GetMenuRowRect(ROW_QUIT))) {
+        PostQuitMessage(0);
         return;
     }
 }
@@ -1511,7 +1577,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         }
         return 0;
     default:
-        return DefWindowProc(hwnd, msg, wParam, lParam);
+        return DefWindowProcW(hwnd, msg, wParam, lParam);
     }
 }
 
@@ -1594,15 +1660,43 @@ static void RenderUIPass() {
         float titleW = UITextWidth(title, titleScale);
         UIDrawText(glyphVerts, title, panel.x0 + (MENU_PANEL_W - titleW) / 2.0f, panel.y0 + 16.0f, titleScale, 1, 1, 1, 1);
 
-        for (int i = 0; i < MENU_BUTTON_COUNT; i++) {
-            UIRect r = GetMenuButtonRect(i);
+        auto drawButtonRow = [&](int rowIndex, const char* label) {
+            UIRect r = GetMenuRowRect(rowIndex);
             bool hover = PointInRect(g_mouseX, g_mouseY, r);
             float shade = hover ? 0.32f : 0.22f;
             UIDrawRect(glyphVerts, r.x0, r.y0, r.x1, r.y1, shade, shade, shade + 0.06f, 1);
-            std::string label = g_menuLabels[i];
-            float lw = UITextWidth(label, 1.0f);
-            UIDrawText(glyphVerts, label, r.x0 + ((r.x1 - r.x0) - lw) / 2.0f, r.y0 + 10.0f, 1.0f, 1, 1, 1, 1);
+            std::string text = label;
+            float lw = UITextWidth(text, 1.0f);
+            UIDrawText(glyphVerts, text, r.x0 + ((r.x1 - r.x0) - lw) / 2.0f, r.y0 + 10.0f, 1.0f, 1, 1, 1, 1);
+        };
+
+        drawButtonRow(ROW_RESUME, "RESUME");
+
+        // Sensitivity: label on the left, minus/plus buttons on the right.
+        {
+            UIRect r = GetMenuRowRect(ROW_SENSITIVITY);
+            UIDrawRect(glyphVerts, r.x0, r.y0, r.x1, r.y1, 0.16f, 0.16f, 0.19f, 1);
+            char buf[32];
+            snprintf(buf, sizeof(buf), "SENSITIVITY: %.2fx", g_sensitivityMult);
+            UIDrawText(glyphVerts, buf, r.x0 + 8, r.y0 + 10.0f, 0.85f, 1, 1, 1, 1);
+
+            UIRect minusR = GetSensitivityMinusRect();
+            bool hoverMinus = PointInRect(g_mouseX, g_mouseY, minusR);
+            UIDrawRect(glyphVerts, minusR.x0, minusR.y0, minusR.x1, minusR.y1,
+                       hoverMinus ? 0.36f : 0.26f, hoverMinus ? 0.36f : 0.26f, hoverMinus ? 0.42f : 0.30f, 1);
+            UIDrawText(glyphVerts, "-", minusR.x0 + (minusR.x1 - minusR.x0) / 2.0f - UI_CELL_W * 0.4f, minusR.y0 + 2, 0.8f, 1, 1, 1, 1);
+
+            UIRect plusR = GetSensitivityPlusRect();
+            bool hoverPlus = PointInRect(g_mouseX, g_mouseY, plusR);
+            UIDrawRect(glyphVerts, plusR.x0, plusR.y0, plusR.x1, plusR.y1,
+                       hoverPlus ? 0.36f : 0.26f, hoverPlus ? 0.36f : 0.26f, hoverPlus ? 0.42f : 0.30f, 1);
+            UIDrawText(glyphVerts, "+", plusR.x0 + (plusR.x1 - plusR.x0) / 2.0f - UI_CELL_W * 0.4f, plusR.y0 + 2, 0.8f, 1, 1, 1, 1);
         }
+
+        drawButtonRow(ROW_INVERT_Y, g_invertY ? "INVERT Y LOOK: ON" : "INVERT Y LOOK: OFF");
+        drawButtonRow(ROW_SAVE, "SAVE GAME");
+        drawButtonRow(ROW_LOAD, "LOAD GAME");
+        drawButtonRow(ROW_QUIT, "QUIT");
     }
 
     // Transient save/load confirmation -- fades over its last half
@@ -1646,18 +1740,24 @@ static void RenderUIPass() {
     g_context->OMSetDepthStencilState(g_depthState, 0);
 }
 
-int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
-    WNDCLASSA wc = {};
+int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
+    // Wide (W-suffixed) throughout, deliberately -- mixing an ANSI-
+    // registered window (RegisterClassA/CreateWindowA) with the wide
+    // DefWindowProcW that the project's Unicode character-set setting
+    // makes the unsuffixed DefWindowProc macro expand to is a known
+    // Win32 mismatch that corrupts non-client text (the title bar):
+    // it's what produced the garbled CJK-looking title before this.
+    WNDCLASSW wc = {};
     wc.lpfnWndProc = WndProc;
     wc.hInstance = hInstance;
-    wc.lpszClassName = "VoxelLogisticsWindowClass";
-    wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
-    RegisterClassA(&wc);
+    wc.lpszClassName = L"VoxelLogisticsWindowClass";
+    wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+    RegisterClassW(&wc);
 
     RECT wr = { 0, 0, SCREEN_W, SCREEN_H };
     DWORD style = (WS_OVERLAPPEDWINDOW & ~WS_THICKFRAME & ~WS_MAXIMIZEBOX);
     AdjustWindowRect(&wr, style, FALSE);
-    g_hwnd = CreateWindowA("VoxelLogisticsWindowClass", "Voxel Logistics",
+    g_hwnd = CreateWindowW(L"VoxelLogisticsWindowClass", L"Voxel Logistics",
                             style, CW_USEDEFAULT, CW_USEDEFAULT,
                             wr.right - wr.left, wr.bottom - wr.top,
                             nullptr, nullptr, hInstance, nullptr);
@@ -1666,7 +1766,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
 
     if (!InitD3D(g_hwnd)) return -1;
     if (!InitTextures()) return -1;
-    BuildPipeMesh();
+    BuildPipeMeshes();
 
     LARGE_INTEGER freq, lastTime;
     QueryPerformanceFrequency(&freq);
@@ -1708,9 +1808,9 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
             POINT center = { (rc.right - rc.left) / 2, (rc.bottom - rc.top) / 2 };
             ClientToScreen(g_hwnd, &center);
             int dx = cursor.x - center.x, dy = cursor.y - center.y;
-            const float SENS = 0.0025f;
-            g_player.yaw += dx * SENS;
-            g_player.pitch -= dy * SENS;
+            float sens = BASE_MOUSE_SENS * g_sensitivityMult;
+            g_player.yaw += dx * sens;
+            g_player.pitch += (g_invertY ? dy : -dy) * sens;
             if (g_player.pitch > 1.55f) g_player.pitch = 1.55f;
             if (g_player.pitch < -1.55f) g_player.pitch = -1.55f;
             SetCursorPos(center.x, center.y);
@@ -1776,15 +1876,19 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
         }
 
         // Pipe instances: one draw call per instance (documented scaling
-        // limit, Section 4.4) -- fine at prototype density.
+        // limit, Section 4.4) -- fine at prototype density. Which mesh
+        // is bound switches per instance based on shape, still with no
+        // extra draw calls added.
         g_context->PSSetShaderResources(0, 1, &g_pipeSRV);
-        g_context->IASetVertexBuffers(0, 1, &g_pipeMeshVB, &stride, &offset);
-        g_context->IASetIndexBuffer(g_pipeMeshIB, DXGI_FORMAT_R32_UINT, 0);
         for (auto& kv : g_world.chunks) {
             for (auto& pipe : kv.second->pipes) {
+                PipeMesh& mesh = g_pipeMeshes[pipe.shape];
+                if (mesh.indexCount == 0) continue;
+                g_context->IASetVertexBuffers(0, 1, &mesh.vb, &stride, &offset);
+                g_context->IASetIndexBuffer(mesh.ib, DXGI_FORMAT_R32_UINT, 0);
                 Mat4 world = MatTranslation((float)pipe.worldX, (float)pipe.worldY, (float)pipe.worldZ);
                 UpdateCBuffer(MatMul(world, viewProj));
-                g_context->DrawIndexed(g_pipeMeshIndexCount, 0, 0);
+                g_context->DrawIndexed(mesh.indexCount, 0, 0);
             }
         }
 
