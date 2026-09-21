@@ -138,7 +138,7 @@ static const int CHUNK_SIZE = 16;
 static const int CHUNK_CELLS = CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE;
 static const int Y_MIN = 0;
 static const int Y_MAX = 255;
-static const int LOAD_RADIUS = 3; // chunks, horizontal only (Section 2.4)
+static int g_loadRadius = 3; // chunks, horizontal only (Section 2.4); a Graphics Settings slider now [1,8]
 static const int MAX_FALLS = 64;  // capped per-tick gravity work (Section 5.1)
 
 enum BlockID : uint8_t {
@@ -557,8 +557,8 @@ static void EnsureChunksLoaded(int playerChunkX, int playerChunkZ) {
     g_lastPlayerChunkX = playerChunkX;
     g_lastPlayerChunkZ = playerChunkZ;
 
-    for (int dx = -LOAD_RADIUS; dx <= LOAD_RADIUS; dx++) {
-        for (int dz = -LOAD_RADIUS; dz <= LOAD_RADIUS; dz++) {
+    for (int dx = -g_loadRadius; dx <= g_loadRadius; dx++) {
+        for (int dz = -g_loadRadius; dz <= g_loadRadius; dz++) {
             int cx = playerChunkX + dx, cz = playerChunkZ + dz;
             long long key = ColumnKey(cx, cz);
             if (g_generatedColumns.count(key) || g_pendingColumnSet.count(key)) continue;
@@ -654,11 +654,19 @@ static const char* g_uiShaderSrc =
     "float4 PSMain(PSIn input) : SV_TARGET { return tex0.Sample(samp0, input.uv) * input.col; }\n";
 
 // Third pass state: a basic skybox, drawn before the world so normal
-// depth-tested opaque geometry always overdraws it. Untextured --
-// just a vertex-colored gradient box -- so its own tiny pipeline
-// (position+color, no sampler/texture) rather than reusing either the
-// world or UI shader.
-struct SkyVertex { float x, y, z, r, g, b; };
+// depth-tested opaque geometry always overdraws it. Untextured -- a
+// gradient computed per-pixel from the interpolated (camera-relative)
+// position reused as a view direction -- so its own tiny pipeline
+// (position only, no sampler/texture) rather than reusing either the
+// world or UI shader. Per-pixel rather than per-vertex specifically to
+// avoid the box-corner artifact a coarse per-vertex gradient on a
+// 6-quad box shows: near a geometric box corner (shared by 3 faces,
+// all zenith-colored there), vertex interpolation alone pulls in extra
+// zenith color even at screen positions whose actual view direction is
+// nowhere near straight up. Computing the gradient from the true
+// (renormalized) direction instead makes it smooth in every direction,
+// independent of the mesh's face boundaries.
+struct SkyVertex { float x, y, z; };
 static ID3D11VertexShader* g_skyVS = nullptr;
 static ID3D11PixelShader* g_skyPS = nullptr;
 static ID3D11InputLayout* g_skyLayout = nullptr;
@@ -669,10 +677,16 @@ static UINT g_skyIndexCount = 0;
 
 static const char* g_skyShaderSrc =
     "cbuffer SkyCB : register(b0) { row_major matrix viewProj; };\n"
-    "struct VSIn { float3 pos:POSITION; float3 col:COLOR0; };\n"
-    "struct PSIn { float4 pos:SV_POSITION; float3 col:COLOR0; };\n"
-    "PSIn VSMain(VSIn input) { PSIn o; o.pos = mul(float4(input.pos,1.0f), viewProj); o.col = input.col; return o; }\n"
-    "float4 PSMain(PSIn input) : SV_TARGET { return float4(input.col, 1.0f); }\n";
+    "struct VSIn { float3 pos:POSITION; };\n"
+    "struct PSIn { float4 pos:SV_POSITION; float3 dir:TEXCOORD0; };\n"
+    "PSIn VSMain(VSIn input) { PSIn o; o.pos = mul(float4(input.pos,1.0f), viewProj); o.dir = input.pos; return o; }\n"
+    "static const float3 ZENITH = float3(0.25f, 0.45f, 0.85f);\n"
+    "static const float3 HORIZON = float3(0.65f, 0.75f, 0.95f);\n"
+    "float4 PSMain(PSIn input) : SV_TARGET {\n"
+    "    float3 d = normalize(input.dir);\n"
+    "    float t = saturate(d.y);\n"
+    "    return float4(lerp(HORIZON, ZENITH, t), 1.0f);\n"
+    "}\n";
 
 // Emits one cube face (4 verts + 6 indices) for the given corners.
 static void EmitFace(std::vector<Vertex>& verts, std::vector<uint32_t>& indices,
@@ -826,19 +840,14 @@ static void BuildPipeMeshes() {
     }
 }
 
-// One quad, 4 independently-colored corners -- unlike AddSkyBox's
-// uniform-color faces, the 4 side faces need each corner colored
-// separately to get a smooth vertical gradient across the face.
 static void AddSkyQuad(std::vector<SkyVertex>& v, std::vector<uint32_t>& idx,
                         float x0, float y0, float z0, float x1, float y1, float z1,
-                        float x2, float y2, float z2, float x3, float y3, float z3,
-                        float r0, float g0, float b0, float r1, float g1, float b1,
-                        float r2, float g2, float b2, float r3, float g3, float b3) {
+                        float x2, float y2, float z2, float x3, float y3, float z3) {
     uint32_t base = (uint32_t)v.size();
-    v.push_back({ x0, y0, z0, r0, g0, b0 });
-    v.push_back({ x1, y1, z1, r1, g1, b1 });
-    v.push_back({ x2, y2, z2, r2, g2, b2 });
-    v.push_back({ x3, y3, z3, r3, g3, b3 });
+    v.push_back({ x0, y0, z0 });
+    v.push_back({ x1, y1, z1 });
+    v.push_back({ x2, y2, z2 });
+    v.push_back({ x3, y3, z3 });
     idx.push_back(base + 0); idx.push_back(base + 1); idx.push_back(base + 2);
     idx.push_back(base + 0); idx.push_back(base + 2); idx.push_back(base + 3);
 }
@@ -848,29 +857,20 @@ static void AddSkyQuad(std::vector<SkyVertex>& v, std::vector<uint32_t>& idx,
 // pass so normal depth-tested geometry always overdraws it, and with
 // its view matrix's translation stripped so it never appears to move
 // as the player walks -- only as they look around, exactly like a
-// conventional skybox). Top and bottom faces are a flat color; the 4
-// side faces interpolate from the zenith color at their top edge to
-// the horizon color at their bottom edge, which is what actually reads
-// as "sky" since players spend most of their view near-horizontal.
+// conventional skybox). No per-vertex color needed -- the pixel shader
+// computes the zenith/horizon gradient itself from the interpolated
+// position, reused as a view direction.
 static void BuildSkyMesh() {
     std::vector<SkyVertex> verts;
     std::vector<uint32_t> indices;
     const float E = 50.0f; // arbitrary -- depth test is off, so size only has to clear the near plane
-    const float zr = 0.25f, zg = 0.45f, zb = 0.85f; // zenith
-    const float hr = 0.65f, hg = 0.75f, hb = 0.95f; // horizon
 
-    AddSkyQuad(verts, indices, -E, E, -E, -E, E, E, E, E, E, E, E, -E,
-               zr, zg, zb, zr, zg, zb, zr, zg, zb, zr, zg, zb); // top
-    AddSkyQuad(verts, indices, -E, -E, E, -E, -E, -E, E, -E, -E, E, -E, E,
-               hr, hg, hb, hr, hg, hb, hr, hg, hb, hr, hg, hb); // bottom
-    AddSkyQuad(verts, indices, E, E, -E, E, E, E, E, -E, E, E, -E, -E,
-               zr, zg, zb, zr, zg, zb, hr, hg, hb, hr, hg, hb); // +X
-    AddSkyQuad(verts, indices, -E, E, E, -E, E, -E, -E, -E, -E, -E, -E, E,
-               zr, zg, zb, zr, zg, zb, hr, hg, hb, hr, hg, hb); // -X
-    AddSkyQuad(verts, indices, E, E, E, -E, E, E, -E, -E, E, E, -E, E,
-               zr, zg, zb, zr, zg, zb, hr, hg, hb, hr, hg, hb); // +Z
-    AddSkyQuad(verts, indices, -E, E, -E, E, E, -E, E, -E, -E, -E, -E, -E,
-               zr, zg, zb, zr, zg, zb, hr, hg, hb, hr, hg, hb); // -Z
+    AddSkyQuad(verts, indices, -E, E, -E, -E, E, E, E, E, E, E, E, -E); // top
+    AddSkyQuad(verts, indices, -E, -E, E, -E, -E, -E, E, -E, -E, E, -E, E); // bottom
+    AddSkyQuad(verts, indices, E, E, -E, E, E, E, E, -E, E, E, -E, -E); // +X
+    AddSkyQuad(verts, indices, -E, E, E, -E, E, -E, -E, -E, -E, -E, -E, E); // -X
+    AddSkyQuad(verts, indices, E, E, E, -E, E, E, -E, -E, E, E, -E, E); // +Z
+    AddSkyQuad(verts, indices, -E, E, -E, E, E, -E, E, -E, -E, -E, -E, -E); // -Z
 
     D3D11_BUFFER_DESC vbd = {};
     vbd.Usage = D3D11_USAGE_DEFAULT;
@@ -1034,11 +1034,33 @@ static bool Raycast(World& w, float ox, float oy, float oz, float dx, float dy, 
     return false;
 }
 
+// Settings data persisted below in SaveGame/LoadGame. Declared here
+// (ahead of Part VII) purely because these need to exist before that
+// code does; the menu UI that actually edits them lives much further
+// down in the WinMain/message-loop section, since it needs D3D/window
+// state that doesn't exist this early in the file.
+enum GameAction {
+    ACT_FORWARD, ACT_BACK, ACT_LEFT, ACT_RIGHT, ACT_JUMP,
+    ACT_BREAK, ACT_PLACE, ACT_MENU, ACT_SAVE, ACT_LOAD,
+    ACT_COUNT
+};
+static const char* g_actionNames[ACT_COUNT] = { // stable identity for the save file, same idea as g_blockNames
+    "forward", "back", "left", "right", "jump", "break", "place", "menu", "save", "load"
+};
+static const int MOUSE_LEFT = -1, MOUSE_RIGHT = -2, MOUSE_MIDDLE = -3; // share the bound-input-code space with VK_* (all positive)
+static int g_keyBindings[ACT_COUNT] = {
+    'W', 'S', 'A', 'D', VK_SPACE, MOUSE_LEFT, MOUSE_RIGHT, VK_ESCAPE, VK_F5, VK_F9
+};
+static float g_sensitivityMultX = 1.0f, g_sensitivityMultY = 1.0f;
+static bool g_invertX = false, g_invertY = false;
+static bool g_showFPS = false;
+static float g_masterVolume = 1.0f;
+
 // =======================================================================
 // Part VII - Save / load (crash-safe, versioned, name-indexed)
 // =======================================================================
 
-static const uint32_t SAVE_VERSION = 1;
+static const uint32_t SAVE_VERSION = 2; // v2 adds the settings block (sensitivity/invert/render distance/FPS/volume/keybindings)
 static const char* SAVE_PATH = "voxelproto.sav";
 
 static uint32_t Fnv1a(const uint8_t* data, size_t len) {
@@ -1090,6 +1112,19 @@ static bool SaveGame(World& w, Player& p) {
     AppendF32(buf, p.x); AppendF32(buf, p.y); AppendF32(buf, p.z);
     AppendF32(buf, p.yaw); AppendF32(buf, p.pitch);
     AppendI32(buf, p.hotbarIndex);
+
+    // Settings: gameplay/UI preferences saved alongside player state,
+    // per request, rather than as a separate global config file.
+    AppendF32(buf, g_sensitivityMultX); AppendF32(buf, g_sensitivityMultY);
+    AppendU8(buf, g_invertX ? 1 : 0); AppendU8(buf, g_invertY ? 1 : 0);
+    AppendI32(buf, g_loadRadius);
+    AppendU8(buf, g_showFPS ? 1 : 0);
+    AppendF32(buf, g_masterVolume);
+    AppendU32(buf, ACT_COUNT);
+    for (int i = 0; i < ACT_COUNT; i++) {
+        AppendStr(buf, g_actionNames[i]); // name-indexed, same reasoning as g_blockNames (Section 3.1)
+        AppendI32(buf, g_keyBindings[i]);
+    }
 
     AppendU32(buf, BLOCK_COUNT);
     for (int i = 0; i < BLOCK_COUNT; i++) AppendStr(buf, g_blockNames[i]);
@@ -1178,6 +1213,22 @@ static bool LoadGame(World& w, Player& p) {
     loaded.yaw = r.ReadF32(); loaded.pitch = r.ReadF32();
     loaded.hotbarIndex = r.ReadI32();
 
+    // Settings: read into locals first, same as the rest of this
+    // function -- nothing gets applied to live state until the whole
+    // load is known to be valid.
+    float loadedSensX = r.ReadF32(), loadedSensY = r.ReadF32();
+    bool loadedInvertX = r.ReadU8() != 0, loadedInvertY = r.ReadU8() != 0;
+    int32_t loadedRenderDist = r.ReadI32();
+    bool loadedShowFPS = r.ReadU8() != 0;
+    float loadedVolume = r.ReadF32();
+    uint32_t bindCount = r.ReadU32();
+    std::vector<std::pair<std::string, int32_t>> loadedBindings(bindCount);
+    for (uint32_t i = 0; i < bindCount; i++) {
+        loadedBindings[i].first = r.ReadStr();
+        loadedBindings[i].second = r.ReadI32();
+    }
+    if (!r.ok) return false;
+
     uint32_t nameCount = r.ReadU32();
     std::vector<std::string> savedNames(nameCount);
     for (uint32_t i = 0; i < nameCount; i++) savedNames[i] = r.ReadStr();
@@ -1213,6 +1264,28 @@ static bool LoadGame(World& w, Player& p) {
 
     w.chunks = std::move(fresh.chunks);
     p = loaded;
+
+    g_sensitivityMultX = loadedSensX; g_sensitivityMultY = loadedSensY;
+    g_invertX = loadedInvertX; g_invertY = loadedInvertY;
+    g_loadRadius = loadedRenderDist;
+    g_showFPS = loadedShowFPS;
+    g_masterVolume = loadedVolume;
+    // Remap saved keybinding action names -> current GameAction indices,
+    // the same name-indexed pattern as the block remap above (Section
+    // 3.1): an unrecognized action name is skipped with a warning
+    // instead of corrupting some other action's binding, and any action
+    // absent from the save simply keeps its pre-load value.
+    for (auto& kv : loadedBindings) {
+        bool found = false;
+        for (int a = 0; a < ACT_COUNT; a++) {
+            if (kv.first == g_actionNames[a]) { g_keyBindings[a] = kv.second; found = true; break; }
+        }
+        if (!found) {
+            char msg[256];
+            snprintf(msg, sizeof(msg), "LoadGame: unknown action name '%s', ignoring binding\n", kv.first.c_str());
+            OutputDebugStringA(msg);
+        }
+    }
 
     // Mark every column present in the loaded world as already
     // generated, so the next chunk-load pass never re-runs procedural
@@ -1413,9 +1486,8 @@ static bool InitD3D(HWND hwnd) {
 
     D3D11_INPUT_ELEMENT_DESC skyLayoutDesc[] = {
         { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0 },
-        { "COLOR", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 12, D3D11_INPUT_PER_VERTEX_DATA, 0 },
     };
-    g_device->CreateInputLayout(skyLayoutDesc, 2, skyVsBlob->GetBufferPointer(), skyVsBlob->GetBufferSize(), &g_skyLayout);
+    g_device->CreateInputLayout(skyLayoutDesc, 1, skyVsBlob->GetBufferPointer(), skyVsBlob->GetBufferSize(), &g_skyLayout);
     skyVsBlob->Release();
     skyPsBlob->Release();
 
@@ -1499,11 +1571,13 @@ static World g_world;
 static Player g_player;
 static bool g_mouseCaptured = false;
 static bool g_keyDown[256] = {};
-enum class MenuScreen { None, Pause, LookSettings };
+enum class MenuScreen { None, Pause, LookSettings, Graphics, Display, Audio, Keybindings };
 static MenuScreen g_menuScreen = MenuScreen::None;
 static int g_mouseX = 0, g_mouseY = 0;
 static std::string g_toastMessage;
 static float g_toastTimer = 0.0f; // seconds remaining; drawn by RenderUIPass
+static float g_fpsTimer = 0.0f;
+static int g_fpsFrameCount = 0, g_fpsDisplay = 0; // updated once/sec, shown when Display Settings' FPS counter is on
 
 static void PickAndAct(bool breakBlock) {
     Vec3 f, r, u;
@@ -1540,77 +1614,214 @@ static void ReleaseMouseForMenu() {
     ReleaseCapture();
 }
 
-// Pause-menu layout: shared between rendering (RenderUIPass) and click
-// hit-testing (HandleMenuClick) so the two can never drift apart. Rows
-// are addressed by index rather than a flat button list, since the
-// Look Settings submenu's sliders need more than a single clickable rect.
+// Generic submenu layout: every menu screen (Pause and each settings
+// submenu) is a titled panel of stacked full-width rows plus, for a few
+// rows, an inline slider. One shared layout system parameterized by row
+// count/height means Keybindings' 12 compact rows and Look Settings'
+// taller slider rows don't need duplicated panel/row-rect math.
 struct UIRect { float x0, y0, x1, y1; };
-static const float MENU_PANEL_W = 320.0f, MENU_PANEL_H = 320.0f;
-static const float MENU_ROW_H = 40.0f, MENU_ROW_GAP = 12.0f, MENU_TOP_MARGIN = 70.0f;
+struct SubmenuLayout { float panelW, rowH, rowGap, topMargin, bottomMargin; int rowCount; };
 
-enum MenuRow { ROW_RESUME = 0, ROW_LOOK_SETTINGS = 1, ROW_SAVE = 2, ROW_LOAD = 3, ROW_QUIT = 4 };
-
-// Look Settings submenu: separate X/Y sensitivity sliders and separate
-// X/Y inversion, per the request -- the combined single-axis sensitivity
-// stepper this replaced didn't let X and Y be tuned independently.
-static const float SUB_PANEL_W = 400.0f, SUB_PANEL_H = 430.0f;
-static const float SUB_ROW_H = 56.0f, SUB_ROW_GAP = 12.0f, SUB_TOP_MARGIN = 70.0f;
-enum SubRow { SUBROW_INVERT_X = 0, SUBROW_SENS_X = 1, SUBROW_INVERT_Y = 2, SUBROW_SENS_Y = 3, SUBROW_BACK = 4 };
-
-// Look preferences, adjustable from the Look Settings submenu. Not
-// persisted to the save file (Section VII) -- these are player/UI
-// preferences, not world state, so they simply default fresh each run.
-static float g_sensitivityMultX = 1.0f, g_sensitivityMultY = 1.0f; // multiply BASE_MOUSE_SENS
-static bool g_invertX = false, g_invertY = false;
-static const float BASE_MOUSE_SENS = 0.0025f;
-static const float SENS_MIN = 0.25f, SENS_MAX = 3.0f;
-
-enum SliderId { SLIDER_NONE = -1, SLIDER_SENS_X = 0, SLIDER_SENS_Y = 1 };
-static int g_draggingSlider = SLIDER_NONE;
-
-static UIRect GetMenuPanelRect() {
-    float px = (SCREEN_W - MENU_PANEL_W) / 2.0f;
-    float py = (SCREEN_H - MENU_PANEL_H) / 2.0f;
-    return { px, py, px + MENU_PANEL_W, py + MENU_PANEL_H };
+static UIRect SubmenuPanelRect(const SubmenuLayout& L) {
+    float h = L.topMargin + L.rowCount * (L.rowH + L.rowGap) - L.rowGap + L.bottomMargin;
+    float px = (SCREEN_W - L.panelW) / 2.0f, py = (SCREEN_H - h) / 2.0f;
+    return { px, py, px + L.panelW, py + h };
 }
-static UIRect GetMenuRowRect(int rowIndex) {
-    UIRect panel = GetMenuPanelRect();
-    float bw = MENU_PANEL_W - 60.0f;
+static UIRect SubmenuRowRect(const SubmenuLayout& L, int rowIndex) {
+    UIRect panel = SubmenuPanelRect(L);
+    float bw = L.panelW - 60.0f;
     float bx = panel.x0 + 30.0f;
-    float by = panel.y0 + MENU_TOP_MARGIN + rowIndex * (MENU_ROW_H + MENU_ROW_GAP);
-    return { bx, by, bx + bw, by + MENU_ROW_H };
-}
-
-static UIRect GetSubPanelRect() {
-    float px = (SCREEN_W - SUB_PANEL_W) / 2.0f;
-    float py = (SCREEN_H - SUB_PANEL_H) / 2.0f;
-    return { px, py, px + SUB_PANEL_W, py + SUB_PANEL_H };
-}
-static UIRect GetSubRowRect(int rowIndex) {
-    UIRect panel = GetSubPanelRect();
-    float bw = SUB_PANEL_W - 60.0f;
-    float bx = panel.x0 + 30.0f;
-    float by = panel.y0 + SUB_TOP_MARGIN + rowIndex * (SUB_ROW_H + SUB_ROW_GAP);
-    return { bx, by, bx + bw, by + SUB_ROW_H };
-}
-// The slider track sits in the lower half of its row, with the label
-// above it. The hit rect is a bit taller than the visible track so it's
-// not fiddly to grab.
-static UIRect GetSliderTrackRect(int rowIndex) {
-    UIRect r = GetSubRowRect(rowIndex);
-    return { r.x0 + 8, r.y0 + 34, r.x1 - 8, r.y0 + 42 };
-}
-static UIRect GetSliderHitRect(int rowIndex) {
-    UIRect r = GetSubRowRect(rowIndex);
-    return { r.x0 + 8, r.y0 + 24, r.x1 - 8, r.y0 + 50 };
+    float by = panel.y0 + L.topMargin + rowIndex * (L.rowH + L.rowGap);
+    return { bx, by, bx + bw, by + L.rowH };
 }
 static bool PointInRect(int px, int py, const UIRect& r) {
     return px >= r.x0 && px <= r.x1 && py >= r.y0 && py <= r.y1;
 }
 
-// Wrap Save/Load so every call site (F5/F9 and the pause-menu buttons)
-// gets the same on-screen confirmation instead of failing or succeeding
-// silently.
+static const SubmenuLayout PAUSE_LAYOUT    = { 320.0f, 40.0f, 12.0f, 70.0f, 20.0f, 9 };
+enum PauseRow { PROW_RESUME = 0, PROW_LOOK = 1, PROW_GRAPHICS = 2, PROW_DISPLAY = 3, PROW_AUDIO = 4, PROW_KEYBINDS = 5, PROW_SAVE = 6, PROW_LOAD = 7, PROW_QUIT = 8 };
+
+// Look Settings: separate X/Y sensitivity sliders and separate X/Y
+// inversion, per the request -- a single combined sensitivity value
+// didn't let the two axes be tuned independently.
+static const SubmenuLayout LOOK_LAYOUT     = { 400.0f, 56.0f, 12.0f, 70.0f, 20.0f, 6 };
+enum LookRow { LROW_INVERT_X = 0, LROW_SENS_X = 1, LROW_INVERT_Y = 2, LROW_SENS_Y = 3, LROW_RESET = 4, LROW_BACK = 5 };
+
+// Graphics: one real setting -- render distance -- rather than stubbing
+// out controls (fog distance, shadow quality, etc.) this prototype has
+// no rendering path for yet.
+static const SubmenuLayout GRAPHICS_LAYOUT = { 380.0f, 56.0f, 12.0f, 70.0f, 20.0f, 3 };
+enum GraphicsRow { GROW_RENDER_DIST = 0, GROW_RESET = 1, GROW_BACK = 2 };
+
+// Display: one real setting -- an FPS counter toggle. Resolution/
+// fullscreen switching would need swap-chain resize and WM_SIZE
+// handling this prototype doesn't have yet, so it isn't faked here.
+static const SubmenuLayout DISPLAY_LAYOUT  = { 340.0f, 40.0f, 12.0f, 70.0f, 20.0f, 3 };
+enum DisplayRow { DROW_SHOW_FPS = 0, DROW_RESET = 1, DROW_BACK = 2 };
+
+// Audio: genuinely a placeholder -- there is no audio backend in this
+// prototype at all (no XAudio2/WASAPI, no sound loading), so Master
+// Volume is a value that gets stored and will do something once a real
+// backend exists, not a control with an audible effect today. Labeled
+// as such on-screen rather than implying it already works.
+static const SubmenuLayout AUDIO_LAYOUT    = { 380.0f, 56.0f, 12.0f, 92.0f, 20.0f, 3 }; // extra top margin fits the "no backend" note under the title
+enum AudioRow { AROW_VOLUME = 0, AROW_RESET = 1, AROW_BACK = 2 };
+
+// Keybindings: every action bindable to any keyboard key or the left/
+// right/middle mouse button (GameAction/g_actionNames/g_keyBindings/
+// MOUSE_LEFT etc. are declared earlier, ahead of Part VII's save/load
+// code, since that needs them too). Scope decisions worth being
+// explicit about: no gamepad support exists in this prototype to bind
+// to; mouse wheel and side (X1/X2) buttons aren't bindable inputs yet;
+// the 9 hotbar-select keys stay fixed rather than adding 9 more rows;
+// and rebinding does not warn about or prevent two actions sharing the
+// same input.
+static const char* g_actionLabels[ACT_COUNT] = { // on-screen text
+    "MOVE FORWARD", "MOVE BACK", "MOVE LEFT", "MOVE RIGHT", "JUMP",
+    "BREAK BLOCK", "PLACE BLOCK", "PAUSE MENU", "QUICK SAVE", "QUICK LOAD"
+};
+static const SubmenuLayout KEYBIND_LAYOUT = { 480.0f, 32.0f, 8.0f, 92.0f, 20.0f, ACT_COUNT + 2 }; // +reset +back
+
+static const int g_defaultBindings[ACT_COUNT] = {
+    'W', 'S', 'A', 'D', VK_SPACE, MOUSE_LEFT, MOUSE_RIGHT, VK_ESCAPE, VK_F5, VK_F9
+};
+static int g_rebindingAction = -1; // -1 = not capturing; else a GameAction index
+
+static bool g_mouseButtonDown[3] = {}; // 0=left,1=right,2=middle
+static int MouseButtonIndex(int code) {
+    if (code == MOUSE_LEFT) return 0;
+    if (code == MOUSE_RIGHT) return 1;
+    if (code == MOUSE_MIDDLE) return 2;
+    return -1;
+}
+static bool IsInputDown(int code) {
+    int mi = MouseButtonIndex(code);
+    if (mi >= 0) return g_mouseButtonDown[mi];
+    if (code >= 0 && code < 256) return g_keyDown[code];
+    return false;
+}
+static bool IsActionDown(GameAction a) { return IsInputDown(g_keyBindings[a]); }
+
+// Human-readable name for a bound input code, for the Keybindings rows.
+static std::string GetInputDisplayName(int code) {
+    if (code == MOUSE_LEFT) return "MOUSE LEFT";
+    if (code == MOUSE_RIGHT) return "MOUSE RIGHT";
+    if (code == MOUSE_MIDDLE) return "MOUSE MIDDLE";
+    UINT scan = MapVirtualKeyW((UINT)code, MAPVK_VK_TO_VSC);
+    LONG fakeLParam = (LONG)(scan << 16);
+    wchar_t buf[64] = {};
+    int len = GetKeyNameTextW(fakeLParam, buf, 64);
+    if (len <= 0) return "?";
+    std::string s;
+    for (int i = 0; i < len; i++) s.push_back((char)buf[i]); // default bindings are all plain-ASCII key names
+    return s;
+}
+static void ResetKeybindingsToDefault() {
+    for (int i = 0; i < ACT_COUNT; i++) g_keyBindings[i] = g_defaultBindings[i];
+}
+
+// Look/Graphics/Display/Audio preference VALUES (g_sensitivityMultX/Y,
+// g_invertX/Y, g_showFPS, g_masterVolume) are declared earlier for the
+// same reason as the keybinding data above -- Section VII needs them.
+static const float BASE_MOUSE_SENS = 0.0025f;
+static const float SENS_MIN = 0.25f, SENS_MAX = 3.0f;
+
+static void ResetLookSettings() { g_sensitivityMultX = 1.0f; g_sensitivityMultY = 1.0f; g_invertX = false; g_invertY = false; }
+static void ResetGraphicsSettings() {
+    g_loadRadius = 3;
+    g_lastPlayerChunkX = INT32_MIN; g_lastPlayerChunkZ = INT32_MIN; // force a rescan at the new radius
+}
+static void ResetDisplaySettings() { g_showFPS = false; }
+static void ResetAudioSettings() { g_masterVolume = 1.0f; }
+
+// A handful of settings are sliders rather than toggles/buttons. One
+// small generic slider system (value/range/row-rect all looked up by
+// ID) instead of one-off X-sensitivity-shaped code repeated per slider.
+enum SliderId { SLIDER_NONE = -1, SLIDER_SENS_X = 0, SLIDER_SENS_Y = 1, SLIDER_RENDER_DIST = 2, SLIDER_VOLUME = 3 };
+static int g_draggingSlider = SLIDER_NONE;
+
+struct SliderRange { float minV, maxV; };
+static SliderRange GetSliderRange(int id) {
+    switch (id) {
+    case SLIDER_SENS_X: case SLIDER_SENS_Y: return { SENS_MIN, SENS_MAX };
+    case SLIDER_RENDER_DIST: return { 1.0f, 8.0f };
+    case SLIDER_VOLUME: return { 0.0f, 1.0f };
+    default: return { 0.0f, 1.0f };
+    }
+}
+// Only meaningful while the slider's own submenu is the active screen
+// -- the only time it can be dragged or needs drawing.
+static UIRect GetSliderRowRect(int id) {
+    switch (id) {
+    case SLIDER_SENS_X: return SubmenuRowRect(LOOK_LAYOUT, LROW_SENS_X);
+    case SLIDER_SENS_Y: return SubmenuRowRect(LOOK_LAYOUT, LROW_SENS_Y);
+    case SLIDER_RENDER_DIST: return SubmenuRowRect(GRAPHICS_LAYOUT, GROW_RENDER_DIST);
+    case SLIDER_VOLUME: return SubmenuRowRect(AUDIO_LAYOUT, AROW_VOLUME);
+    default: return { 0, 0, 0, 0 };
+    }
+}
+static float GetSliderValue(int id) {
+    switch (id) {
+    case SLIDER_SENS_X: return g_sensitivityMultX;
+    case SLIDER_SENS_Y: return g_sensitivityMultY;
+    case SLIDER_RENDER_DIST: return (float)g_loadRadius;
+    case SLIDER_VOLUME: return g_masterVolume;
+    default: return 0.0f;
+    }
+}
+static void SetSliderValue(int id, float v) {
+    switch (id) {
+    case SLIDER_SENS_X: g_sensitivityMultX = v; break;
+    case SLIDER_SENS_Y: g_sensitivityMultY = v; break;
+    case SLIDER_RENDER_DIST: {
+        int newRadius = (int)(v + 0.5f);
+        if (newRadius != g_loadRadius) {
+            g_loadRadius = newRadius;
+            g_lastPlayerChunkX = INT32_MIN; g_lastPlayerChunkZ = INT32_MIN;
+        }
+        break;
+    }
+    case SLIDER_VOLUME: g_masterVolume = v; break;
+    }
+}
+static std::string GetSliderLabel(int id) {
+    char buf[64];
+    switch (id) {
+    case SLIDER_SENS_X: snprintf(buf, sizeof(buf), "X SENSITIVITY: %.2fx", g_sensitivityMultX); break;
+    case SLIDER_SENS_Y: snprintf(buf, sizeof(buf), "Y SENSITIVITY: %.2fx", g_sensitivityMultY); break;
+    case SLIDER_RENDER_DIST: snprintf(buf, sizeof(buf), "RENDER DISTANCE: %d CHUNKS", g_loadRadius); break;
+    case SLIDER_VOLUME: snprintf(buf, sizeof(buf), "MASTER VOLUME: %d%%", (int)(g_masterVolume * 100.0f + 0.5f)); break;
+    default: buf[0] = 0;
+    }
+    return buf;
+}
+// The slider track sits in the lower half of its row, with the label
+// above it. The hit rect is a bit taller than the visible track so it's
+// not fiddly to grab.
+static UIRect GetSliderTrackRect(UIRect r) { return { r.x0 + 8, r.y0 + 34, r.x1 - 8, r.y0 + 42 }; }
+static UIRect GetSliderHitRect(UIRect r) { return { r.x0 + 8, r.y0 + 24, r.x1 - 8, r.y0 + 50 }; }
+
+// Sets a slider's value directly from a mouse x position along its
+// track -- shared by the initial click and every subsequent drag
+// update while the button stays held.
+static void ApplySliderDrag(int mx) {
+    if (g_draggingSlider == SLIDER_NONE) return;
+    UIRect track = GetSliderTrackRect(GetSliderRowRect(g_draggingSlider));
+    float t = (mx - track.x0) / (track.x1 - track.x0);
+    if (t < 0.0f) t = 0.0f;
+    if (t > 1.0f) t = 1.0f;
+    SliderRange rng = GetSliderRange(g_draggingSlider);
+    SetSliderValue(g_draggingSlider, rng.minV + t * (rng.maxV - rng.minV));
+}
+static void BeginSliderDrag(int id, int mx) {
+    g_draggingSlider = id;
+    SetCapture(g_hwnd); // keep receiving WM_MOUSEMOVE if the drag leaves the client area
+    ApplySliderDrag(mx);
+}
+
+// Wrap Save/Load so every call site (F5/F9-equivalent bound inputs and
+// the pause-menu buttons) gets the same on-screen confirmation instead
+// of failing or succeeding silently.
 static void DoSave() {
     bool ok = SaveGame(g_world, g_player);
     g_toastMessage = ok ? "GAME SAVED" : "SAVE FAILED";
@@ -1623,70 +1834,86 @@ static void DoLoad() {
 }
 
 static void HandleMenuClick(int mx, int my) {
-    if (PointInRect(mx, my, GetMenuRowRect(ROW_RESUME))) {
-        g_menuScreen = MenuScreen::None;
-        CaptureMouseForPlay();
-        return;
-    }
-    if (PointInRect(mx, my, GetMenuRowRect(ROW_LOOK_SETTINGS))) {
-        g_menuScreen = MenuScreen::LookSettings;
-        return;
-    }
-    if (PointInRect(mx, my, GetMenuRowRect(ROW_SAVE))) {
-        DoSave();
-        return;
-    }
-    if (PointInRect(mx, my, GetMenuRowRect(ROW_LOAD))) {
-        DoLoad();
-        g_menuScreen = MenuScreen::None;
-        CaptureMouseForPlay();
-        return;
-    }
-    if (PointInRect(mx, my, GetMenuRowRect(ROW_QUIT))) {
-        PostQuitMessage(0);
-        return;
-    }
-}
-
-// Sets a sensitivity value directly from a mouse x position along its
-// slider's track -- shared by the initial click and every subsequent
-// drag update while the button stays held.
-static void ApplySliderDrag(int mx) {
-    if (g_draggingSlider == SLIDER_NONE) return;
-    int row = (g_draggingSlider == SLIDER_SENS_X) ? SUBROW_SENS_X : SUBROW_SENS_Y;
-    UIRect track = GetSliderTrackRect(row);
-    float t = (mx - track.x0) / (track.x1 - track.x0);
-    if (t < 0.0f) t = 0.0f;
-    if (t > 1.0f) t = 1.0f;
-    float value = SENS_MIN + t * (SENS_MAX - SENS_MIN);
-    if (g_draggingSlider == SLIDER_SENS_X) g_sensitivityMultX = value;
-    else g_sensitivityMultY = value;
+    if (PointInRect(mx, my, SubmenuRowRect(PAUSE_LAYOUT, PROW_RESUME))) { g_menuScreen = MenuScreen::None; CaptureMouseForPlay(); return; }
+    if (PointInRect(mx, my, SubmenuRowRect(PAUSE_LAYOUT, PROW_LOOK))) { g_menuScreen = MenuScreen::LookSettings; return; }
+    if (PointInRect(mx, my, SubmenuRowRect(PAUSE_LAYOUT, PROW_GRAPHICS))) { g_menuScreen = MenuScreen::Graphics; return; }
+    if (PointInRect(mx, my, SubmenuRowRect(PAUSE_LAYOUT, PROW_DISPLAY))) { g_menuScreen = MenuScreen::Display; return; }
+    if (PointInRect(mx, my, SubmenuRowRect(PAUSE_LAYOUT, PROW_AUDIO))) { g_menuScreen = MenuScreen::Audio; return; }
+    if (PointInRect(mx, my, SubmenuRowRect(PAUSE_LAYOUT, PROW_KEYBINDS))) { g_menuScreen = MenuScreen::Keybindings; return; }
+    if (PointInRect(mx, my, SubmenuRowRect(PAUSE_LAYOUT, PROW_SAVE))) { DoSave(); return; }
+    if (PointInRect(mx, my, SubmenuRowRect(PAUSE_LAYOUT, PROW_LOAD))) { DoLoad(); g_menuScreen = MenuScreen::None; CaptureMouseForPlay(); return; }
+    if (PointInRect(mx, my, SubmenuRowRect(PAUSE_LAYOUT, PROW_QUIT))) { PostQuitMessage(0); return; }
 }
 
 static void HandleLookSettingsClick(int mx, int my) {
-    if (PointInRect(mx, my, GetSubRowRect(SUBROW_INVERT_X))) {
-        g_invertX = !g_invertX;
+    if (PointInRect(mx, my, SubmenuRowRect(LOOK_LAYOUT, LROW_INVERT_X))) { g_invertX = !g_invertX; return; }
+    if (PointInRect(mx, my, SubmenuRowRect(LOOK_LAYOUT, LROW_INVERT_Y))) { g_invertY = !g_invertY; return; }
+    if (PointInRect(mx, my, GetSliderHitRect(SubmenuRowRect(LOOK_LAYOUT, LROW_SENS_X)))) { BeginSliderDrag(SLIDER_SENS_X, mx); return; }
+    if (PointInRect(mx, my, GetSliderHitRect(SubmenuRowRect(LOOK_LAYOUT, LROW_SENS_Y)))) { BeginSliderDrag(SLIDER_SENS_Y, mx); return; }
+    if (PointInRect(mx, my, SubmenuRowRect(LOOK_LAYOUT, LROW_RESET))) { ResetLookSettings(); return; }
+    if (PointInRect(mx, my, SubmenuRowRect(LOOK_LAYOUT, LROW_BACK))) { g_menuScreen = MenuScreen::Pause; return; }
+}
+static void HandleGraphicsClick(int mx, int my) {
+    if (PointInRect(mx, my, GetSliderHitRect(SubmenuRowRect(GRAPHICS_LAYOUT, GROW_RENDER_DIST)))) { BeginSliderDrag(SLIDER_RENDER_DIST, mx); return; }
+    if (PointInRect(mx, my, SubmenuRowRect(GRAPHICS_LAYOUT, GROW_RESET))) { ResetGraphicsSettings(); return; }
+    if (PointInRect(mx, my, SubmenuRowRect(GRAPHICS_LAYOUT, GROW_BACK))) { g_menuScreen = MenuScreen::Pause; return; }
+}
+static void HandleDisplayClick(int mx, int my) {
+    if (PointInRect(mx, my, SubmenuRowRect(DISPLAY_LAYOUT, DROW_SHOW_FPS))) { g_showFPS = !g_showFPS; return; }
+    if (PointInRect(mx, my, SubmenuRowRect(DISPLAY_LAYOUT, DROW_RESET))) { ResetDisplaySettings(); return; }
+    if (PointInRect(mx, my, SubmenuRowRect(DISPLAY_LAYOUT, DROW_BACK))) { g_menuScreen = MenuScreen::Pause; return; }
+}
+static void HandleAudioClick(int mx, int my) {
+    if (PointInRect(mx, my, GetSliderHitRect(SubmenuRowRect(AUDIO_LAYOUT, AROW_VOLUME)))) { BeginSliderDrag(SLIDER_VOLUME, mx); return; }
+    if (PointInRect(mx, my, SubmenuRowRect(AUDIO_LAYOUT, AROW_RESET))) { ResetAudioSettings(); return; }
+    if (PointInRect(mx, my, SubmenuRowRect(AUDIO_LAYOUT, AROW_BACK))) { g_menuScreen = MenuScreen::Pause; return; }
+}
+static void HandleKeybindingsClick(int mx, int my) {
+    for (int i = 0; i < ACT_COUNT; i++) {
+        if (PointInRect(mx, my, SubmenuRowRect(KEYBIND_LAYOUT, i))) { g_rebindingAction = i; return; }
+    }
+    if (PointInRect(mx, my, SubmenuRowRect(KEYBIND_LAYOUT, ACT_COUNT))) { ResetKeybindingsToDefault(); return; }
+    if (PointInRect(mx, my, SubmenuRowRect(KEYBIND_LAYOUT, ACT_COUNT + 1))) { g_menuScreen = MenuScreen::Pause; return; }
+}
+
+// Centralizes what a just-pressed input does, whatever its source (a
+// VK_* from WM_KEYDOWN, or a MOUSE_* sentinel from a mouse-button-down
+// message) -- the single place Menu/Save/Load/Break/Place dispatch is
+// gated, so every input source is guaranteed to agree on the rules
+// instead of each caller re-deriving them.
+static void FireBoundAction(int code) {
+    if (code == g_keyBindings[ACT_MENU]) {
+        if (g_menuScreen == MenuScreen::None) {
+            g_menuScreen = MenuScreen::Pause;
+            ReleaseMouseForMenu();
+        } else if (g_menuScreen == MenuScreen::Pause) {
+            g_menuScreen = MenuScreen::None;
+            CaptureMouseForPlay();
+        } else {
+            g_menuScreen = MenuScreen::Pause; // any submenu backs out one level to Pause
+        }
         return;
     }
-    if (PointInRect(mx, my, GetSubRowRect(SUBROW_INVERT_Y))) {
-        g_invertY = !g_invertY;
-        return;
-    }
-    if (PointInRect(mx, my, GetSliderHitRect(SUBROW_SENS_X))) {
-        g_draggingSlider = SLIDER_SENS_X;
-        SetCapture(g_hwnd); // keep receiving WM_MOUSEMOVE if the drag leaves the client area
-        ApplySliderDrag(mx);
-        return;
-    }
-    if (PointInRect(mx, my, GetSliderHitRect(SUBROW_SENS_Y))) {
-        g_draggingSlider = SLIDER_SENS_Y;
-        SetCapture(g_hwnd);
-        ApplySliderDrag(mx);
-        return;
-    }
-    if (PointInRect(mx, my, GetSubRowRect(SUBROW_BACK))) {
-        g_menuScreen = MenuScreen::Pause;
-        return;
+    if (code == g_keyBindings[ACT_SAVE]) { DoSave(); return; }
+    if (code == g_keyBindings[ACT_LOAD]) { DoLoad(); return; }
+    if (g_menuScreen != MenuScreen::None) return; // Break/Place only fire during actual play
+    if (!g_mouseCaptured) return;
+    if (code == g_keyBindings[ACT_BREAK]) { PickAndAct(true); return; }
+    if (code == g_keyBindings[ACT_PLACE]) { PickAndAct(false); return; }
+}
+
+// Dispatches a click to whichever submenu is currently open. Only
+// called for the left button -- menus never respond to right/middle
+// click, matching ordinary UI convention.
+static void DispatchMenuClick(int mx, int my) {
+    switch (g_menuScreen) {
+    case MenuScreen::Pause: HandleMenuClick(mx, my); break;
+    case MenuScreen::LookSettings: HandleLookSettingsClick(mx, my); break;
+    case MenuScreen::Graphics: HandleGraphicsClick(mx, my); break;
+    case MenuScreen::Display: HandleDisplayClick(mx, my); break;
+    case MenuScreen::Audio: HandleAudioClick(mx, my); break;
+    case MenuScreen::Keybindings: HandleKeybindingsClick(mx, my); break;
+    default: break;
     }
 }
 
@@ -1701,19 +1928,16 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         ApplySliderDrag(g_mouseX); // no-op unless a slider is actively held
         return 0;
     case WM_LBUTTONDOWN: {
+        g_mouseButtonDown[0] = true;
         int mx = (int)(short)LOWORD(lParam), my = (int)(short)HIWORD(lParam);
-        if (g_menuScreen == MenuScreen::Pause) {
-            HandleMenuClick(mx, my);
-        } else if (g_menuScreen == MenuScreen::LookSettings) {
-            HandleLookSettingsClick(mx, my);
-        } else if (!g_mouseCaptured) {
-            CaptureMouseForPlay();
-        } else {
-            PickAndAct(true);
-        }
+        if (g_rebindingAction != -1) { g_keyBindings[g_rebindingAction] = MOUSE_LEFT; g_rebindingAction = -1; return 0; }
+        if (g_menuScreen != MenuScreen::None) { DispatchMenuClick(mx, my); return 0; }
+        if (!g_mouseCaptured) { CaptureMouseForPlay(); return 0; }
+        FireBoundAction(MOUSE_LEFT);
         return 0;
     }
     case WM_LBUTTONUP:
+        g_mouseButtonDown[0] = false;
         // Only release capture if a slider drag actually set it --
         // unconditionally releasing here would also kick the player out
         // of FPS mouse-look capture (CaptureMouseForPlay's SetCapture)
@@ -1724,28 +1948,38 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         }
         return 0;
     case WM_RBUTTONDOWN:
-        if (g_mouseCaptured && g_menuScreen == MenuScreen::None) PickAndAct(false);
+        g_mouseButtonDown[1] = true;
+        if (g_rebindingAction != -1) { g_keyBindings[g_rebindingAction] = MOUSE_RIGHT; g_rebindingAction = -1; return 0; }
+        FireBoundAction(MOUSE_RIGHT);
+        return 0;
+    case WM_RBUTTONUP:
+        g_mouseButtonDown[1] = false;
+        return 0;
+    case WM_MBUTTONDOWN:
+        g_mouseButtonDown[2] = true;
+        if (g_rebindingAction != -1) { g_keyBindings[g_rebindingAction] = MOUSE_MIDDLE; g_rebindingAction = -1; return 0; }
+        FireBoundAction(MOUSE_MIDDLE);
+        return 0;
+    case WM_MBUTTONUP:
+        g_mouseButtonDown[2] = false;
         return 0;
     case WM_KEYDOWN:
         if (wParam < 256) g_keyDown[wParam] = true;
-        if (wParam == VK_ESCAPE) {
-            if (g_menuScreen == MenuScreen::LookSettings) {
-                g_menuScreen = MenuScreen::Pause; // one level back, not all the way out
-            } else if (g_menuScreen == MenuScreen::Pause) {
-                g_menuScreen = MenuScreen::None;
-                CaptureMouseForPlay();
-            } else {
-                g_menuScreen = MenuScreen::Pause;
-                ReleaseMouseForMenu();
-            }
-        } else if (wParam >= '1' && wParam <= '9' && g_menuScreen == MenuScreen::None) {
+        if (g_rebindingAction != -1) {
+            // Escape is reserved as the universal "cancel this rebind"
+            // input rather than something bindable mid-capture -- every
+            // other key or mouse button commits as the new binding,
+            // wherever it's pressed (including, e.g., on the Back row).
+            if (wParam != VK_ESCAPE) g_keyBindings[g_rebindingAction] = (int)wParam;
+            g_rebindingAction = -1;
+            return 0;
+        }
+        if (wParam >= '1' && wParam <= '9' && g_menuScreen == MenuScreen::None) {
             int idx = (int)(wParam - '1');
             if (idx < g_placeableCount) g_player.hotbarIndex = idx;
-        } else if (wParam == VK_F5) {
-            DoSave();
-        } else if (wParam == VK_F9) {
-            DoLoad();
+            return 0;
         }
+        FireBoundAction((int)wParam);
         return 0;
     case WM_KEYUP:
         if (wParam < 256) g_keyDown[wParam] = false;
@@ -1762,6 +1996,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         // both at once: it releases the cursor immediately, and the
         // key-state reset below prevents any stuck movement.
         memset(g_keyDown, 0, sizeof(g_keyDown));
+        memset(g_mouseButtonDown, 0, sizeof(g_mouseButtonDown));
+        g_rebindingAction = -1;
         // Mouse capture isn't guaranteed to be released automatically
         // just because keyboard focus was -- release whatever a slider
         // drag or FPS-look capture left behind explicitly (harmless
@@ -1849,64 +2085,112 @@ static void RenderUIPass() {
         UIDrawText(glyphVerts, hint, (SCREEN_W - tw) / 2.0f, SCREEN_H * 0.42f, scale, 1, 1, 1, 0.9f);
     }
 
-    auto drawRowButton = [&](const UIRect& r, const char* label) {
+    auto drawRowButton = [&](const UIRect& r, const std::string& label, float scale = 1.0f) {
         bool hover = PointInRect(g_mouseX, g_mouseY, r);
         float shade = hover ? 0.32f : 0.22f;
         UIDrawRect(glyphVerts, r.x0, r.y0, r.x1, r.y1, shade, shade, shade + 0.06f, 1);
-        std::string text = label;
-        float lw = UITextWidth(text, 1.0f);
-        UIDrawText(glyphVerts, text, r.x0 + ((r.x1 - r.x0) - lw) / 2.0f, r.y0 + 10.0f, 1.0f, 1, 1, 1, 1);
+        float lw = UITextWidth(label, scale);
+        UIDrawText(glyphVerts, label, r.x0 + ((r.x1 - r.x0) - lw) / 2.0f, r.y0 + (r.y1 - r.y0 - UI_CELL_H * scale) / 2.0f, scale, 1, 1, 1, 1);
     };
-    // A slider row: label above, track+handle below, both driven by the
-    // same [SENS_MIN, SENS_MAX] range the drag code in HandleLookSettingsClick
-    // and ApplySliderDrag use, so the handle position always matches the
-    // value it represents.
-    auto drawSliderRow = [&](int rowIndex, const char* label, float value) {
-        UIRect r = GetSubRowRect(rowIndex);
+    // A slider row: label above, track+handle below. Value/range/label
+    // text all come from the generic slider-by-ID lookups, so adding a
+    // slider anywhere else only means adding cases there, not another
+    // copy of this drawing code.
+    auto drawSliderRow = [&](UIRect r, int sliderId) {
         UIDrawRect(glyphVerts, r.x0, r.y0, r.x1, r.y1, 0.16f, 0.16f, 0.19f, 1);
-        char buf[48];
-        snprintf(buf, sizeof(buf), "%s: %.2fx", label, value);
-        UIDrawText(glyphVerts, buf, r.x0 + 8, r.y0 + 2.0f, 0.8f, 1, 1, 1, 1);
+        UIDrawText(glyphVerts, GetSliderLabel(sliderId), r.x0 + 8, r.y0 + 2.0f, 0.8f, 1, 1, 1, 1);
 
-        UIRect track = GetSliderTrackRect(rowIndex);
+        UIRect track = GetSliderTrackRect(r);
         UIDrawRect(glyphVerts, track.x0, track.y0, track.x1, track.y1, 0.08f, 0.08f, 0.10f, 1);
-        float t = (value - SENS_MIN) / (SENS_MAX - SENS_MIN);
+        SliderRange rng = GetSliderRange(sliderId);
+        float t = (GetSliderValue(sliderId) - rng.minV) / (rng.maxV - rng.minV);
         float handleCx = track.x0 + t * (track.x1 - track.x0);
-        bool hover = PointInRect(g_mouseX, g_mouseY, GetSliderHitRect(rowIndex));
+        bool hover = PointInRect(g_mouseX, g_mouseY, GetSliderHitRect(r));
         float hc = hover ? 1.0f : 0.85f;
         UIDrawRect(glyphVerts, handleCx - 6, track.y0 - 6, handleCx + 6, track.y1 + 6, hc, hc, 0.2f, 1);
     };
+    auto drawPanelTitle = [&](const UIRect& panel, float panelW, const char* title, float scale) {
+        float tw = UITextWidth(title, scale);
+        UIDrawText(glyphVerts, title, panel.x0 + (panelW - tw) / 2.0f, panel.y0 + 16.0f, scale, 1, 1, 1, 1);
+    };
+
+    if (g_menuScreen != MenuScreen::None) {
+        UIDrawRect(glyphVerts, 0, 0, (float)SCREEN_W, (float)SCREEN_H, 0, 0, 0, 0.55f);
+    }
 
     if (g_menuScreen == MenuScreen::Pause) {
-        UIDrawRect(glyphVerts, 0, 0, (float)SCREEN_W, (float)SCREEN_H, 0, 0, 0, 0.55f);
-        UIRect panel = GetMenuPanelRect();
+        UIRect panel = SubmenuPanelRect(PAUSE_LAYOUT);
         UIDrawRect(glyphVerts, panel.x0, panel.y0, panel.x1, panel.y1, 0.10f, 0.10f, 0.13f, 0.95f);
+        drawPanelTitle(panel, PAUSE_LAYOUT.panelW, "PAUSED", 1.3f);
 
-        std::string title = "PAUSED";
-        float titleScale = 1.3f;
-        float titleW = UITextWidth(title, titleScale);
-        UIDrawText(glyphVerts, title, panel.x0 + (MENU_PANEL_W - titleW) / 2.0f, panel.y0 + 16.0f, titleScale, 1, 1, 1, 1);
-
-        drawRowButton(GetMenuRowRect(ROW_RESUME), "RESUME");
-        drawRowButton(GetMenuRowRect(ROW_LOOK_SETTINGS), "LOOK SETTINGS");
-        drawRowButton(GetMenuRowRect(ROW_SAVE), "SAVE GAME");
-        drawRowButton(GetMenuRowRect(ROW_LOAD), "LOAD GAME");
-        drawRowButton(GetMenuRowRect(ROW_QUIT), "QUIT");
+        drawRowButton(SubmenuRowRect(PAUSE_LAYOUT, PROW_RESUME), "RESUME");
+        drawRowButton(SubmenuRowRect(PAUSE_LAYOUT, PROW_LOOK), "LOOK SETTINGS");
+        drawRowButton(SubmenuRowRect(PAUSE_LAYOUT, PROW_GRAPHICS), "GRAPHICS SETTINGS");
+        drawRowButton(SubmenuRowRect(PAUSE_LAYOUT, PROW_DISPLAY), "DISPLAY SETTINGS");
+        drawRowButton(SubmenuRowRect(PAUSE_LAYOUT, PROW_AUDIO), "AUDIO SETTINGS");
+        drawRowButton(SubmenuRowRect(PAUSE_LAYOUT, PROW_KEYBINDS), "KEYBINDINGS");
+        drawRowButton(SubmenuRowRect(PAUSE_LAYOUT, PROW_SAVE), "SAVE GAME");
+        drawRowButton(SubmenuRowRect(PAUSE_LAYOUT, PROW_LOAD), "LOAD GAME");
+        drawRowButton(SubmenuRowRect(PAUSE_LAYOUT, PROW_QUIT), "QUIT");
     } else if (g_menuScreen == MenuScreen::LookSettings) {
-        UIDrawRect(glyphVerts, 0, 0, (float)SCREEN_W, (float)SCREEN_H, 0, 0, 0, 0.55f);
-        UIRect panel = GetSubPanelRect();
+        UIRect panel = SubmenuPanelRect(LOOK_LAYOUT);
         UIDrawRect(glyphVerts, panel.x0, panel.y0, panel.x1, panel.y1, 0.10f, 0.10f, 0.13f, 0.95f);
+        drawPanelTitle(panel, LOOK_LAYOUT.panelW, "LOOK SETTINGS", 1.1f);
 
-        std::string title = "LOOK SETTINGS";
-        float titleScale = 1.1f;
-        float titleW = UITextWidth(title, titleScale);
-        UIDrawText(glyphVerts, title, panel.x0 + (SUB_PANEL_W - titleW) / 2.0f, panel.y0 + 16.0f, titleScale, 1, 1, 1, 1);
+        drawRowButton(SubmenuRowRect(LOOK_LAYOUT, LROW_INVERT_X), g_invertX ? "INVERT X LOOK: ON" : "INVERT X LOOK: OFF");
+        drawSliderRow(SubmenuRowRect(LOOK_LAYOUT, LROW_SENS_X), SLIDER_SENS_X);
+        drawRowButton(SubmenuRowRect(LOOK_LAYOUT, LROW_INVERT_Y), g_invertY ? "INVERT Y LOOK: ON" : "INVERT Y LOOK: OFF");
+        drawSliderRow(SubmenuRowRect(LOOK_LAYOUT, LROW_SENS_Y), SLIDER_SENS_Y);
+        drawRowButton(SubmenuRowRect(LOOK_LAYOUT, LROW_RESET), "RESET TO DEFAULT");
+        drawRowButton(SubmenuRowRect(LOOK_LAYOUT, LROW_BACK), "BACK");
+    } else if (g_menuScreen == MenuScreen::Graphics) {
+        UIRect panel = SubmenuPanelRect(GRAPHICS_LAYOUT);
+        UIDrawRect(glyphVerts, panel.x0, panel.y0, panel.x1, panel.y1, 0.10f, 0.10f, 0.13f, 0.95f);
+        drawPanelTitle(panel, GRAPHICS_LAYOUT.panelW, "GRAPHICS SETTINGS", 1.0f);
 
-        drawRowButton(GetSubRowRect(SUBROW_INVERT_X), g_invertX ? "INVERT X LOOK: ON" : "INVERT X LOOK: OFF");
-        drawSliderRow(SUBROW_SENS_X, "X SENSITIVITY", g_sensitivityMultX);
-        drawRowButton(GetSubRowRect(SUBROW_INVERT_Y), g_invertY ? "INVERT Y LOOK: ON" : "INVERT Y LOOK: OFF");
-        drawSliderRow(SUBROW_SENS_Y, "Y SENSITIVITY", g_sensitivityMultY);
-        drawRowButton(GetSubRowRect(SUBROW_BACK), "BACK");
+        drawSliderRow(SubmenuRowRect(GRAPHICS_LAYOUT, GROW_RENDER_DIST), SLIDER_RENDER_DIST);
+        drawRowButton(SubmenuRowRect(GRAPHICS_LAYOUT, GROW_RESET), "RESET TO DEFAULT");
+        drawRowButton(SubmenuRowRect(GRAPHICS_LAYOUT, GROW_BACK), "BACK");
+    } else if (g_menuScreen == MenuScreen::Display) {
+        UIRect panel = SubmenuPanelRect(DISPLAY_LAYOUT);
+        UIDrawRect(glyphVerts, panel.x0, panel.y0, panel.x1, panel.y1, 0.10f, 0.10f, 0.13f, 0.95f);
+        drawPanelTitle(panel, DISPLAY_LAYOUT.panelW, "DISPLAY SETTINGS", 1.0f);
+
+        drawRowButton(SubmenuRowRect(DISPLAY_LAYOUT, DROW_SHOW_FPS), g_showFPS ? "SHOW FPS COUNTER: ON" : "SHOW FPS COUNTER: OFF");
+        drawRowButton(SubmenuRowRect(DISPLAY_LAYOUT, DROW_RESET), "RESET TO DEFAULT");
+        drawRowButton(SubmenuRowRect(DISPLAY_LAYOUT, DROW_BACK), "BACK");
+    } else if (g_menuScreen == MenuScreen::Audio) {
+        UIRect panel = SubmenuPanelRect(AUDIO_LAYOUT);
+        UIDrawRect(glyphVerts, panel.x0, panel.y0, panel.x1, panel.y1, 0.10f, 0.10f, 0.13f, 0.95f);
+        drawPanelTitle(panel, AUDIO_LAYOUT.panelW, "AUDIO SETTINGS", 1.0f);
+        std::string note = "(NO AUDIO BACKEND YET)";
+        UIDrawText(glyphVerts, note, panel.x0 + (AUDIO_LAYOUT.panelW - UITextWidth(note, 0.6f)) / 2.0f,
+                   panel.y0 + 44.0f, 0.6f, 0.8f, 0.8f, 0.8f, 0.8f);
+
+        drawSliderRow(SubmenuRowRect(AUDIO_LAYOUT, AROW_VOLUME), SLIDER_VOLUME);
+        drawRowButton(SubmenuRowRect(AUDIO_LAYOUT, AROW_RESET), "RESET TO DEFAULT");
+        drawRowButton(SubmenuRowRect(AUDIO_LAYOUT, AROW_BACK), "BACK");
+    } else if (g_menuScreen == MenuScreen::Keybindings) {
+        UIRect panel = SubmenuPanelRect(KEYBIND_LAYOUT);
+        UIDrawRect(glyphVerts, panel.x0, panel.y0, panel.x1, panel.y1, 0.10f, 0.10f, 0.13f, 0.95f);
+        drawPanelTitle(panel, KEYBIND_LAYOUT.panelW, "KEYBINDINGS", 1.0f);
+        std::string hint = "CLICK A ROW, THEN PRESS THE NEW INPUT";
+        UIDrawText(glyphVerts, hint, panel.x0 + (KEYBIND_LAYOUT.panelW - UITextWidth(hint, 0.55f)) / 2.0f, panel.y0 + 44.0f, 0.55f, 0.8f, 0.8f, 0.8f, 0.8f);
+
+        for (int i = 0; i < ACT_COUNT; i++) {
+            std::string label;
+            if (g_rebindingAction == i) label = std::string(g_actionLabels[i]) + ": PRESS INPUT (ESC CANCELS)";
+            else label = std::string(g_actionLabels[i]) + ": [" + GetInputDisplayName(g_keyBindings[i]) + "]";
+            drawRowButton(SubmenuRowRect(KEYBIND_LAYOUT, i), label, 0.7f);
+        }
+        drawRowButton(SubmenuRowRect(KEYBIND_LAYOUT, ACT_COUNT), "RESET TO DEFAULT");
+        drawRowButton(SubmenuRowRect(KEYBIND_LAYOUT, ACT_COUNT + 1), "BACK");
+    }
+
+    if (g_showFPS) {
+        char buf[32];
+        snprintf(buf, sizeof(buf), "FPS: %d", g_fpsDisplay);
+        UIDrawText(glyphVerts, buf, 12.0f, 12.0f, 0.9f, 1, 1, 0.6f, 0.9f);
     }
 
     // Transient save/load confirmation -- fades over its last half
@@ -2007,6 +2291,14 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
             if (g_toastTimer < 0.0f) g_toastTimer = 0.0f;
         }
 
+        g_fpsFrameCount++;
+        g_fpsTimer += dt;
+        if (g_fpsTimer >= 1.0f) {
+            g_fpsDisplay = g_fpsFrameCount;
+            g_fpsFrameCount = 0;
+            g_fpsTimer -= 1.0f;
+        }
+
         // The foreground check is defense-in-depth alongside the
         // WM_KILLFOCUS handler above: without it, a focus change this
         // same frame that WM_KILLFOCUS hasn't been dispatched for yet
@@ -2042,9 +2334,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
                 EnsureChunksLoaded(pcx, pcz);
                 ProcessColumnGeneration(g_world);
 
-                bool fwd = g_keyDown['W'], back = g_keyDown['S'];
-                bool left = g_keyDown['A'], right = g_keyDown['D'];
-                bool jump = g_keyDown[VK_SPACE];
+                bool fwd = IsActionDown(ACT_FORWARD), back = IsActionDown(ACT_BACK);
+                bool left = IsActionDown(ACT_LEFT), right = IsActionDown(ACT_RIGHT);
+                bool jump = IsActionDown(ACT_JUMP);
                 UpdatePlayerPhysics(g_world, g_player, FIXED_DT, fwd, back, left, right, jump);
                 ProcessFalls(g_world);
 

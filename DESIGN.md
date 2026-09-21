@@ -175,13 +175,16 @@ All four reference files persisted state via `file.write(reinterpret_cast<const 
 
 ### 7.2 Format actually implemented
 ```
-magic (u32 "VXLG") | version (u32)
+magic (u32 "VXLG") | version (u32, currently 2)
 player: pos.x,y,z (f32×3)  yaw,pitch (f32×2)  hotbarSelection (i32)
+settings: sensitivityMultX,Y (f32×2)  invertX,Y (u8×2)  renderDistance (i32)
+          showFPS (u8)  masterVolume (f32)
+          keybindCount (u32) | [ actionNameLen(u16) actionNameBytes  boundCode(i32) ] × count
 blockNameCount (u32) | [ nameLen(u16) nameBytes ] × count
 blockCount (u32) | [ x,y,z (i32×3)  nameTableIndex(u8) ] × count
 checksum (u32)  — FNV-1a over every byte above
 ```
-Block identity is written and read via the **name table**, not the enum — this is the direct structural fix for the positional-ID corruption failure mode, and it's the reason `g_blockNames[]` exists as a parallel source of truth to `BlockID`.
+Block identity is written and read via the **name table**, not the enum — this is the direct structural fix for the positional-ID corruption failure mode, and it's the reason `g_blockNames[]` exists as a parallel source of truth to `BlockID`. Keybindings use the exact same name-indexed pattern (`g_actionNames[]` alongside the `GameAction` enum) for the same reason: the action set can grow without shifting what an old save's binding records mean. Gameplay/UI settings (mouse sensitivity, inversion, render distance, the FPS counter toggle, master volume, and every keybinding) are saved with the player rather than in a separate global config file, per an explicit request — a save-and-reload round-trips them exactly. Version bumped from 1 to 2 when this block was added; old v1 saves are rejected cleanly by the version check (Section 7.4) rather than misread.
 
 ### 7.3 Write sequence (crash safety)
 1. Serialize the entire save into an in-memory buffer.
@@ -232,7 +235,7 @@ Per-region multi-chunk files (grouping a 16×16 column of chunks behind one smal
 
 ## Part IX — Milestones
 
-**Milestone 1 (current prototype target — implemented):** world storage, chunked meshing with correct per-block atlas texturing, gravity/falling blocks, exact-DDA block picking, place/break, crash-safe versioned save/load, basic FPS movement and collision, a rudimentary dual-pass UI (crosshair, hotbar with selection highlight, pause menu with Resume/Save/Load/Quit, a Look Settings submenu with independent X/Y sensitivity sliders and X/Y inversion), and a basic camera-following skybox. No items, no crafting, no machines beyond a placeholder block.
+**Milestone 1 (current prototype target — implemented):** world storage, chunked meshing with correct per-block atlas texturing, gravity/falling blocks, exact-DDA block picking, place/break, crash-safe versioned save/load (now also carrying gameplay/UI settings, not just world+player state), basic FPS movement and collision, a rudimentary dual-pass UI (crosshair, hotbar with selection highlight, a Pause menu branching into five settings submenus: Look Settings with independent X/Y sensitivity sliders and X/Y inversion, Graphics with a render-distance slider, Display with an FPS-counter toggle, Audio with a stored-but-not-yet-audible master volume, and fully remappable Keybindings covering every keyboard-or-mouse-bound action — each submenu with its own Reset to Default), and a basic camera-following skybox. No items, no crafting, no machines beyond a placeholder block.
 
 **Milestone 2:** `IItemHandler` interface implemented for chests and player inventory; basic UI (2D ortho pass) for inventory/hotbar; pipe placement forms visible networks (union-find connectivity, no item flow yet); per-instance oriented, connection-aware pipe geometry replacing the current fixed-orientation per-shape placeholders.
 
@@ -259,4 +262,4 @@ x86_64-w64-mingw32-g++ -std=c++17 -O2 -mwindows main.cpp supplement.cpp -o voxel
   -ld3d11 -ldxgi -ld3dcompiler -lgdiplus -lgdi32 -luser32 -lole32 -static-libgcc -static-libstdc++
 ```
 
-Controls: WASD to move, mouse to look (click once to capture the cursor), Space to jump, left-click to break the targeted block, right-click to place the selected hotbar block, number keys 1–9 to select a hotbar block, F5 to save, F9 to load, Esc to open/close the pause menu (Resume / Look Settings / Save Game / Load Game / Quit) or back out one level from its Look Settings submenu (independent X/Y sensitivity sliders, independent X/Y inversion), all clickable with the freed cursor.
+Default controls (all fully remappable to any keyboard key or the left/right/middle mouse button via Pause → Keybindings — click a row, then press the new input; Esc cancels a rebind in progress): WASD to move, mouse to look (click once to capture the cursor), Space to jump, left-click to break the targeted block, right-click to place the selected hotbar block, number keys 1–9 to select a hotbar block (fixed, not remappable in this pass), F5 to save, F9 to load, Esc to open/close the Pause menu or back out one level from any of its submenus (Look Settings, Graphics, Display, Audio, Keybindings, each with its own Reset to Default), all clickable with the freed cursor.
