@@ -10,6 +10,11 @@
 // generation (GDI+, used only at load time) and exposes it to this file
 // through plain extern declarations below -- there is no shared header.
 
+// MSVC's windows.h defines min/max function-like macros unless this is
+// set first -- without it, any bare std::min/std::max call in this file
+// (not just the one used today) would silently break at the token that
+// happens to be followed by '('.
+#define NOMINMAX
 #include <windows.h>
 #include <d3d11.h>
 #include <d3dcompiler.h>

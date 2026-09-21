@@ -14,6 +14,7 @@
 // main.cpp's g_info[] table (ATLAS_COLS/ATLAS_ROWS there). Changing the
 // order here without changing it there will silently swap textures.
 
+#define NOMINMAX // see main.cpp for why this precedes windows.h
 #include <windows.h>
 #include <gdiplus.h>
 #include <cstdint>
