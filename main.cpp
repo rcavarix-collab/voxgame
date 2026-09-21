@@ -15,6 +15,7 @@
 // would silently break at the token that happens to be followed by '('.
 #define NOMINMAX
 #include <windows.h>
+#include <shlobj.h> // SHGetKnownFolderPath, for locating the save directory (Section 7)
 #include <d3d11.h>
 #include <d3dcompiler.h>
 #include <cstdint>
@@ -37,6 +38,9 @@
 #pragma comment(lib, "d3dcompiler.lib")
 #pragma comment(lib, "gdi32.lib")
 #pragma comment(lib, "user32.lib")
+#pragma comment(lib, "shell32.lib")
+#pragma comment(lib, "ole32.lib")
+#pragma comment(lib, "uuid.lib") // provides the FOLDERID_* GUID data (declared, not defined, in knownfolders.h)
 
 // ---------------------------------------------------------------------
 // Minimal linear algebra. The mingw-w64 port of DirectXMath only carries
@@ -1061,7 +1065,54 @@ static float g_masterVolume = 1.0f;
 // =======================================================================
 
 static const uint32_t SAVE_VERSION = 2; // v2 adds the settings block (sensitivity/invert/render distance/FPS/volume/keybindings)
-static const char* SAVE_PATH = "voxelproto.sav";
+
+// Resolves (creating if needed) Documents\My Games\VoxelLogistics -- the
+// conventional PC-game save location: visible and easy for players to
+// find, back up, or copy between machines, unlike a hidden AppData
+// folder. Falls back to the current working directory (this prototype's
+// original behavior) if the known-folder lookup fails for any reason,
+// or if something unexpected already occupies part of the intended
+// path -- e.g. a plain file sitting where a folder needs to be. A save
+// attempt should always have somewhere safe to go rather than failing
+// forever because the "nice" location didn't pan out.
+static std::filesystem::path GetSaveDirectory() {
+    namespace fs = std::filesystem;
+    PWSTR docsPath = nullptr;
+    HRESULT hr = SHGetKnownFolderPath(FOLDERID_Documents, 0, nullptr, &docsPath);
+    fs::path dir;
+    if (SUCCEEDED(hr) && docsPath) {
+        dir = fs::path(docsPath) / L"My Games" / L"VoxelLogistics";
+    }
+    if (docsPath) CoTaskMemFree(docsPath);
+
+    if (dir.empty()) {
+        OutputDebugStringA("GetSaveDirectory: could not resolve Documents, falling back to working directory\n");
+        return fs::path();
+    }
+
+    std::error_code ec;
+    if (fs::exists(dir, ec) && !fs::is_directory(dir, ec)) {
+        OutputDebugStringA("GetSaveDirectory: a file already occupies the save directory's path, falling back\n");
+        return fs::path();
+    }
+    fs::create_directories(dir, ec);
+    if (ec || !fs::is_directory(dir, ec)) {
+        OutputDebugStringA("GetSaveDirectory: could not create the save directory, falling back to working directory\n");
+        return fs::path();
+    }
+    return dir;
+}
+
+// Recomputed on every save/load rather than cached once -- cheap, and
+// means a save directory that only becomes available partway through a
+// run (e.g. a transient permissions/antivirus hiccup clears up) is
+// retried instead of being stuck with whatever the very first attempt
+// happened to find.
+static std::filesystem::path GetSaveFilePath() {
+    std::filesystem::path dir = GetSaveDirectory();
+    std::filesystem::path filename = L"voxelproto.sav";
+    return dir.empty() ? filename : dir / filename;
+}
 
 static uint32_t Fnv1a(const uint8_t* data, size_t len) {
     uint32_t h = 2166136261u;
@@ -1158,8 +1209,9 @@ static bool SaveGame(World& w, Player& p) {
     // Crash-safe write sequence (Section 7.3): write to .tmp, only then
     // rotate the previous save to .bak and rename .tmp into place.
     namespace fs = std::filesystem;
-    std::string tmpPath = std::string(SAVE_PATH) + ".tmp";
-    std::string bakPath = std::string(SAVE_PATH) + ".bak";
+    fs::path savePath = GetSaveFilePath();
+    fs::path tmpPath = savePath; tmpPath += L".tmp";
+    fs::path bakPath = savePath; bakPath += L".bak";
     {
         std::ofstream out(tmpPath, std::ios::binary | std::ios::trunc);
         if (!out) return false;
@@ -1167,17 +1219,17 @@ static bool SaveGame(World& w, Player& p) {
         if (!out) return false;
     }
     std::error_code ec;
-    if (fs::exists(SAVE_PATH, ec)) {
+    if (fs::exists(savePath, ec)) {
         fs::remove(bakPath, ec);
-        fs::rename(SAVE_PATH, bakPath, ec);
+        fs::rename(savePath, bakPath, ec);
     }
-    fs::rename(tmpPath, SAVE_PATH, ec);
+    fs::rename(tmpPath, savePath, ec);
     if (ec) return false;
     return true;
 }
 
 static bool LoadGame(World& w, Player& p) {
-    std::ifstream in(SAVE_PATH, std::ios::binary | std::ios::ate);
+    std::ifstream in(GetSaveFilePath(), std::ios::binary | std::ios::ate);
     if (!in) return false;
     std::streamsize size = in.tellg();
     if (size < 12) return false;
