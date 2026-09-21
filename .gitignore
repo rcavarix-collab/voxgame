@@ -1,0 +1,28 @@
+# Visual Studio
+.vs/
+bin/
+obj/
+Debug/
+Release/
+x64/
+x86/
+*.obj
+*.pdb
+*.ilk
+*.exp
+*.log
+*.tlog
+*.idb
+*.iobj
+*.ipdb
+*.sdf
+*.opensdf
+*.VC.db
+*.VC.VC.opendb
+*.user
+
+# This prototype's runtime save files (Section 7) -- generated next to
+# the exe/project, never something to check in.
+voxelproto.sav
+voxelproto.sav.tmp
+voxelproto.sav.bak
