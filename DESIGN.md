@@ -249,7 +249,7 @@ Per-region multi-chunk files (grouping a 16×16 column of chunks behind one smal
 
 ## Part IX — Milestones
 
-**Milestone 1 (current prototype target — implemented):** world storage, chunked meshing with correct per-block atlas texturing, gravity/falling blocks, exact-DDA block picking, place/break, crash-safe versioned save/load, a separate global settings file (7.2.2) for gameplay/UI preferences, basic FPS movement and collision, a rudimentary dual-pass UI (crosshair, hotbar with selection highlight, a Pause menu branching into five settings submenus: Look Settings with independent X/Y sensitivity sliders and X/Y inversion, Graphics with a render-distance slider, Display with an FPS-counter toggle, Audio with working Master/Music volume sliders, and fully remappable Keybindings covering every keyboard-or-mouse-bound action — each submenu with its own Reset to Default), a basic camera-following skybox, and a looping procedural ambient music track (Part XI). No items, no crafting, no machines beyond a placeholder block.
+**Milestone 1 (current prototype target — implemented):** world storage, chunked meshing with correct per-block atlas texturing, gravity/falling blocks, exact-DDA block picking, place/break, crash-safe versioned save/load, a separate global settings file (7.2.2) for gameplay/UI preferences, basic FPS movement and collision, a rudimentary dual-pass UI (crosshair, hotbar with selection highlight, a Pause menu branching into six settings submenus: Look Settings with independent X/Y sensitivity sliders and X/Y inversion, Graphics with a render-distance slider, Display with an FPS-counter toggle, Audio with working Master/Music volume sliders, Accessibility with a field-of-view slider, toggle-to-move, and a high-contrast UI palette (Part XI), and fully remappable Keybindings covering every keyboard-or-mouse-bound action — each submenu with its own Reset to Default), a basic camera-following skybox, and a looping procedural ambient music track (Part X). No items, no crafting, no machines beyond a placeholder block.
 
 **Milestone 2:** `IItemHandler` interface implemented for chests and player inventory; basic UI (2D ortho pass) for inventory/hotbar; pipe placement forms visible networks (union-find connectivity, no item flow yet); per-instance oriented, connection-aware pipe geometry replacing the current fixed-orientation per-shape placeholders.
 
@@ -261,12 +261,12 @@ Each milestone is a strict superset of the previous — nothing in Milestone 1's
 
 ---
 
-## Part XI — Audio
+## Part X — Audio
 
-### 11.1 Playback backend
-XAudio2 (`xaudio2.h`/`xaudio2.lib`), initialized once at startup (`InitAudio()`) after `CoInitializeEx` — the one thing in this codebase that actually requires COM initialized on the calling thread (`SHGetKnownFolderPath` manages its own COM state internally, so nothing earlier needed this). One `IXAudio2SourceVoice` loops the ambient track (11.2) via `XAUDIO2_LOOP_INFINITE` for the life of the process. There is only a Music channel so far — no sound effects — but Master and Music are already separate settings/sliders specifically so a future SFX channel is just another source voice under the same mastering voice, not a remix of the existing volume model. `InitAudio()` failing (no usable audio device, missing driver, etc.) is non-fatal: every audio entry point is guarded by a null check, so the game is fully playable, just silently, rather than refusing to start.
+### 10.1 Playback backend
+XAudio2 (`xaudio2.h`/`xaudio2.lib`), initialized once at startup (`InitAudio()`) after `CoInitializeEx` — the one thing in this codebase that actually requires COM initialized on the calling thread (`SHGetKnownFolderPath` manages its own COM state internally, so nothing earlier needed this). One `IXAudio2SourceVoice` loops the ambient track (10.2) via `XAUDIO2_LOOP_INFINITE` for the life of the process. There is only a Music channel so far — no sound effects — but Master and Music are already separate settings/sliders specifically so a future SFX channel is just another source voice under the same mastering voice, not a remix of the existing volume model. `InitAudio()` failing (no usable audio device, missing driver, etc.) is non-fatal: every audio entry point is guarded by a null check, so the game is fully playable, just silently, rather than refusing to start.
 
-### 11.2 The ambient track: procedural, not an asset
+### 10.2 The ambient track: procedural, not an asset
 Generated once at load time in `supplement.cpp`, the same "bake it in code, never load an external asset" philosophy the block/UI textures already use (8.4) — no audio file exists anywhere in the repo, and there's nothing to license. It's composed from techniques spanning a wider palette of prototyped experiments (drones, harmonic pads, filtered-noise "air" beds) but deliberately without that palette's randomized bursts/whistles: nothing in the shipped track ever produces a sudden or unpredictable loud event, in the same spirit as the "no uncontrolled flashing" rule planned for the visual side under accessibility.
 
 Two layers, mixed together:
@@ -275,12 +275,33 @@ Two layers, mixed together:
 
 The mix is normalized by RMS (target ≈0.20), not peak, so loudness stays consistent if more tracks are ever added, with generous headroom below clipping since the Master/Music sliders only ever attenuate afterward. Loop length is 20 seconds at 44.1kHz mono.
 
-### 11.3 Why mono
+### 10.3 Why mono
 The track is generated as a single channel throughout, not stereo collapsed down. There is no stereo field to speak of yet (no positional audio), so there was nothing to lose, and it sidesteps needing a "mono audio" accessibility toggle for this track specifically — there's no stereo image for such a toggle to collapse.
 
 ---
 
-## Part X — Build
+## Part XI — Accessibility
+
+A deliberately-scoped real slice rather than every idea discussed, plus one hard rule that applies regardless of what's implemented yet.
+
+### 11.1 What's implemented
+- **Field of view slider** (Motion/Comfort) — 45–100°, replacing what was a fixed constant. Neither a wider nor a narrower FOV is universally more comfortable for motion/vestibular sensitivity (wider can worsen edge distortion for some, narrower can worsen tunnel-vision for others), so this is a slider a player tunes in whichever direction helps them, not a binary toggle guessing a direction for them.
+- **Toggle-to-move** (Input flexibility) — an Accessibility setting that changes what a WASD press *means*: instead of the action reading as "down" only while the key is physically held, a press flips a per-action latch that stays on until pressed again. Movement no longer requires holding a key down for the whole duration of walking. Implemented as a genuine input-semantics change in `IsActionDown()`, not a visual/cosmetic toggle: `WM_KEYDOWN`'s key-repeat bit (bit 30 of `lParam`) is checked so holding the key doesn't rapidly flip the latch, and the latch is cleared on focus loss (`WM_KILLFOCUS`) and on switching the mode off, so a stale toggle can never leave the player walking without input.
+- **High-contrast UI palette** (Vision) — pushes every panel/button/slider-track fill toward the luminance extremes (near-black backgrounds, strongly saturated hover/handle colors) instead of the subtle gray-shade steps used otherwise. Text was already white-on-dark in both modes, so only fill colors branch.
+
+All three persist in the global settings file (7.2.2) like every other preference, with their own Reset to Default, in a dedicated Accessibility submenu reachable from Pause (and, once a title screen exists, from its Options too).
+
+### 11.2 What's deliberately not implemented yet, and why
+- **A "reduce flashing" toggle.** Nothing in this prototype flashes or strobes today (no particles, no damage vignette, no lightning) — a toggle controlling zero real effects would be exactly the kind of dead control this project has already pushed back on once (the old Audio submenu's "no backend yet" placeholder, Part X). The actual commitment is the hard rule in 11.3 below, which binds *future* work whether or not a toggle exists yet. The toggle gets built alongside whatever first effect would actually need one.
+- **A colorblind-safe palette.** Nothing in the current UI conveys meaning through hue alone (no red/green status indicators, no color-only warnings) — there's nothing to remap yet. Worth building the moment a UI element starts encoding meaning in color rather than only decoration.
+- **A UI scale slider.** Unlike the above, this is real, wanted future work — just architecturally bigger than it looks: every hit-rect (`PointInRect` calls throughout the menu click handlers, slider drag math) would need to move in lockstep with every visual size, or clicks would misalign the moment the slider left 100%. Deferred rather than shipped half-consistent.
+
+### 11.3 Hard rule: no uncontrolled flashing or strobing, ever
+Independent of whether a toggle exists to control it: no effect added to this game — weather, damage feedback, particles, screen shake, UI transitions, anything — may flash, strobe, or rapidly alternate brightness/color in a way the player doesn't control the timing of. This is a photosensitive-seizure-trigger concern, not a taste preference, and it binds every future milestone the same way the two-source-file constraint (1.2) binds the build. Any effect that has a legitimate reason to pulse or flicker gets a player-facing toggle to disable it *before* it ships, not after.
+
+---
+
+## Part XII — Build
 
 Two source files, one compiler invocation, no project file needed:
 

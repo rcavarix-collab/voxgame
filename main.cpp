@@ -18,7 +18,7 @@
 #include <shlobj.h> // SHGetKnownFolderPath, for locating the save directory (Section 7)
 #include <d3d11.h>
 #include <d3dcompiler.h>
-#include <xaudio2.h> // procedural music playback (Section 9)
+#include <xaudio2.h> // procedural music playback (Section 10)
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -135,7 +135,7 @@ extern "C" bool GenerateUIAtlas(
     int cellW, int cellH, int cols, int rows,
     uint8_t** outPixelsBGRA, int* outW, int* outH);
 // One deterministic, seamlessly-looping ambient track, synthesized
-// entirely in code the same way the textures above are (Section 9) --
+// entirely in code the same way the textures above are (Section 10) --
 // no external audio asset, nothing to license.
 extern "C" bool GenerateAmbientTrack(int16_t** outPCM, uint32_t* outSampleCount, uint32_t* outSampleRate);
 extern "C" void FreeGeneratedAudio(int16_t* p);
@@ -1069,7 +1069,11 @@ static bool g_invertX = false, g_invertY = false;
 static bool g_showFPS = false;
 static float g_masterVolume = 1.0f;
 static float g_musicVolume = 1.0f;
-static void ApplyAudioVolumes(); // defined in Section 9 (Audio); LoadGame's legacy-settings path needs it before that section exists
+static void ApplyAudioVolumes(); // defined in Section 10 (Audio); LoadGame's legacy-settings path needs it before that section exists
+static float g_fov = 45.0f; // degrees, vertical -- matches the fixed value this replaces, unchanged until a player moves the slider
+static bool g_toggleMovement = false; // Accessibility (Section 11): press-to-toggle instead of hold-to-move for WASD
+static bool g_highContrastUI = false; // Accessibility: higher-luminance-contrast menu palette
+static bool g_moveToggleLatch[ACT_COUNT] = {}; // only ACT_FORWARD/BACK/LEFT/RIGHT indices are ever used
 
 // =======================================================================
 // Part VII - Save / load (crash-safe, versioned, name-indexed)
@@ -1154,6 +1158,9 @@ static bool SaveSettings() {
     ss << "showFPS=" << (g_showFPS ? 1 : 0) << "\n";
     ss << "masterVolume=" << g_masterVolume << "\n";
     ss << "musicVolume=" << g_musicVolume << "\n";
+    ss << "fov=" << g_fov << "\n";
+    ss << "toggleMovement=" << (g_toggleMovement ? 1 : 0) << "\n";
+    ss << "highContrastUI=" << (g_highContrastUI ? 1 : 0) << "\n";
     for (int i = 0; i < ACT_COUNT; i++) {
         ss << "keybind." << g_actionNames[i] << "=" << g_keyBindings[i] << "\n"; // name-indexed, same reasoning as g_blockNames
     }
@@ -1201,6 +1208,9 @@ static void LoadSettings() {
     g_showFPS = getB("showFPS", g_showFPS);
     g_masterVolume = getF("masterVolume", g_masterVolume);
     g_musicVolume = getF("musicVolume", g_musicVolume);
+    g_fov = getF("fov", g_fov);
+    g_toggleMovement = getB("toggleMovement", g_toggleMovement);
+    g_highContrastUI = getB("highContrastUI", g_highContrastUI);
     for (int i = 0; i < ACT_COUNT; i++) {
         std::string key = std::string("keybind.") + g_actionNames[i];
         g_keyBindings[i] = getI(key.c_str(), g_keyBindings[i]);
@@ -1724,7 +1734,7 @@ static bool InitTextures() {
 }
 
 // =======================================================================
-// Section 9 - Audio (XAudio2 playback of the procedural ambient track)
+// Section 10 - Audio (XAudio2 playback of the procedural ambient track)
 // =======================================================================
 //
 // One persistent source voice loops the single ambient track generated
@@ -1796,7 +1806,7 @@ static World g_world;
 static Player g_player;
 static bool g_mouseCaptured = false;
 static bool g_keyDown[256] = {};
-enum class MenuScreen { None, Pause, LookSettings, Graphics, Display, Audio, Keybindings };
+enum class MenuScreen { None, Pause, LookSettings, Graphics, Display, Audio, Keybindings, Accessibility };
 static MenuScreen g_menuScreen = MenuScreen::None;
 static int g_mouseX = 0, g_mouseY = 0;
 static std::string g_toastMessage;
@@ -1863,8 +1873,8 @@ static bool PointInRect(int px, int py, const UIRect& r) {
     return px >= r.x0 && px <= r.x1 && py >= r.y0 && py <= r.y1;
 }
 
-static const SubmenuLayout PAUSE_LAYOUT    = { 320.0f, 40.0f, 12.0f, 70.0f, 20.0f, 9 };
-enum PauseRow { PROW_RESUME = 0, PROW_LOOK = 1, PROW_GRAPHICS = 2, PROW_DISPLAY = 3, PROW_AUDIO = 4, PROW_KEYBINDS = 5, PROW_SAVE = 6, PROW_LOAD = 7, PROW_QUIT = 8 };
+static const SubmenuLayout PAUSE_LAYOUT    = { 320.0f, 40.0f, 12.0f, 70.0f, 20.0f, 10 };
+enum PauseRow { PROW_RESUME = 0, PROW_LOOK = 1, PROW_GRAPHICS = 2, PROW_DISPLAY = 3, PROW_AUDIO = 4, PROW_ACCESSIBILITY = 5, PROW_KEYBINDS = 6, PROW_SAVE = 7, PROW_LOAD = 8, PROW_QUIT = 9 };
 
 // Look Settings: separate X/Y sensitivity sliders and separate X/Y
 // inversion, per the request -- a single combined sensitivity value
@@ -1885,11 +1895,29 @@ static const SubmenuLayout DISPLAY_LAYOUT  = { 340.0f, 40.0f, 12.0f, 70.0f, 20.0
 enum DisplayRow { DROW_SHOW_FPS = 0, DROW_RESET = 1, DROW_BACK = 2 };
 
 // Audio: Master and Music sliders, backed by a real XAudio2 voice
-// (Section 9) playing the procedural ambient track. Separate channels
+// (Section 10) playing the procedural ambient track. Separate channels
 // now even though Music is the only one with anything to play yet, so a
 // future SFX channel is one more slider, not a remix of this one.
 static const SubmenuLayout AUDIO_LAYOUT    = { 380.0f, 56.0f, 12.0f, 70.0f, 20.0f, 4 };
 enum AudioRow { AROW_MASTER_VOLUME = 0, AROW_MUSIC_VOLUME = 1, AROW_RESET = 2, AROW_BACK = 3 };
+
+// Accessibility: a real, working slice rather than every idea discussed
+// -- a field-of-view slider (motion/vestibular comfort: neither wider
+// nor narrower is universally more comfortable, so this is a slider a
+// player tunes either direction, not a binary toggle), a toggle-to-move
+// mode for WASD (motor accessibility: movement no longer requires
+// holding a key down for the whole duration), and a high-contrast UI
+// palette (low-vision legibility). Deliberately NOT here yet: a "reduce
+// flashing" toggle, since nothing in this prototype flashes or strobes
+// today -- the actual commitment (Section 11) is that no future effect
+// introduces uncontrolled flashing/strobing at all, which a toggle
+// controlling zero real effects wouldn't strengthen; a colorblind-safe
+// palette, since nothing in the current UI conveys meaning through hue
+// alone yet (nothing to remap); and a UI scale slider, which (unlike
+// the above) is real future work, just architecturally bigger -- every
+// hit-rect, not only the visuals, would need to move in lockstep.
+static const SubmenuLayout ACCESSIBILITY_LAYOUT = { 400.0f, 56.0f, 12.0f, 70.0f, 20.0f, 5 };
+enum AccessibilityRow { ARROW_FOV = 0, ARROW_TOGGLE_MOVE = 1, ARROW_HIGH_CONTRAST = 2, ARROW_RESET = 3, ARROW_BACK = 4 };
 
 // Keybindings: every action bindable to any keyboard key or the left/
 // right/middle mouse button (GameAction/g_actionNames/g_keyBindings/
@@ -1924,7 +1952,19 @@ static bool IsInputDown(int code) {
     if (code >= 0 && code < 256) return g_keyDown[code];
     return false;
 }
-static bool IsActionDown(GameAction a) { return IsInputDown(g_keyBindings[a]); }
+// In toggle-move mode (Accessibility, Section 11) the four movement
+// actions report a latched state that a key PRESS flips, rather than
+// whether the key is currently physically held -- the whole point being
+// that a player no longer needs to hold it down for the entire duration
+// of movement. Every other action (jump, break, place, menu, ...) is
+// unaffected and keeps the ordinary held-state behavior.
+static bool IsMovementAction(GameAction a) {
+    return a == ACT_FORWARD || a == ACT_BACK || a == ACT_LEFT || a == ACT_RIGHT;
+}
+static bool IsActionDown(GameAction a) {
+    if (g_toggleMovement && IsMovementAction(a)) return g_moveToggleLatch[a];
+    return IsInputDown(g_keyBindings[a]);
+}
 
 // Human-readable name for a bound input code, for the Keybindings rows.
 static std::string GetInputDisplayName(int code) {
@@ -1957,11 +1997,17 @@ static void ResetGraphicsSettings() {
 }
 static void ResetDisplaySettings() { g_showFPS = false; }
 static void ResetAudioSettings() { g_masterVolume = 1.0f; g_musicVolume = 1.0f; ApplyAudioVolumes(); }
+static void ResetAccessibilitySettings() {
+    g_fov = 45.0f;
+    g_toggleMovement = false;
+    g_highContrastUI = false;
+    memset(g_moveToggleLatch, 0, sizeof(g_moveToggleLatch));
+}
 
 // A handful of settings are sliders rather than toggles/buttons. One
 // small generic slider system (value/range/row-rect all looked up by
 // ID) instead of one-off X-sensitivity-shaped code repeated per slider.
-enum SliderId { SLIDER_NONE = -1, SLIDER_SENS_X = 0, SLIDER_SENS_Y = 1, SLIDER_RENDER_DIST = 2, SLIDER_MASTER_VOLUME = 3, SLIDER_MUSIC_VOLUME = 4 };
+enum SliderId { SLIDER_NONE = -1, SLIDER_SENS_X = 0, SLIDER_SENS_Y = 1, SLIDER_RENDER_DIST = 2, SLIDER_MASTER_VOLUME = 3, SLIDER_MUSIC_VOLUME = 4, SLIDER_FOV = 5 };
 static int g_draggingSlider = SLIDER_NONE;
 
 struct SliderRange { float minV, maxV; };
@@ -1970,6 +2016,7 @@ static SliderRange GetSliderRange(int id) {
     case SLIDER_SENS_X: case SLIDER_SENS_Y: return { SENS_MIN, SENS_MAX };
     case SLIDER_RENDER_DIST: return { 1.0f, 8.0f };
     case SLIDER_MASTER_VOLUME: case SLIDER_MUSIC_VOLUME: return { 0.0f, 1.0f };
+    case SLIDER_FOV: return { 45.0f, 100.0f };
     default: return { 0.0f, 1.0f };
     }
 }
@@ -1982,6 +2029,7 @@ static UIRect GetSliderRowRect(int id) {
     case SLIDER_RENDER_DIST: return SubmenuRowRect(GRAPHICS_LAYOUT, GROW_RENDER_DIST);
     case SLIDER_MASTER_VOLUME: return SubmenuRowRect(AUDIO_LAYOUT, AROW_MASTER_VOLUME);
     case SLIDER_MUSIC_VOLUME: return SubmenuRowRect(AUDIO_LAYOUT, AROW_MUSIC_VOLUME);
+    case SLIDER_FOV: return SubmenuRowRect(ACCESSIBILITY_LAYOUT, ARROW_FOV);
     default: return { 0, 0, 0, 0 };
     }
 }
@@ -1992,6 +2040,7 @@ static float GetSliderValue(int id) {
     case SLIDER_RENDER_DIST: return (float)g_loadRadius;
     case SLIDER_MASTER_VOLUME: return g_masterVolume;
     case SLIDER_MUSIC_VOLUME: return g_musicVolume;
+    case SLIDER_FOV: return g_fov;
     default: return 0.0f;
     }
 }
@@ -2009,6 +2058,7 @@ static void SetSliderValue(int id, float v) {
     }
     case SLIDER_MASTER_VOLUME: g_masterVolume = v; ApplyAudioVolumes(); break;
     case SLIDER_MUSIC_VOLUME: g_musicVolume = v; ApplyAudioVolumes(); break;
+    case SLIDER_FOV: g_fov = v; break;
     }
 }
 static std::string GetSliderLabel(int id) {
@@ -2019,6 +2069,7 @@ static std::string GetSliderLabel(int id) {
     case SLIDER_RENDER_DIST: snprintf(buf, sizeof(buf), "RENDER DISTANCE: %d CHUNKS", g_loadRadius); break;
     case SLIDER_MASTER_VOLUME: snprintf(buf, sizeof(buf), "MASTER VOLUME: %d%%", (int)(g_masterVolume * 100.0f + 0.5f)); break;
     case SLIDER_MUSIC_VOLUME: snprintf(buf, sizeof(buf), "MUSIC VOLUME: %d%%", (int)(g_musicVolume * 100.0f + 0.5f)); break;
+    case SLIDER_FOV: snprintf(buf, sizeof(buf), "FIELD OF VIEW: %d DEG", (int)(g_fov + 0.5f)); break;
     default: buf[0] = 0;
     }
     return buf;
@@ -2067,6 +2118,7 @@ static void HandleMenuClick(int mx, int my) {
     if (PointInRect(mx, my, SubmenuRowRect(PAUSE_LAYOUT, PROW_GRAPHICS))) { g_menuScreen = MenuScreen::Graphics; return; }
     if (PointInRect(mx, my, SubmenuRowRect(PAUSE_LAYOUT, PROW_DISPLAY))) { g_menuScreen = MenuScreen::Display; return; }
     if (PointInRect(mx, my, SubmenuRowRect(PAUSE_LAYOUT, PROW_AUDIO))) { g_menuScreen = MenuScreen::Audio; return; }
+    if (PointInRect(mx, my, SubmenuRowRect(PAUSE_LAYOUT, PROW_ACCESSIBILITY))) { g_menuScreen = MenuScreen::Accessibility; return; }
     if (PointInRect(mx, my, SubmenuRowRect(PAUSE_LAYOUT, PROW_KEYBINDS))) { g_menuScreen = MenuScreen::Keybindings; return; }
     if (PointInRect(mx, my, SubmenuRowRect(PAUSE_LAYOUT, PROW_SAVE))) { DoSave(); return; }
     if (PointInRect(mx, my, SubmenuRowRect(PAUSE_LAYOUT, PROW_LOAD))) { DoLoad(); g_menuScreen = MenuScreen::None; CaptureMouseForPlay(); return; }
@@ -2096,6 +2148,18 @@ static void HandleAudioClick(int mx, int my) {
     if (PointInRect(mx, my, GetSliderHitRect(SubmenuRowRect(AUDIO_LAYOUT, AROW_MUSIC_VOLUME)))) { BeginSliderDrag(SLIDER_MUSIC_VOLUME, mx); return; }
     if (PointInRect(mx, my, SubmenuRowRect(AUDIO_LAYOUT, AROW_RESET))) { ResetAudioSettings(); SaveSettings(); return; }
     if (PointInRect(mx, my, SubmenuRowRect(AUDIO_LAYOUT, AROW_BACK))) { g_menuScreen = MenuScreen::Pause; return; }
+}
+static void HandleAccessibilityClick(int mx, int my) {
+    if (PointInRect(mx, my, GetSliderHitRect(SubmenuRowRect(ACCESSIBILITY_LAYOUT, ARROW_FOV)))) { BeginSliderDrag(SLIDER_FOV, mx); return; }
+    if (PointInRect(mx, my, SubmenuRowRect(ACCESSIBILITY_LAYOUT, ARROW_TOGGLE_MOVE))) {
+        g_toggleMovement = !g_toggleMovement;
+        memset(g_moveToggleLatch, 0, sizeof(g_moveToggleLatch)); // switching modes shouldn't leave a stale latch active
+        SaveSettings();
+        return;
+    }
+    if (PointInRect(mx, my, SubmenuRowRect(ACCESSIBILITY_LAYOUT, ARROW_HIGH_CONTRAST))) { g_highContrastUI = !g_highContrastUI; SaveSettings(); return; }
+    if (PointInRect(mx, my, SubmenuRowRect(ACCESSIBILITY_LAYOUT, ARROW_RESET))) { ResetAccessibilitySettings(); SaveSettings(); return; }
+    if (PointInRect(mx, my, SubmenuRowRect(ACCESSIBILITY_LAYOUT, ARROW_BACK))) { g_menuScreen = MenuScreen::Pause; return; }
 }
 static void HandleKeybindingsClick(int mx, int my) {
     for (int i = 0; i < ACT_COUNT; i++) {
@@ -2141,6 +2205,7 @@ static void DispatchMenuClick(int mx, int my) {
     case MenuScreen::Graphics: HandleGraphicsClick(mx, my); break;
     case MenuScreen::Display: HandleDisplayClick(mx, my); break;
     case MenuScreen::Audio: HandleAudioClick(mx, my); break;
+    case MenuScreen::Accessibility: HandleAccessibilityClick(mx, my); break;
     case MenuScreen::Keybindings: HandleKeybindingsClick(mx, my); break;
     default: break;
     }
@@ -2209,6 +2274,16 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             if (idx < g_placeableCount) g_player.hotbarIndex = idx;
             return 0;
         }
+        // Toggle-to-move (Accessibility, Section 11): flip the latch on a
+        // genuine press only -- bit 30 of lParam is set when this
+        // WM_KEYDOWN is Windows' own key-repeat rather than a fresh
+        // press, and without excluding it, holding the key would rapidly
+        // flip the latch back and forth instead of toggling once.
+        if (g_toggleMovement && g_menuScreen == MenuScreen::None && !(lParam & (1 << 30))) {
+            for (GameAction a : { ACT_FORWARD, ACT_BACK, ACT_LEFT, ACT_RIGHT }) {
+                if ((int)wParam == g_keyBindings[a]) g_moveToggleLatch[a] = !g_moveToggleLatch[a];
+            }
+        }
         FireBoundAction((int)wParam);
         return 0;
     case WM_KEYUP:
@@ -2227,6 +2302,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         // key-state reset below prevents any stuck movement.
         memset(g_keyDown, 0, sizeof(g_keyDown));
         memset(g_mouseButtonDown, 0, sizeof(g_mouseButtonDown));
+        memset(g_moveToggleLatch, 0, sizeof(g_moveToggleLatch)); // don't resume walking on refocus from a stale toggle
         g_rebindingAction = -1;
         // Mouse capture isn't guaranteed to be released automatically
         // just because keyboard focus was -- release whatever a slider
@@ -2315,10 +2391,21 @@ static void RenderUIPass() {
         UIDrawText(glyphVerts, hint, (SCREEN_W - tw) / 2.0f, SCREEN_H * 0.42f, scale, 1, 1, 1, 0.9f);
     }
 
+    // High-contrast mode (Accessibility, Section 11) pushes every panel/
+    // button/track toward the luminance extremes -- near-black
+    // backgrounds, a strongly saturated hover/handle color -- rather
+    // than the subtle gray-shade steps used otherwise. Text is already
+    // white-on-dark in both modes, at effectively maximum contrast, so
+    // only the fill colors below need to branch.
     auto drawRowButton = [&](const UIRect& r, const std::string& label, float scale = 1.0f) {
         bool hover = PointInRect(g_mouseX, g_mouseY, r);
-        float shade = hover ? 0.32f : 0.22f;
-        UIDrawRect(glyphVerts, r.x0, r.y0, r.x1, r.y1, shade, shade, shade + 0.06f, 1);
+        if (g_highContrastUI) {
+            float shade = hover ? 0.9f : 0.04f;
+            UIDrawRect(glyphVerts, r.x0, r.y0, r.x1, r.y1, shade, shade, hover ? 0.1f : shade, 1);
+        } else {
+            float shade = hover ? 0.32f : 0.22f;
+            UIDrawRect(glyphVerts, r.x0, r.y0, r.x1, r.y1, shade, shade, shade + 0.06f, 1);
+        }
         float lw = UITextWidth(label, scale);
         UIDrawText(glyphVerts, label, r.x0 + ((r.x1 - r.x0) - lw) / 2.0f, r.y0 + (r.y1 - r.y0 - UI_CELL_H * scale) / 2.0f, scale, 1, 1, 1, 1);
     };
@@ -2327,21 +2414,25 @@ static void RenderUIPass() {
     // slider anywhere else only means adding cases there, not another
     // copy of this drawing code.
     auto drawSliderRow = [&](UIRect r, int sliderId) {
-        UIDrawRect(glyphVerts, r.x0, r.y0, r.x1, r.y1, 0.16f, 0.16f, 0.19f, 1);
+        UIDrawRect(glyphVerts, r.x0, r.y0, r.x1, r.y1, g_highContrastUI ? 0.03f : 0.16f, g_highContrastUI ? 0.03f : 0.16f, g_highContrastUI ? 0.03f : 0.19f, 1);
         UIDrawText(glyphVerts, GetSliderLabel(sliderId), r.x0 + 8, r.y0 + 2.0f, 0.8f, 1, 1, 1, 1);
 
         UIRect track = GetSliderTrackRect(r);
-        UIDrawRect(glyphVerts, track.x0, track.y0, track.x1, track.y1, 0.08f, 0.08f, 0.10f, 1);
+        UIDrawRect(glyphVerts, track.x0, track.y0, track.x1, track.y1, 0, 0, 0, 1);
         SliderRange rng = GetSliderRange(sliderId);
         float t = (GetSliderValue(sliderId) - rng.minV) / (rng.maxV - rng.minV);
         float handleCx = track.x0 + t * (track.x1 - track.x0);
         bool hover = PointInRect(g_mouseX, g_mouseY, GetSliderHitRect(r));
-        float hc = hover ? 1.0f : 0.85f;
-        UIDrawRect(glyphVerts, handleCx - 6, track.y0 - 6, handleCx + 6, track.y1 + 6, hc, hc, 0.2f, 1);
+        float hc = hover ? 1.0f : (g_highContrastUI ? 0.95f : 0.85f);
+        UIDrawRect(glyphVerts, handleCx - 6, track.y0 - 6, handleCx + 6, track.y1 + 6, hc, hc, g_highContrastUI ? 0.0f : 0.2f, 1);
     };
     auto drawPanelTitle = [&](const UIRect& panel, float panelW, const char* title, float scale) {
         float tw = UITextWidth(title, scale);
         UIDrawText(glyphVerts, title, panel.x0 + (panelW - tw) / 2.0f, panel.y0 + 16.0f, scale, 1, 1, 1, 1);
+    };
+    auto drawPanelBg = [&](const UIRect& panel) {
+        if (g_highContrastUI) UIDrawRect(glyphVerts, panel.x0, panel.y0, panel.x1, panel.y1, 0.0f, 0.0f, 0.0f, 0.98f);
+        else UIDrawRect(glyphVerts, panel.x0, panel.y0, panel.x1, panel.y1, 0.10f, 0.10f, 0.13f, 0.95f);
     };
 
     if (g_menuScreen != MenuScreen::None) {
@@ -2350,7 +2441,7 @@ static void RenderUIPass() {
 
     if (g_menuScreen == MenuScreen::Pause) {
         UIRect panel = SubmenuPanelRect(PAUSE_LAYOUT);
-        UIDrawRect(glyphVerts, panel.x0, panel.y0, panel.x1, panel.y1, 0.10f, 0.10f, 0.13f, 0.95f);
+        drawPanelBg(panel);
         drawPanelTitle(panel, PAUSE_LAYOUT.panelW, "PAUSED", 1.3f);
 
         drawRowButton(SubmenuRowRect(PAUSE_LAYOUT, PROW_RESUME), "RESUME");
@@ -2358,13 +2449,14 @@ static void RenderUIPass() {
         drawRowButton(SubmenuRowRect(PAUSE_LAYOUT, PROW_GRAPHICS), "GRAPHICS SETTINGS");
         drawRowButton(SubmenuRowRect(PAUSE_LAYOUT, PROW_DISPLAY), "DISPLAY SETTINGS");
         drawRowButton(SubmenuRowRect(PAUSE_LAYOUT, PROW_AUDIO), "AUDIO SETTINGS");
+        drawRowButton(SubmenuRowRect(PAUSE_LAYOUT, PROW_ACCESSIBILITY), "ACCESSIBILITY");
         drawRowButton(SubmenuRowRect(PAUSE_LAYOUT, PROW_KEYBINDS), "KEYBINDINGS");
         drawRowButton(SubmenuRowRect(PAUSE_LAYOUT, PROW_SAVE), "SAVE GAME");
         drawRowButton(SubmenuRowRect(PAUSE_LAYOUT, PROW_LOAD), "LOAD GAME");
         drawRowButton(SubmenuRowRect(PAUSE_LAYOUT, PROW_QUIT), "QUIT");
     } else if (g_menuScreen == MenuScreen::LookSettings) {
         UIRect panel = SubmenuPanelRect(LOOK_LAYOUT);
-        UIDrawRect(glyphVerts, panel.x0, panel.y0, panel.x1, panel.y1, 0.10f, 0.10f, 0.13f, 0.95f);
+        drawPanelBg(panel);
         drawPanelTitle(panel, LOOK_LAYOUT.panelW, "LOOK SETTINGS", 1.1f);
 
         drawRowButton(SubmenuRowRect(LOOK_LAYOUT, LROW_INVERT_X), g_invertX ? "INVERT X LOOK: ON" : "INVERT X LOOK: OFF");
@@ -2375,7 +2467,7 @@ static void RenderUIPass() {
         drawRowButton(SubmenuRowRect(LOOK_LAYOUT, LROW_BACK), "BACK");
     } else if (g_menuScreen == MenuScreen::Graphics) {
         UIRect panel = SubmenuPanelRect(GRAPHICS_LAYOUT);
-        UIDrawRect(glyphVerts, panel.x0, panel.y0, panel.x1, panel.y1, 0.10f, 0.10f, 0.13f, 0.95f);
+        drawPanelBg(panel);
         drawPanelTitle(panel, GRAPHICS_LAYOUT.panelW, "GRAPHICS SETTINGS", 1.0f);
 
         drawSliderRow(SubmenuRowRect(GRAPHICS_LAYOUT, GROW_RENDER_DIST), SLIDER_RENDER_DIST);
@@ -2383,7 +2475,7 @@ static void RenderUIPass() {
         drawRowButton(SubmenuRowRect(GRAPHICS_LAYOUT, GROW_BACK), "BACK");
     } else if (g_menuScreen == MenuScreen::Display) {
         UIRect panel = SubmenuPanelRect(DISPLAY_LAYOUT);
-        UIDrawRect(glyphVerts, panel.x0, panel.y0, panel.x1, panel.y1, 0.10f, 0.10f, 0.13f, 0.95f);
+        drawPanelBg(panel);
         drawPanelTitle(panel, DISPLAY_LAYOUT.panelW, "DISPLAY SETTINGS", 1.0f);
 
         drawRowButton(SubmenuRowRect(DISPLAY_LAYOUT, DROW_SHOW_FPS), g_showFPS ? "SHOW FPS COUNTER: ON" : "SHOW FPS COUNTER: OFF");
@@ -2391,16 +2483,26 @@ static void RenderUIPass() {
         drawRowButton(SubmenuRowRect(DISPLAY_LAYOUT, DROW_BACK), "BACK");
     } else if (g_menuScreen == MenuScreen::Audio) {
         UIRect panel = SubmenuPanelRect(AUDIO_LAYOUT);
-        UIDrawRect(glyphVerts, panel.x0, panel.y0, panel.x1, panel.y1, 0.10f, 0.10f, 0.13f, 0.95f);
+        drawPanelBg(panel);
         drawPanelTitle(panel, AUDIO_LAYOUT.panelW, "AUDIO SETTINGS", 1.0f);
 
         drawSliderRow(SubmenuRowRect(AUDIO_LAYOUT, AROW_MASTER_VOLUME), SLIDER_MASTER_VOLUME);
         drawSliderRow(SubmenuRowRect(AUDIO_LAYOUT, AROW_MUSIC_VOLUME), SLIDER_MUSIC_VOLUME);
         drawRowButton(SubmenuRowRect(AUDIO_LAYOUT, AROW_RESET), "RESET TO DEFAULT");
         drawRowButton(SubmenuRowRect(AUDIO_LAYOUT, AROW_BACK), "BACK");
+    } else if (g_menuScreen == MenuScreen::Accessibility) {
+        UIRect panel = SubmenuPanelRect(ACCESSIBILITY_LAYOUT);
+        drawPanelBg(panel);
+        drawPanelTitle(panel, ACCESSIBILITY_LAYOUT.panelW, "ACCESSIBILITY", 1.0f);
+
+        drawSliderRow(SubmenuRowRect(ACCESSIBILITY_LAYOUT, ARROW_FOV), SLIDER_FOV);
+        drawRowButton(SubmenuRowRect(ACCESSIBILITY_LAYOUT, ARROW_TOGGLE_MOVE), g_toggleMovement ? "TOGGLE-TO-MOVE: ON" : "TOGGLE-TO-MOVE: OFF");
+        drawRowButton(SubmenuRowRect(ACCESSIBILITY_LAYOUT, ARROW_HIGH_CONTRAST), g_highContrastUI ? "HIGH-CONTRAST UI: ON" : "HIGH-CONTRAST UI: OFF");
+        drawRowButton(SubmenuRowRect(ACCESSIBILITY_LAYOUT, ARROW_RESET), "RESET TO DEFAULT");
+        drawRowButton(SubmenuRowRect(ACCESSIBILITY_LAYOUT, ARROW_BACK), "BACK");
     } else if (g_menuScreen == MenuScreen::Keybindings) {
         UIRect panel = SubmenuPanelRect(KEYBIND_LAYOUT);
-        UIDrawRect(glyphVerts, panel.x0, panel.y0, panel.x1, panel.y1, 0.10f, 0.10f, 0.13f, 0.95f);
+        drawPanelBg(panel);
         drawPanelTitle(panel, KEYBIND_LAYOUT.panelW, "KEYBINDINGS", 1.0f);
         std::string hint = "CLICK A ROW, THEN PRESS THE NEW INPUT";
         UIDrawText(glyphVerts, hint, panel.x0 + (KEYBIND_LAYOUT.panelW - UITextWidth(hint, 0.55f)) / 2.0f, panel.y0 + 44.0f, 0.55f, 0.8f, 0.8f, 0.8f, 0.8f);
@@ -2497,7 +2599,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
 
     if (!InitD3D(g_hwnd)) return -1;
     if (!InitTextures()) return -1;
-    InitAudio(); // a machine with no usable audio device still gets a silent but playable game (Section 9)
+    InitAudio(); // a machine with no usable audio device still gets a silent but playable game (Section 10)
     BuildPipeMeshes();
     BuildSkyMesh();
 
@@ -2595,8 +2697,12 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
         GetCameraVectors(g_player, f, r, u);
         Vec3 eye = { g_player.x, g_player.y + PLAYER_EYE, g_player.z };
         Mat4 view = MatLookToLH(eye, f, u);
-        const float PI_OVER_4 = 0.78539816339f;
-        Mat4 proj = MatPerspectiveFovLH(PI_OVER_4, (float)SCREEN_W / SCREEN_H, 0.1f, 500.0f);
+        // g_fov (Accessibility, Section 11) is stored in degrees since
+        // that's the meaningful unit for a player-facing slider; 45 deg
+        // is this constant's old fixed value, unchanged until the
+        // slider is touched.
+        float fovRadians = g_fov * (3.14159265359f / 180.0f);
+        Mat4 proj = MatPerspectiveFovLH(fovRadians, (float)SCREEN_W / SCREEN_H, 0.1f, 500.0f);
         Mat4 viewProj = MatMul(view, proj);
 
         // Sky pass: depth off (reusing the UI pass's depth-disabled

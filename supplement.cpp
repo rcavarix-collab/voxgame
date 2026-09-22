@@ -257,7 +257,7 @@ extern "C" bool GenerateUIAtlas(
 }
 
 // ---------------------------------------------------------------------
-// Procedural ambient audio (Section 9). One deterministic, seamlessly-
+// Procedural ambient audio (Section 10). One deterministic, seamlessly-
 // looping background track, synthesized entirely in code -- same "we
 // generate our own assets" approach as the textures above, so there is
 // no external audio asset and nothing to license. It draws on a wider
