@@ -23,6 +23,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <cwchar> // swprintf, for building slotN.sav filenames (Section 7.2.4)
 #include <cmath>
 #include <cfloat>
 #include <string>
@@ -1090,6 +1091,41 @@ static const uint32_t SAVE_VERSION = 3; // v3 drops the embedded settings block 
 // path -- e.g. a plain file sitting where a folder needs to be. A save
 // attempt should always have somewhere safe to go rather than failing
 // forever because the "nice" location didn't pan out.
+// Shared by GetSaveDirectory and GetSavesDirectory below: checks
+// exists()&&!is_directory() before create_directories() specifically to
+// catch a plain file already occupying part of the intended path,
+// rather than letting a failed directory creation surface as a
+// mysterious save failure. Empty return means "use the fallback"
+// (the current working directory) rather than this path.
+static std::filesystem::path EnsureDirectoryBulletproof(std::filesystem::path dir, const char* what) {
+    namespace fs = std::filesystem;
+    if (dir.empty()) return fs::path();
+    std::error_code ec;
+    if (fs::exists(dir, ec) && !fs::is_directory(dir, ec)) {
+        char msg[256];
+        snprintf(msg, sizeof(msg), "%s: a file already occupies the intended directory path, falling back\n", what);
+        OutputDebugStringA(msg);
+        return fs::path();
+    }
+    fs::create_directories(dir, ec);
+    if (ec || !fs::is_directory(dir, ec)) {
+        char msg[256];
+        snprintf(msg, sizeof(msg), "%s: could not create the directory, falling back\n", what);
+        OutputDebugStringA(msg);
+        return fs::path();
+    }
+    return dir;
+}
+
+// Resolves (creating if needed) Documents\My Games\Voxistics -- the
+// conventional PC-game save location: visible and easy for players to
+// find, back up, or copy between machines, unlike a hidden AppData
+// folder. Falls back to the current working directory (this prototype's
+// original behavior) if the known-folder lookup fails for any reason,
+// or if something unexpected already occupies part of the intended
+// path -- e.g. a plain file sitting where a folder needs to be. A save
+// attempt should always have somewhere safe to go rather than failing
+// forever because the "nice" location didn't pan out.
 static std::filesystem::path GetSaveDirectory() {
     namespace fs = std::filesystem;
     PWSTR docsPath = nullptr;
@@ -1104,29 +1140,52 @@ static std::filesystem::path GetSaveDirectory() {
         OutputDebugStringA("GetSaveDirectory: could not resolve Documents, falling back to working directory\n");
         return fs::path();
     }
-
-    std::error_code ec;
-    if (fs::exists(dir, ec) && !fs::is_directory(dir, ec)) {
-        OutputDebugStringA("GetSaveDirectory: a file already occupies the save directory's path, falling back\n");
-        return fs::path();
-    }
-    fs::create_directories(dir, ec);
-    if (ec || !fs::is_directory(dir, ec)) {
-        OutputDebugStringA("GetSaveDirectory: could not create the save directory, falling back to working directory\n");
-        return fs::path();
-    }
-    return dir;
+    return EnsureDirectoryBulletproof(dir, "GetSaveDirectory");
 }
+
+// The multi-slot saves subfolder (Section 7.2.4), inside the same
+// bulletproofed base directory as settings.cfg.
+static std::filesystem::path GetSavesDirectory() {
+    std::filesystem::path base = GetSaveDirectory();
+    if (base.empty()) return base;
+    return EnsureDirectoryBulletproof(base / L"Saves", "GetSavesDirectory");
+}
+
+static const int MAX_SAVE_SLOTS = 5;
 
 // Recomputed on every save/load rather than cached once -- cheap, and
 // means a save directory that only becomes available partway through a
 // run (e.g. a transient permissions/antivirus hiccup clears up) is
 // retried instead of being stuck with whatever the very first attempt
 // happened to find.
-static std::filesystem::path GetSaveFilePath() {
-    std::filesystem::path dir = GetSaveDirectory();
-    std::filesystem::path filename = L"voxelproto.sav";
-    return dir.empty() ? filename : dir / filename;
+static std::filesystem::path GetSaveFilePath(int slot) {
+    std::filesystem::path dir = GetSavesDirectory();
+    wchar_t name[32];
+    swprintf(name, 32, L"slot%d.sav", slot + 1);
+    return dir.empty() ? std::filesystem::path(name) : dir / name;
+}
+
+static bool SlotExists(int slot) {
+    std::error_code ec;
+    return std::filesystem::exists(GetSaveFilePath(slot), ec);
+}
+
+// One-time migration (same philosophy as the v2-settings migration
+// above): a save from before multi-slot support existed lived directly
+// at Documents\My Games\Voxistics\voxelproto.sav. If that file exists
+// and slot 1 doesn't yet, move it into the new Saves\slot1.sav location
+// rather than leaving it invisible to the new slot picker forever.
+static void MigrateLegacySingleSaveIfPresent() {
+    namespace fs = std::filesystem;
+    std::filesystem::path base = GetSaveDirectory();
+    if (base.empty()) return;
+    fs::path legacyPath = base / L"voxelproto.sav";
+    std::error_code ec;
+    if (!fs::exists(legacyPath, ec)) return;
+    if (SlotExists(0)) return; // slot 1 already has its own save; never overwrite it
+    fs::path slot1Path = GetSaveFilePath(0);
+    if (slot1Path.empty()) return;
+    fs::rename(legacyPath, slot1Path, ec); // same volume (same parent tree) -- a plain rename is sufficient
 }
 
 // =======================================================================
@@ -1258,7 +1317,7 @@ struct Reader {
     }
 };
 
-static bool SaveGame(World& w, Player& p) {
+static bool SaveGame(World& w, Player& p, int slot) {
     std::vector<uint8_t> buf;
     AppendU32(buf, ('G' << 24) | ('L' << 16) | ('X' << 8) | 'V'); // magic "VXLG" (little-endian on disk)
     AppendU32(buf, SAVE_VERSION);
@@ -1302,7 +1361,7 @@ static bool SaveGame(World& w, Player& p) {
     // Crash-safe write sequence (Section 7.3): write to .tmp, only then
     // rotate the previous save to .bak and rename .tmp into place.
     namespace fs = std::filesystem;
-    fs::path savePath = GetSaveFilePath();
+    fs::path savePath = GetSaveFilePath(slot);
     fs::path tmpPath = savePath; tmpPath += L".tmp";
     fs::path bakPath = savePath; bakPath += L".bak";
     {
@@ -1321,8 +1380,8 @@ static bool SaveGame(World& w, Player& p) {
     return true;
 }
 
-static bool LoadGame(World& w, Player& p) {
-    std::ifstream in(GetSaveFilePath(), std::ios::binary | std::ios::ate);
+static bool LoadGame(World& w, Player& p, int slot) {
+    std::ifstream in(GetSaveFilePath(slot), std::ios::binary | std::ios::ate);
     if (!in) return false;
     std::streamsize size = in.tellg();
     if (size < 12) return false;
@@ -1804,10 +1863,27 @@ static void ShutdownAudio() {
 
 static World g_world;
 static Player g_player;
+static int g_currentSlot = 0; // which of the MAX_SAVE_SLOTS files Save/Load/QuickSave/QuickLoad act on this session
 static bool g_mouseCaptured = false;
 static bool g_keyDown[256] = {};
-enum class MenuScreen { None, Pause, LookSettings, Graphics, Display, Audio, Keybindings, Accessibility };
-static MenuScreen g_menuScreen = MenuScreen::None;
+enum class MenuScreen { None, Pause, LookSettings, Graphics, Display, Audio, Keybindings, Accessibility, TitleMain, SlotPicker, OptionsHub };
+// Starts at the title screen (Section 12) rather than dropping straight
+// into gameplay -- the game begins with no world loaded until New Game
+// or Load Game picks a slot.
+static MenuScreen g_menuScreen = MenuScreen::TitleMain;
+enum class GameState { Title, InGame };
+static GameState g_gameState = GameState::Title;
+// Where OptionsHub's BACK row returns to -- Pause if Options was opened
+// mid-game, TitleMain if opened from the title screen, since the same
+// hub and the same six settings submenus serve both contexts.
+static MenuScreen g_optionsReturnScreen = MenuScreen::TitleMain;
+enum class SlotPickerMode { New, Load };
+static SlotPickerMode g_slotPickerMode = SlotPickerMode::New;
+// New Game on an already-occupied slot needs a confirmation rather than
+// silently overwriting -- a second click within a few seconds confirms;
+// otherwise the arm times out and a third click starts over.
+static int g_confirmOverwriteSlot = -1;
+static float g_confirmOverwriteTimer = 0.0f;
 static int g_mouseX = 0, g_mouseY = 0;
 static std::string g_toastMessage;
 static float g_toastTimer = 0.0f; // seconds remaining; drawn by RenderUIPass
@@ -1873,8 +1949,30 @@ static bool PointInRect(int px, int py, const UIRect& r) {
     return px >= r.x0 && px <= r.x1 && py >= r.y0 && py <= r.y1;
 }
 
-static const SubmenuLayout PAUSE_LAYOUT    = { 320.0f, 40.0f, 12.0f, 70.0f, 20.0f, 10 };
-enum PauseRow { PROW_RESUME = 0, PROW_LOOK = 1, PROW_GRAPHICS = 2, PROW_DISPLAY = 3, PROW_AUDIO = 4, PROW_ACCESSIBILITY = 5, PROW_KEYBINDS = 6, PROW_SAVE = 7, PROW_LOAD = 8, PROW_QUIT = 9 };
+// Pause itself only handles resuming, save/load, and quitting -- every
+// settings category now lives one level down in OptionsHub (Section
+// 13), shared with the title screen's own Options button, rather than
+// listing all six categories directly in both places.
+static const SubmenuLayout PAUSE_LAYOUT    = { 320.0f, 40.0f, 12.0f, 70.0f, 20.0f, 6 };
+enum PauseRow { PROW_RESUME = 0, PROW_OPTIONS = 1, PROW_SAVE = 2, PROW_LOAD = 3, PROW_QUIT_TO_TITLE = 4, PROW_QUIT = 5 };
+
+// The options hub: one settings-category picker shared by Pause (mid-
+// game) and the title screen (pre-game) alike, since every submenu
+// underneath it is pure global-preference state with no dependency on
+// a loaded world.
+static const SubmenuLayout OPTIONS_HUB_LAYOUT = { 340.0f, 40.0f, 12.0f, 70.0f, 20.0f, 7 };
+enum OptionsHubRow { OHROW_LOOK = 0, OHROW_GRAPHICS = 1, OHROW_DISPLAY = 2, OHROW_AUDIO = 3, OHROW_ACCESSIBILITY = 4, OHROW_KEYBINDS = 5, OHROW_BACK = 6 };
+
+// The title screen (Section 12): shown at startup instead of dropping
+// straight into gameplay, and again after "Quit to Title" from Pause.
+static const SubmenuLayout TITLE_LAYOUT = { 320.0f, 44.0f, 14.0f, 90.0f, 20.0f, 4 };
+enum TitleRow { TROW_NEW_GAME = 0, TROW_LOAD_GAME = 1, TROW_OPTIONS = 2, TROW_QUIT = 3 };
+
+// One row per save slot plus BACK. Rows beyond MAX_SAVE_SLOTS-1 are
+// BACK; see SLOTROW_BACK below rather than a fixed enum, since the slot
+// count is a constant, not a fixed small set of named rows.
+static const SubmenuLayout SLOT_PICKER_LAYOUT = { 420.0f, 48.0f, 10.0f, 90.0f, 20.0f, MAX_SAVE_SLOTS + 1 };
+static const int SLOTROW_BACK = MAX_SAVE_SLOTS;
 
 // Look Settings: separate X/Y sensitivity sliders and separate X/Y
 // inversion, per the request -- a single combined sensitivity value
@@ -2102,27 +2200,37 @@ static void BeginSliderDrag(int id, int mx) {
 // the pause-menu buttons) gets the same on-screen confirmation instead
 // of failing or succeeding silently.
 static void DoSave() {
-    bool ok = SaveGame(g_world, g_player);
+    bool ok = SaveGame(g_world, g_player, g_currentSlot);
     g_toastMessage = ok ? "GAME SAVED" : "SAVE FAILED";
     g_toastTimer = 2.0f;
 }
 static void DoLoad() {
-    bool ok = LoadGame(g_world, g_player);
+    bool ok = LoadGame(g_world, g_player, g_currentSlot);
     g_toastMessage = ok ? "GAME LOADED" : "LOAD FAILED (no save?)";
     g_toastTimer = 2.0f;
 }
 
 static void HandleMenuClick(int mx, int my) {
     if (PointInRect(mx, my, SubmenuRowRect(PAUSE_LAYOUT, PROW_RESUME))) { g_menuScreen = MenuScreen::None; CaptureMouseForPlay(); return; }
-    if (PointInRect(mx, my, SubmenuRowRect(PAUSE_LAYOUT, PROW_LOOK))) { g_menuScreen = MenuScreen::LookSettings; return; }
-    if (PointInRect(mx, my, SubmenuRowRect(PAUSE_LAYOUT, PROW_GRAPHICS))) { g_menuScreen = MenuScreen::Graphics; return; }
-    if (PointInRect(mx, my, SubmenuRowRect(PAUSE_LAYOUT, PROW_DISPLAY))) { g_menuScreen = MenuScreen::Display; return; }
-    if (PointInRect(mx, my, SubmenuRowRect(PAUSE_LAYOUT, PROW_AUDIO))) { g_menuScreen = MenuScreen::Audio; return; }
-    if (PointInRect(mx, my, SubmenuRowRect(PAUSE_LAYOUT, PROW_ACCESSIBILITY))) { g_menuScreen = MenuScreen::Accessibility; return; }
-    if (PointInRect(mx, my, SubmenuRowRect(PAUSE_LAYOUT, PROW_KEYBINDS))) { g_menuScreen = MenuScreen::Keybindings; return; }
+    if (PointInRect(mx, my, SubmenuRowRect(PAUSE_LAYOUT, PROW_OPTIONS))) { g_optionsReturnScreen = MenuScreen::Pause; g_menuScreen = MenuScreen::OptionsHub; return; }
     if (PointInRect(mx, my, SubmenuRowRect(PAUSE_LAYOUT, PROW_SAVE))) { DoSave(); return; }
     if (PointInRect(mx, my, SubmenuRowRect(PAUSE_LAYOUT, PROW_LOAD))) { DoLoad(); g_menuScreen = MenuScreen::None; CaptureMouseForPlay(); return; }
+    if (PointInRect(mx, my, SubmenuRowRect(PAUSE_LAYOUT, PROW_QUIT_TO_TITLE))) {
+        g_gameState = GameState::Title;
+        g_menuScreen = MenuScreen::TitleMain;
+        return;
+    }
     if (PointInRect(mx, my, SubmenuRowRect(PAUSE_LAYOUT, PROW_QUIT))) { PostQuitMessage(0); return; }
+}
+
+static void HandleOptionsHubClick(int mx, int my) {
+    if (PointInRect(mx, my, SubmenuRowRect(OPTIONS_HUB_LAYOUT, OHROW_LOOK))) { g_menuScreen = MenuScreen::LookSettings; return; }
+    if (PointInRect(mx, my, SubmenuRowRect(OPTIONS_HUB_LAYOUT, OHROW_GRAPHICS))) { g_menuScreen = MenuScreen::Graphics; return; }
+    if (PointInRect(mx, my, SubmenuRowRect(OPTIONS_HUB_LAYOUT, OHROW_DISPLAY))) { g_menuScreen = MenuScreen::Display; return; }
+    if (PointInRect(mx, my, SubmenuRowRect(OPTIONS_HUB_LAYOUT, OHROW_AUDIO))) { g_menuScreen = MenuScreen::Audio; return; }
+    if (PointInRect(mx, my, SubmenuRowRect(OPTIONS_HUB_LAYOUT, OHROW_ACCESSIBILITY))) { g_menuScreen = MenuScreen::Accessibility; return; }
+    if (PointInRect(mx, my, SubmenuRowRect(OPTIONS_HUB_LAYOUT, OHROW_KEYBINDS))) { g_menuScreen = MenuScreen::Keybindings; return; }
+    if (PointInRect(mx, my, SubmenuRowRect(OPTIONS_HUB_LAYOUT, OHROW_BACK))) { g_menuScreen = g_optionsReturnScreen; return; }
 }
 
 static void HandleLookSettingsClick(int mx, int my) {
@@ -2131,23 +2239,23 @@ static void HandleLookSettingsClick(int mx, int my) {
     if (PointInRect(mx, my, GetSliderHitRect(SubmenuRowRect(LOOK_LAYOUT, LROW_SENS_X)))) { BeginSliderDrag(SLIDER_SENS_X, mx); return; }
     if (PointInRect(mx, my, GetSliderHitRect(SubmenuRowRect(LOOK_LAYOUT, LROW_SENS_Y)))) { BeginSliderDrag(SLIDER_SENS_Y, mx); return; }
     if (PointInRect(mx, my, SubmenuRowRect(LOOK_LAYOUT, LROW_RESET))) { ResetLookSettings(); SaveSettings(); return; }
-    if (PointInRect(mx, my, SubmenuRowRect(LOOK_LAYOUT, LROW_BACK))) { g_menuScreen = MenuScreen::Pause; return; }
+    if (PointInRect(mx, my, SubmenuRowRect(LOOK_LAYOUT, LROW_BACK))) { g_menuScreen = MenuScreen::OptionsHub; return; }
 }
 static void HandleGraphicsClick(int mx, int my) {
     if (PointInRect(mx, my, GetSliderHitRect(SubmenuRowRect(GRAPHICS_LAYOUT, GROW_RENDER_DIST)))) { BeginSliderDrag(SLIDER_RENDER_DIST, mx); return; }
     if (PointInRect(mx, my, SubmenuRowRect(GRAPHICS_LAYOUT, GROW_RESET))) { ResetGraphicsSettings(); SaveSettings(); return; }
-    if (PointInRect(mx, my, SubmenuRowRect(GRAPHICS_LAYOUT, GROW_BACK))) { g_menuScreen = MenuScreen::Pause; return; }
+    if (PointInRect(mx, my, SubmenuRowRect(GRAPHICS_LAYOUT, GROW_BACK))) { g_menuScreen = MenuScreen::OptionsHub; return; }
 }
 static void HandleDisplayClick(int mx, int my) {
     if (PointInRect(mx, my, SubmenuRowRect(DISPLAY_LAYOUT, DROW_SHOW_FPS))) { g_showFPS = !g_showFPS; SaveSettings(); return; }
     if (PointInRect(mx, my, SubmenuRowRect(DISPLAY_LAYOUT, DROW_RESET))) { ResetDisplaySettings(); SaveSettings(); return; }
-    if (PointInRect(mx, my, SubmenuRowRect(DISPLAY_LAYOUT, DROW_BACK))) { g_menuScreen = MenuScreen::Pause; return; }
+    if (PointInRect(mx, my, SubmenuRowRect(DISPLAY_LAYOUT, DROW_BACK))) { g_menuScreen = MenuScreen::OptionsHub; return; }
 }
 static void HandleAudioClick(int mx, int my) {
     if (PointInRect(mx, my, GetSliderHitRect(SubmenuRowRect(AUDIO_LAYOUT, AROW_MASTER_VOLUME)))) { BeginSliderDrag(SLIDER_MASTER_VOLUME, mx); return; }
     if (PointInRect(mx, my, GetSliderHitRect(SubmenuRowRect(AUDIO_LAYOUT, AROW_MUSIC_VOLUME)))) { BeginSliderDrag(SLIDER_MUSIC_VOLUME, mx); return; }
     if (PointInRect(mx, my, SubmenuRowRect(AUDIO_LAYOUT, AROW_RESET))) { ResetAudioSettings(); SaveSettings(); return; }
-    if (PointInRect(mx, my, SubmenuRowRect(AUDIO_LAYOUT, AROW_BACK))) { g_menuScreen = MenuScreen::Pause; return; }
+    if (PointInRect(mx, my, SubmenuRowRect(AUDIO_LAYOUT, AROW_BACK))) { g_menuScreen = MenuScreen::OptionsHub; return; }
 }
 static void HandleAccessibilityClick(int mx, int my) {
     if (PointInRect(mx, my, GetSliderHitRect(SubmenuRowRect(ACCESSIBILITY_LAYOUT, ARROW_FOV)))) { BeginSliderDrag(SLIDER_FOV, mx); return; }
@@ -2159,14 +2267,88 @@ static void HandleAccessibilityClick(int mx, int my) {
     }
     if (PointInRect(mx, my, SubmenuRowRect(ACCESSIBILITY_LAYOUT, ARROW_HIGH_CONTRAST))) { g_highContrastUI = !g_highContrastUI; SaveSettings(); return; }
     if (PointInRect(mx, my, SubmenuRowRect(ACCESSIBILITY_LAYOUT, ARROW_RESET))) { ResetAccessibilitySettings(); SaveSettings(); return; }
-    if (PointInRect(mx, my, SubmenuRowRect(ACCESSIBILITY_LAYOUT, ARROW_BACK))) { g_menuScreen = MenuScreen::Pause; return; }
+    if (PointInRect(mx, my, SubmenuRowRect(ACCESSIBILITY_LAYOUT, ARROW_BACK))) { g_menuScreen = MenuScreen::OptionsHub; return; }
 }
 static void HandleKeybindingsClick(int mx, int my) {
     for (int i = 0; i < ACT_COUNT; i++) {
         if (PointInRect(mx, my, SubmenuRowRect(KEYBIND_LAYOUT, i))) { g_rebindingAction = i; return; }
     }
     if (PointInRect(mx, my, SubmenuRowRect(KEYBIND_LAYOUT, ACT_COUNT))) { ResetKeybindingsToDefault(); SaveSettings(); return; }
-    if (PointInRect(mx, my, SubmenuRowRect(KEYBIND_LAYOUT, ACT_COUNT + 1))) { g_menuScreen = MenuScreen::Pause; return; }
+    if (PointInRect(mx, my, SubmenuRowRect(KEYBIND_LAYOUT, ACT_COUNT + 1))) { g_menuScreen = MenuScreen::OptionsHub; return; }
+}
+
+// Resets world/player/chunk-generation bookkeeping to a brand-new game
+// -- the same bookkeeping reset LoadGame performs after a load (Section
+// 7.4), just starting from nothing instead of loaded data. The normal
+// per-tick EnsureChunksLoaded/ProcessColumnGeneration path (Section 2.4)
+// then lazily generates terrain around the spawn point exactly as it
+// always has, once ticking resumes.
+static void ResetWorldForNewGame() {
+    g_world = World();
+    g_player = Player();
+    g_generatedColumns.clear();
+    g_pendingColumns.clear();
+    g_pendingColumnSet.clear();
+    g_lastPlayerChunkX = INT32_MIN;
+    g_lastPlayerChunkZ = INT32_MIN;
+}
+
+// Shared tail end of both New Game and Load Game: leave the slot
+// picker, mark a real game as running, and hand control to the player.
+static void EnterGameplay() {
+    g_gameState = GameState::InGame;
+    g_menuScreen = MenuScreen::None;
+    CaptureMouseForPlay();
+}
+
+static void HandleTitleClick(int mx, int my) {
+    if (PointInRect(mx, my, SubmenuRowRect(TITLE_LAYOUT, TROW_NEW_GAME))) {
+        g_slotPickerMode = SlotPickerMode::New;
+        g_confirmOverwriteSlot = -1;
+        g_menuScreen = MenuScreen::SlotPicker;
+        return;
+    }
+    if (PointInRect(mx, my, SubmenuRowRect(TITLE_LAYOUT, TROW_LOAD_GAME))) {
+        g_slotPickerMode = SlotPickerMode::Load;
+        g_confirmOverwriteSlot = -1;
+        g_menuScreen = MenuScreen::SlotPicker;
+        return;
+    }
+    if (PointInRect(mx, my, SubmenuRowRect(TITLE_LAYOUT, TROW_OPTIONS))) { g_optionsReturnScreen = MenuScreen::TitleMain; g_menuScreen = MenuScreen::OptionsHub; return; }
+    if (PointInRect(mx, my, SubmenuRowRect(TITLE_LAYOUT, TROW_QUIT))) { PostQuitMessage(0); return; }
+}
+
+static void HandleSlotPickerClick(int mx, int my) {
+    for (int slot = 0; slot < MAX_SAVE_SLOTS; slot++) {
+        if (!PointInRect(mx, my, SubmenuRowRect(SLOT_PICKER_LAYOUT, slot))) continue;
+
+        if (g_slotPickerMode == SlotPickerMode::Load) {
+            if (!SlotExists(slot)) { g_toastMessage = "EMPTY SLOT"; g_toastTimer = 1.5f; return; }
+            g_currentSlot = slot;
+            if (!LoadGame(g_world, g_player, slot)) {
+                g_toastMessage = "LOAD FAILED (corrupt save?)";
+                g_toastTimer = 2.0f;
+                return;
+            }
+            EnterGameplay();
+            return;
+        }
+
+        // New Game: an empty slot starts immediately; an occupied one
+        // needs a second click within a few seconds to confirm the
+        // overwrite, rather than silently destroying an existing world.
+        if (SlotExists(slot) && g_confirmOverwriteSlot != slot) {
+            g_confirmOverwriteSlot = slot;
+            g_confirmOverwriteTimer = 4.0f;
+            return;
+        }
+        g_currentSlot = slot;
+        ResetWorldForNewGame();
+        SaveGame(g_world, g_player, slot); // write immediately so the slot is no longer "empty" from this point on
+        EnterGameplay();
+        return;
+    }
+    if (PointInRect(mx, my, SubmenuRowRect(SLOT_PICKER_LAYOUT, SLOTROW_BACK))) { g_menuScreen = MenuScreen::TitleMain; return; }
 }
 
 // Centralizes what a just-pressed input does, whatever its source (a
@@ -2174,19 +2356,37 @@ static void HandleKeybindingsClick(int mx, int my) {
 // message) -- the single place Menu/Save/Load/Break/Place dispatch is
 // gated, so every input source is guaranteed to agree on the rules
 // instead of each caller re-deriving them.
+static bool IsSettingsSubmenu(MenuScreen s) {
+    return s == MenuScreen::LookSettings || s == MenuScreen::Graphics || s == MenuScreen::Display
+        || s == MenuScreen::Audio || s == MenuScreen::Accessibility || s == MenuScreen::Keybindings;
+}
 static void FireBoundAction(int code) {
     if (code == g_keyBindings[ACT_MENU]) {
+        if (g_gameState == GameState::Title) {
+            // ESC only ever backs out one level while at the title
+            // screen -- there's no "resume gameplay" state to return to,
+            // and TitleMain itself is the top of this tree.
+            if (g_menuScreen == MenuScreen::SlotPicker) g_menuScreen = MenuScreen::TitleMain;
+            else if (g_menuScreen == MenuScreen::OptionsHub) g_menuScreen = g_optionsReturnScreen;
+            else if (IsSettingsSubmenu(g_menuScreen)) g_menuScreen = MenuScreen::OptionsHub;
+            return;
+        }
         if (g_menuScreen == MenuScreen::None) {
             g_menuScreen = MenuScreen::Pause;
             ReleaseMouseForMenu();
         } else if (g_menuScreen == MenuScreen::Pause) {
             g_menuScreen = MenuScreen::None;
             CaptureMouseForPlay();
+        } else if (g_menuScreen == MenuScreen::OptionsHub) {
+            g_menuScreen = g_optionsReturnScreen;
+        } else if (IsSettingsSubmenu(g_menuScreen)) {
+            g_menuScreen = MenuScreen::OptionsHub;
         } else {
-            g_menuScreen = MenuScreen::Pause; // any submenu backs out one level to Pause
+            g_menuScreen = MenuScreen::Pause;
         }
         return;
     }
+    if (g_gameState == GameState::Title) return; // Save/Load/Break/Place all require an actual game running
     if (code == g_keyBindings[ACT_SAVE]) { DoSave(); return; }
     if (code == g_keyBindings[ACT_LOAD]) { DoLoad(); return; }
     if (g_menuScreen != MenuScreen::None) return; // Break/Place only fire during actual play
@@ -2201,12 +2401,15 @@ static void FireBoundAction(int code) {
 static void DispatchMenuClick(int mx, int my) {
     switch (g_menuScreen) {
     case MenuScreen::Pause: HandleMenuClick(mx, my); break;
+    case MenuScreen::OptionsHub: HandleOptionsHubClick(mx, my); break;
     case MenuScreen::LookSettings: HandleLookSettingsClick(mx, my); break;
     case MenuScreen::Graphics: HandleGraphicsClick(mx, my); break;
     case MenuScreen::Display: HandleDisplayClick(mx, my); break;
     case MenuScreen::Audio: HandleAudioClick(mx, my); break;
     case MenuScreen::Accessibility: HandleAccessibilityClick(mx, my); break;
     case MenuScreen::Keybindings: HandleKeybindingsClick(mx, my); break;
+    case MenuScreen::TitleMain: HandleTitleClick(mx, my); break;
+    case MenuScreen::SlotPicker: HandleSlotPickerClick(mx, my); break;
     default: break;
     }
 }
@@ -2445,15 +2648,53 @@ static void RenderUIPass() {
         drawPanelTitle(panel, PAUSE_LAYOUT.panelW, "PAUSED", 1.3f);
 
         drawRowButton(SubmenuRowRect(PAUSE_LAYOUT, PROW_RESUME), "RESUME");
-        drawRowButton(SubmenuRowRect(PAUSE_LAYOUT, PROW_LOOK), "LOOK SETTINGS");
-        drawRowButton(SubmenuRowRect(PAUSE_LAYOUT, PROW_GRAPHICS), "GRAPHICS SETTINGS");
-        drawRowButton(SubmenuRowRect(PAUSE_LAYOUT, PROW_DISPLAY), "DISPLAY SETTINGS");
-        drawRowButton(SubmenuRowRect(PAUSE_LAYOUT, PROW_AUDIO), "AUDIO SETTINGS");
-        drawRowButton(SubmenuRowRect(PAUSE_LAYOUT, PROW_ACCESSIBILITY), "ACCESSIBILITY");
-        drawRowButton(SubmenuRowRect(PAUSE_LAYOUT, PROW_KEYBINDS), "KEYBINDINGS");
+        drawRowButton(SubmenuRowRect(PAUSE_LAYOUT, PROW_OPTIONS), "OPTIONS");
         drawRowButton(SubmenuRowRect(PAUSE_LAYOUT, PROW_SAVE), "SAVE GAME");
         drawRowButton(SubmenuRowRect(PAUSE_LAYOUT, PROW_LOAD), "LOAD GAME");
+        drawRowButton(SubmenuRowRect(PAUSE_LAYOUT, PROW_QUIT_TO_TITLE), "QUIT TO TITLE");
         drawRowButton(SubmenuRowRect(PAUSE_LAYOUT, PROW_QUIT), "QUIT");
+    } else if (g_menuScreen == MenuScreen::OptionsHub) {
+        UIRect panel = SubmenuPanelRect(OPTIONS_HUB_LAYOUT);
+        drawPanelBg(panel);
+        drawPanelTitle(panel, OPTIONS_HUB_LAYOUT.panelW, "OPTIONS", 1.2f);
+
+        drawRowButton(SubmenuRowRect(OPTIONS_HUB_LAYOUT, OHROW_LOOK), "LOOK SETTINGS");
+        drawRowButton(SubmenuRowRect(OPTIONS_HUB_LAYOUT, OHROW_GRAPHICS), "GRAPHICS SETTINGS");
+        drawRowButton(SubmenuRowRect(OPTIONS_HUB_LAYOUT, OHROW_DISPLAY), "DISPLAY SETTINGS");
+        drawRowButton(SubmenuRowRect(OPTIONS_HUB_LAYOUT, OHROW_AUDIO), "AUDIO SETTINGS");
+        drawRowButton(SubmenuRowRect(OPTIONS_HUB_LAYOUT, OHROW_ACCESSIBILITY), "ACCESSIBILITY");
+        drawRowButton(SubmenuRowRect(OPTIONS_HUB_LAYOUT, OHROW_KEYBINDS), "KEYBINDINGS");
+        drawRowButton(SubmenuRowRect(OPTIONS_HUB_LAYOUT, OHROW_BACK), "BACK");
+    } else if (g_menuScreen == MenuScreen::TitleMain) {
+        UIRect panel = SubmenuPanelRect(TITLE_LAYOUT);
+        drawPanelBg(panel);
+        std::string gameTitle = "VOXISTICS";
+        float titleScale = 1.6f;
+        UIDrawText(glyphVerts, gameTitle, panel.x0 + (TITLE_LAYOUT.panelW - UITextWidth(gameTitle, titleScale)) / 2.0f, panel.y0 - 60.0f, titleScale, 1, 1, 1, 1);
+
+        drawRowButton(SubmenuRowRect(TITLE_LAYOUT, TROW_NEW_GAME), "NEW GAME");
+        drawRowButton(SubmenuRowRect(TITLE_LAYOUT, TROW_LOAD_GAME), "LOAD GAME");
+        drawRowButton(SubmenuRowRect(TITLE_LAYOUT, TROW_OPTIONS), "OPTIONS");
+        drawRowButton(SubmenuRowRect(TITLE_LAYOUT, TROW_QUIT), "QUIT");
+    } else if (g_menuScreen == MenuScreen::SlotPicker) {
+        UIRect panel = SubmenuPanelRect(SLOT_PICKER_LAYOUT);
+        drawPanelBg(panel);
+        const char* title = g_slotPickerMode == SlotPickerMode::New ? "NEW GAME - CHOOSE A SLOT" : "LOAD GAME - CHOOSE A SLOT";
+        drawPanelTitle(panel, SLOT_PICKER_LAYOUT.panelW, title, 0.9f);
+
+        for (int slot = 0; slot < MAX_SAVE_SLOTS; slot++) {
+            bool occupied = SlotExists(slot);
+            std::string label;
+            char slotNum[16];
+            snprintf(slotNum, sizeof(slotNum), "WORLD %d", slot + 1);
+            if (g_slotPickerMode == SlotPickerMode::New && g_confirmOverwriteSlot == slot) {
+                label = std::string(slotNum) + " - CLICK AGAIN TO OVERWRITE";
+            } else {
+                label = std::string(slotNum) + (occupied ? " - SAVED" : " - EMPTY");
+            }
+            drawRowButton(SubmenuRowRect(SLOT_PICKER_LAYOUT, slot), label, 0.85f);
+        }
+        drawRowButton(SubmenuRowRect(SLOT_PICKER_LAYOUT, SLOTROW_BACK), "BACK");
     } else if (g_menuScreen == MenuScreen::LookSettings) {
         UIRect panel = SubmenuPanelRect(LOOK_LAYOUT);
         drawPanelBg(panel);
@@ -2589,6 +2830,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
     ShowWindow(g_hwnd, nCmdShow);
 
     LoadSettings(); // before anything reads g_sensitivityMultX/g_loadRadius/g_masterVolume/etc.
+    MigrateLegacySingleSaveIfPresent(); // before the title screen's slot picker can show slot 1
 
     // XAudio2Create requires COM initialized on the calling thread.
     // Nothing else in this file has needed that so far (SHGetKnownFolderPath
@@ -2629,6 +2871,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
         if (g_toastTimer > 0.0f) {
             g_toastTimer -= dt;
             if (g_toastTimer < 0.0f) g_toastTimer = 0.0f;
+        }
+        if (g_confirmOverwriteSlot != -1) {
+            g_confirmOverwriteTimer -= dt;
+            if (g_confirmOverwriteTimer <= 0.0f) g_confirmOverwriteSlot = -1; // armed confirm expired; next click re-arms instead of overwriting
         }
 
         g_fpsFrameCount++;
