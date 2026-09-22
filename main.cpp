@@ -135,11 +135,24 @@ extern "C" void FreeGeneratedPixels(uint8_t* p);
 extern "C" bool GenerateUIAtlas(
     int cellW, int cellH, int cols, int rows,
     uint8_t** outPixelsBGRA, int* outW, int* outH);
-// One deterministic, seamlessly-looping ambient track, synthesized
-// entirely in code the same way the textures above are (Section 10) --
-// no external audio asset, nothing to license.
-extern "C" bool GenerateAmbientTrack(int16_t** outPCM, uint32_t* outSampleCount, uint32_t* outSampleRate);
-extern "C" void FreeGeneratedAudio(int16_t* p);
+// The day-cycle music generator (Section 10 / Part XIV): synthesized
+// entirely in code, same as the textures above -- no external audio
+// asset, nothing to license. Generated in small chunks continuously
+// anchored to the live day clock rather than baked once, so playback
+// can never drift out of sync with it (DESIGN.md Part XIV). MusicState
+// is plain-old-data with an identical layout assumed on both sides of
+// this contract-by-convention, same as every other extern "C" entry
+// point here -- see supplement.cpp for its field-by-field meaning.
+struct MusicState {
+    double filterZ1, filterZ2;
+    double secondsUntilNextNote;
+    int arpCursor;
+    double noteEnvTime;
+    double noteHoldDur;
+    double currentNoteFreq;
+};
+extern "C" void ResetMusicState(MusicState* s);
+extern "C" void GenerateMusicChunk(double startTime, int sampleCount, double intensity, MusicState* state, int16_t* outPCM);
 
 // =======================================================================
 // Part II/III - World representation and block model
@@ -1826,60 +1839,128 @@ static bool InitTextures() {
 }
 
 // =======================================================================
-// Section 10 - Audio (XAudio2 playback of the procedural ambient track)
+// Section 10 / Part XIV - Audio (chunked, clock-synced day-cycle music)
 // =======================================================================
 //
-// One persistent source voice loops the single ambient track generated
-// once at startup (supplement.cpp) for as long as the process runs.
-// There is only a "Music" channel so far -- no sound effects -- but
-// Master and Music are already separate settings/sliders so adding SFX
-// voices later is just more source voices under the same mastering
-// voice, not a change to the mixing model.
+// One persistent source voice plays the day-cycle music (supplement.cpp),
+// generated in small chunks continuously anchored to the live day clock
+// (g_dayTimeSeconds) rather than baked once as a fixed loop -- see
+// DESIGN.md Part XIV for why: this is what makes it structurally
+// impossible for playback to drift out of sync with the clock, rather
+// than merely unlikely. Master and Music are separate settings/sliders
+// so adding an SFX channel later is just another source voice under the
+// same mastering voice, not a change to the mixing model.
+//
+// Silent at the title screen by construction: nothing ever calls
+// StartMusicPlayback() until a game actually begins (New Game/Load
+// Game), and nothing resumes it after Quit to Title. Silent during any
+// paused menu too, per an explicit request -- losing the music when you
+// pause reads as "time itself stopped," which is the point.
 
 static IXAudio2* g_xaudio2 = nullptr;
 static IXAudio2MasteringVoice* g_masteringVoice = nullptr;
 static IXAudio2SourceVoice* g_musicVoice = nullptr;
-static int16_t* g_musicPCM = nullptr;
+static MusicState g_musicState;
+static double g_nextChunkStartTime = -1.0; // -1 = inactive (title screen / paused)
+static std::deque<int16_t*> g_musicPendingBuffers; // FIFO, oldest-submitted first; freed once XAudio2 finishes each one
+static const int MUSIC_SAMPLE_RATE = 44100; // must match supplement.cpp's kMusicSampleRate
+static const int MUSIC_CHUNK_SAMPLES = MUSIC_SAMPLE_RATE; // 1 second per chunk
+static const int MUSIC_LOOKAHEAD_CHUNKS = 3;
 
 static void ApplyAudioVolumes() {
     if (g_musicVoice) g_musicVoice->SetVolume(g_masterVolume * g_musicVolume);
 }
 
+static void FreeAllPendingMusicBuffers() {
+    for (int16_t* p : g_musicPendingBuffers) delete[] p;
+    g_musicPendingBuffers.clear();
+}
+
+static void SubmitOneMusicChunk() {
+    int16_t* chunk = new int16_t[MUSIC_CHUNK_SAMPLES];
+    GenerateMusicChunk(g_nextChunkStartTime, MUSIC_CHUNK_SAMPLES, (double)g_musicIntensity, &g_musicState, chunk);
+    g_nextChunkStartTime += (double)MUSIC_CHUNK_SAMPLES / MUSIC_SAMPLE_RATE;
+    XAUDIO2_BUFFER buf = {};
+    buf.AudioBytes = MUSIC_CHUNK_SAMPLES * sizeof(int16_t);
+    buf.pAudioData = (const BYTE*)chunk;
+    g_musicVoice->SubmitSourceBuffer(&buf);
+    g_musicPendingBuffers.push_back(chunk);
+}
+
+// Called on New Game, Load Game, Resume from Pause, and Quick Load --
+// every path that either starts a game or changes g_dayTimeSeconds out
+// from under the music. Always resets MusicState to a clean zero-state
+// (Section 10's filter/arp-scheduler reset-on-discontinuity policy) and
+// re-anchors to whatever g_dayTimeSeconds is *right now*, so there is
+// never a stale, independently-advancing audio position to reconcile.
+static void StartMusicPlayback() {
+    if (!g_musicVoice) return;
+    g_musicVoice->Stop();
+    // Every current call site already routes through StopMusicPlayback
+    // (or has never started at all) before reaching here, so the
+    // voice's internal queue should already be empty -- but flushing
+    // defensively costs nothing and means freeing g_musicPendingBuffers
+    // right after can never race a still-referenced buffer, regardless
+    // of how future call sites end up wired.
+    g_musicVoice->FlushSourceBuffers();
+    FreeAllPendingMusicBuffers();
+    ResetMusicState(&g_musicState);
+    g_nextChunkStartTime = g_dayTimeSeconds;
+    for (int i = 0; i < MUSIC_LOOKAHEAD_CHUNKS; i++) SubmitOneMusicChunk();
+    g_musicVoice->Start();
+}
+
+// Called whenever any menu opens during play (pause is silence, by
+// request -- it signals the passage of in-game time stopping, not a
+// real-time-continues-in-the-background pause) and on Quit to Title.
+static void StopMusicPlayback() {
+    if (!g_musicVoice) return;
+    g_musicVoice->Stop();
+    g_musicVoice->FlushSourceBuffers();
+    FreeAllPendingMusicBuffers();
+    g_nextChunkStartTime = -1.0;
+}
+
+// Tops up the lookahead queue -- called once per simulation tick, only
+// ever while a game is actually running and unpaused (Section 13's
+// clock-advance gate), so it's a natural no-op at the title screen and
+// while paused without needing its own separate condition.
+static void RefillMusicQueueIfNeeded() {
+    if (!g_musicVoice || g_nextChunkStartTime < 0.0) return;
+    XAUDIO2_VOICE_STATE vstate;
+    g_musicVoice->GetState(&vstate);
+    UINT32 queued = vstate.BuffersQueued;
+    while (g_musicPendingBuffers.size() > (size_t)queued) {
+        delete[] g_musicPendingBuffers.front();
+        g_musicPendingBuffers.pop_front();
+    }
+    while (queued < (UINT32)MUSIC_LOOKAHEAD_CHUNKS) {
+        SubmitOneMusicChunk();
+        queued++;
+    }
+}
+
 // Failure anywhere here (no audio device, driver issue, etc.) leaves
-// every g_* pointer null and every subsequent audio call a silent no-op
-// via the null checks in ApplyAudioVolumes/ShutdownAudio -- a machine
-// with no usable audio device still gets a fully playable game, just a
-// silent one, rather than a startup failure.
+// g_musicVoice null and every subsequent audio call a silent no-op via
+// the null checks above -- a machine with no usable audio device still
+// gets a fully playable game, just a silent one, rather than a startup
+// failure.
 static bool InitAudio() {
     if (FAILED(XAudio2Create(&g_xaudio2, 0, XAUDIO2_DEFAULT_PROCESSOR))) return false;
     if (FAILED(g_xaudio2->CreateMasteringVoice(&g_masteringVoice))) return false;
 
-    uint32_t sampleCount = 0, sampleRate = 0;
-    if (!GenerateAmbientTrack(&g_musicPCM, &sampleCount, &sampleRate)) return false;
-
     WAVEFORMATEX wfx = {};
     wfx.wFormatTag = WAVE_FORMAT_PCM;
     wfx.nChannels = 1;
-    wfx.nSamplesPerSec = sampleRate;
+    wfx.nSamplesPerSec = MUSIC_SAMPLE_RATE;
     wfx.wBitsPerSample = 16;
     wfx.nBlockAlign = (WORD)((wfx.nChannels * wfx.wBitsPerSample) / 8);
     wfx.nAvgBytesPerSec = wfx.nSamplesPerSec * wfx.nBlockAlign;
 
     if (FAILED(g_xaudio2->CreateSourceVoice(&g_musicVoice, &wfx))) return false;
-
-    // LoopCount=INFINITE plays this same buffer forever without
-    // re-submitting -- XAudio2 reads pAudioData directly rather than
-    // copying it, so g_musicPCM has to stay alive as long as the voice
-    // does (freed only in ShutdownAudio).
-    XAUDIO2_BUFFER buf = {};
-    buf.AudioBytes = sampleCount * sizeof(int16_t);
-    buf.pAudioData = (const BYTE*)g_musicPCM;
-    buf.LoopCount = XAUDIO2_LOOP_INFINITE;
-    buf.Flags = XAUDIO2_END_OF_STREAM;
-
     ApplyAudioVolumes();
-    if (FAILED(g_musicVoice->SubmitSourceBuffer(&buf))) return false;
-    g_musicVoice->Start();
+    // Deliberately not started here -- the title screen is silent by
+    // design (Section 13); playback only begins via StartMusicPlayback().
     return true;
 }
 
@@ -1887,7 +1968,7 @@ static void ShutdownAudio() {
     if (g_musicVoice) { g_musicVoice->Stop(); g_musicVoice->DestroyVoice(); g_musicVoice = nullptr; }
     if (g_masteringVoice) { g_masteringVoice->DestroyVoice(); g_masteringVoice = nullptr; }
     if (g_xaudio2) { g_xaudio2->Release(); g_xaudio2 = nullptr; }
-    if (g_musicPCM) { FreeGeneratedAudio(g_musicPCM); g_musicPCM = nullptr; }
+    FreeAllPendingMusicBuffers();
 }
 
 // =======================================================================
@@ -2250,13 +2331,20 @@ static void DoLoad() {
 }
 
 static void HandleMenuClick(int mx, int my) {
-    if (PointInRect(mx, my, SubmenuRowRect(PAUSE_LAYOUT, PROW_RESUME))) { g_menuScreen = MenuScreen::None; CaptureMouseForPlay(); return; }
+    if (PointInRect(mx, my, SubmenuRowRect(PAUSE_LAYOUT, PROW_RESUME))) { g_menuScreen = MenuScreen::None; CaptureMouseForPlay(); StartMusicPlayback(); return; }
     if (PointInRect(mx, my, SubmenuRowRect(PAUSE_LAYOUT, PROW_OPTIONS))) { g_optionsReturnScreen = MenuScreen::Pause; g_menuScreen = MenuScreen::OptionsHub; return; }
     if (PointInRect(mx, my, SubmenuRowRect(PAUSE_LAYOUT, PROW_SAVE))) { DoSave(); return; }
-    if (PointInRect(mx, my, SubmenuRowRect(PAUSE_LAYOUT, PROW_LOAD))) { DoLoad(); g_menuScreen = MenuScreen::None; CaptureMouseForPlay(); return; }
+    if (PointInRect(mx, my, SubmenuRowRect(PAUSE_LAYOUT, PROW_LOAD))) {
+        DoLoad(); // may change g_dayTimeSeconds -- StartMusicPlayback re-anchors to whatever it loaded
+        g_menuScreen = MenuScreen::None;
+        CaptureMouseForPlay();
+        StartMusicPlayback();
+        return;
+    }
     if (PointInRect(mx, my, SubmenuRowRect(PAUSE_LAYOUT, PROW_QUIT_TO_TITLE))) {
         g_gameState = GameState::Title;
         g_menuScreen = MenuScreen::TitleMain;
+        StopMusicPlayback(); // already stopped (Pause is only reachable with music already stopped), but explicit/idempotent
         return;
     }
     if (PointInRect(mx, my, SubmenuRowRect(PAUSE_LAYOUT, PROW_QUIT))) { PostQuitMessage(0); return; }
@@ -2340,6 +2428,7 @@ static void EnterGameplay() {
     g_gameState = GameState::InGame;
     g_menuScreen = MenuScreen::None;
     CaptureMouseForPlay();
+    StartMusicPlayback();
 }
 
 static void HandleTitleClick(int mx, int my) {
@@ -2415,9 +2504,11 @@ static void FireBoundAction(int code) {
         if (g_menuScreen == MenuScreen::None) {
             g_menuScreen = MenuScreen::Pause;
             ReleaseMouseForMenu();
+            StopMusicPlayback();
         } else if (g_menuScreen == MenuScreen::Pause) {
             g_menuScreen = MenuScreen::None;
             CaptureMouseForPlay();
+            StartMusicPlayback();
         } else if (g_menuScreen == MenuScreen::OptionsHub) {
             g_menuScreen = g_optionsReturnScreen;
         } else if (IsSettingsSubmenu(g_menuScreen)) {
@@ -2557,6 +2648,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         if (g_mouseCaptured) {
             g_menuScreen = MenuScreen::Pause;
             ReleaseMouseForMenu();
+            StopMusicPlayback();
         }
         return 0;
     default:
@@ -2963,6 +3055,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
                 // which the music (Part XIV) reads directly rather than
                 // tracking its own independent notion of time.
                 g_dayTimeSeconds = fmodf(g_dayTimeSeconds + FIXED_DT, DAY_LENGTH_SECONDS);
+                RefillMusicQueueIfNeeded();
 
                 int pcx = FloorDiv16((int)floor(g_player.x));
                 int pcz = FloorDiv16((int)floor(g_player.z));
