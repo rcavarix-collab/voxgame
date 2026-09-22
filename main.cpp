@@ -1864,8 +1864,18 @@ static MusicState g_musicState;
 static double g_nextChunkStartTime = -1.0; // -1 = inactive (title screen / paused)
 static std::deque<int16_t*> g_musicPendingBuffers; // FIFO, oldest-submitted first; freed once XAudio2 finishes each one
 static const int MUSIC_SAMPLE_RATE = 44100; // must match supplement.cpp's kMusicSampleRate
-static const int MUSIC_CHUNK_SAMPLES = MUSIC_SAMPLE_RATE; // 1 second per chunk
-static const int MUSIC_LOOKAHEAD_CHUNKS = 3;
+// Quarter-second chunks rather than whole-second ones: each chord-bed
+// sample can cost dozens of sin() calls (up to 5 tones x 6 harmonics x
+// 2 during a mode-crossfade window, plus the arp's own 6), so a whole
+// second of it generated in one synchronous call is real, occasionally
+// visible work on the main thread. Four times as many, four times
+// smaller calls spread that same total cost more evenly across frames
+// instead of risking one periodic ~1-second-cadence hitch. 16 chunks
+// of lookahead (4s buffered) also gives more tolerance for a brief
+// stall (e.g. dragging the window, which blocks the message loop
+// entirely) before the queue actually runs dry and goes quiet.
+static const int MUSIC_CHUNK_SAMPLES = MUSIC_SAMPLE_RATE / 4;
+static const int MUSIC_LOOKAHEAD_CHUNKS = 16;
 
 static void ApplyAudioVolumes() {
     if (g_musicVoice) g_musicVoice->SetVolume(g_masterVolume * g_musicVolume);
@@ -2520,7 +2530,7 @@ static void FireBoundAction(int code) {
     }
     if (g_gameState == GameState::Title) return; // Save/Load/Break/Place all require an actual game running
     if (code == g_keyBindings[ACT_SAVE]) { DoSave(); return; }
-    if (code == g_keyBindings[ACT_LOAD]) { DoLoad(); return; }
+    if (code == g_keyBindings[ACT_LOAD]) { DoLoad(); StartMusicPlayback(); return; } // DoLoad may change g_dayTimeSeconds -- re-anchor, same as the pause-menu Load button
     if (g_menuScreen != MenuScreen::None) return; // Break/Place only fire during actual play
     if (!g_mouseCaptured) return;
     if (code == g_keyBindings[ACT_BREAK]) { PickAndAct(true); return; }

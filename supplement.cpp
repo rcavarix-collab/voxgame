@@ -477,7 +477,18 @@ static const int MUSIC_ARP_UPDOWN[8] = { 0, 1, 2, 3, 4, 3, 2, 1 };
 // a ceiling-breaker, per the accessibility rule this whole system is
 // built around).
 extern "C" void GenerateMusicChunk(double startTime, int sampleCount, double intensity, MusicState* state, int16_t* outPCM) {
-    double cutoff = MusicFilterCutoff(startTime / 60.0);
+    // g_nextChunkStartTime (main.cpp) grows unboundedly across a whole
+    // session rather than wrapping itself -- wrapping happens here, per
+    // chunk. Every per-sample curve below wraps its own `t` the same
+    // way, but this one is computed once per chunk (cutoff moves slowly
+    // enough not to need per-sample precision) from `startTime`
+    // directly, so it must be wrapped explicitly too -- without this,
+    // any session running past the first in-game hour would see
+    // startTime/60 permanently exceed the curve's [0,60] domain and
+    // silently freeze the filter at its fallback value forever.
+    double wrappedStart = std::fmod(startTime, kMusicDayLength);
+    if (wrappedStart < 0.0) wrappedStart += kMusicDayLength;
+    double cutoff = MusicFilterCutoff(wrappedStart / 60.0);
     MusicBiquad bq = MusicMakeLowpass(cutoff, MUSIC_FILTER_Q, (double)kMusicSampleRate);
 
     for (int i = 0; i < sampleCount; i++) {
@@ -501,13 +512,30 @@ extern "C" void GenerateMusicChunk(double startTime, int sampleCount, double int
             state->secondsUntilNextNote += state->noteHoldDur;
             state->noteEnvTime = 0.0;
         }
-        const double attack = 0.15, release = 0.30;
+        // Attack+release can exceed the note's own hold duration at the
+        // top of the rate curve (e.g. 270 notes/min => ~0.22s notes,
+        // shorter than 0.15+0.30=0.45s) -- scaling both down
+        // proportionally so they always meet exactly at the envelope's
+        // peak keeps this continuous (a triangle instead of a trapezoid)
+        // rather than jumping straight from mid-attack into a release
+        // ramp computed against a duration shorter than the attack
+        // itself, which produced an audible discontinuity right at the
+        // busiest, most audible part of the whole track -- precisely
+        // the kind of sudden event this system exists to never produce.
+        double effAttack = 0.15, effRelease = 0.30;
+        double envSpan = effAttack + effRelease;
+        if (envSpan > state->noteHoldDur && envSpan > 1e-9) {
+            double k = state->noteHoldDur / envSpan;
+            effAttack *= k;
+            effRelease *= k;
+        }
         double env;
-        if (state->noteEnvTime < attack) env = state->noteEnvTime / attack;
-        else if (state->noteEnvTime < state->noteHoldDur - release) env = 1.0;
-        else if (state->noteEnvTime < state->noteHoldDur) env = (state->noteHoldDur - state->noteEnvTime) / release;
+        if (effAttack > 1e-9 && state->noteEnvTime < effAttack) env = state->noteEnvTime / effAttack;
+        else if (state->noteEnvTime < state->noteHoldDur - effRelease) env = 1.0;
+        else if (effRelease > 1e-9 && state->noteEnvTime < state->noteHoldDur) env = (state->noteHoldDur - state->noteEnvTime) / effRelease;
         else env = 0.0;
         if (env < 0.0) env = 0.0;
+        if (env > 1.0) env = 1.0;
 
         double arp = MusicAdditiveTone(state->currentNoteFreq, t, MUSIC_ARP_HARMONICS)
                    * env * MusicArpAmp(t) * MusicGateEnvelope(t) * intensity;
