@@ -1076,11 +1076,32 @@ static bool g_toggleMovement = false; // Accessibility (Section 11): press-to-to
 static bool g_highContrastUI = false; // Accessibility: higher-luminance-contrast menu palette
 static bool g_moveToggleLatch[ACT_COUNT] = {}; // only ACT_FORWARD/BACK/LEFT/RIGHT indices are ever used
 
+// Section 13 - Day clock. World state (not a global preference), since
+// different saves can legitimately be at different points in their
+// day -- persisted in the save payload alongside player position, not
+// settings.cfg. Advances only while gameplay is actually ticking (the
+// same gate that already freezes physics/chunk-gen while any menu is
+// open), wraps at DAY_LENGTH_SECONDS. A fresh New Game starts at 0
+// (dawn) -- the character's first light in a land they've never seen.
+static const float DAY_LENGTH_SECONDS = 3600.0f; // one in-game day = one real hour, locked in
+static float g_dayTimeSeconds = 0.0f;
+// Music Intensity (Accessibility, Section 11): 0 = ambient bed only, no
+// arp/pulse layer at all; 1 = the full designed arc. This is a ceiling,
+// not a ceiling-breaker -- 1.0 is already the maximum energy/brightness
+// the track ever reaches by design (Section 10.3's hard accessibility
+// rule -- gradual transitions, capped filter resonance, no sudden
+// onsets -- applies identically at every intensity, never relaxed for
+// "less sensitive" players). What actually moves with this setting is
+// how present the arp layer is even during its quietest hours and how
+// often it takes its scheduled breathing gaps, not whether the safety
+// constraints apply.
+static float g_musicIntensity = 1.0f;
+
 // =======================================================================
 // Part VII - Save / load (crash-safe, versioned, name-indexed)
 // =======================================================================
 
-static const uint32_t SAVE_VERSION = 3; // v3 drops the embedded settings block -- settings now live in the separate global settings.cfg (Section 7.2.3), independent of any world save. v2 files (the block-in-save format) are still loadable: their settings are migrated into settings.cfg once, on first encounter, rather than rejected.
+static const uint32_t SAVE_VERSION = 4; // v3 dropped the embedded settings block (Section 7.2.3); v4 adds the day-clock field (Section 13). Both v2 and v3 files remain loadable -- see LoadGame's version handling.
 
 // Resolves (creating if needed) Documents\My Games\Voxistics -- the
 // conventional PC-game save location: visible and easy for players to
@@ -1220,6 +1241,7 @@ static bool SaveSettings() {
     ss << "fov=" << g_fov << "\n";
     ss << "toggleMovement=" << (g_toggleMovement ? 1 : 0) << "\n";
     ss << "highContrastUI=" << (g_highContrastUI ? 1 : 0) << "\n";
+    ss << "musicIntensity=" << g_musicIntensity << "\n";
     for (int i = 0; i < ACT_COUNT; i++) {
         ss << "keybind." << g_actionNames[i] << "=" << g_keyBindings[i] << "\n"; // name-indexed, same reasoning as g_blockNames
     }
@@ -1270,6 +1292,7 @@ static void LoadSettings() {
     g_fov = getF("fov", g_fov);
     g_toggleMovement = getB("toggleMovement", g_toggleMovement);
     g_highContrastUI = getB("highContrastUI", g_highContrastUI);
+    g_musicIntensity = getF("musicIntensity", g_musicIntensity);
     for (int i = 0; i < ACT_COUNT; i++) {
         std::string key = std::string("keybind.") + g_actionNames[i];
         g_keyBindings[i] = getI(key.c_str(), g_keyBindings[i]);
@@ -1325,6 +1348,7 @@ static bool SaveGame(World& w, Player& p, int slot) {
     AppendF32(buf, p.x); AppendF32(buf, p.y); AppendF32(buf, p.z);
     AppendF32(buf, p.yaw); AppendF32(buf, p.pitch);
     AppendI32(buf, p.hotbarIndex);
+    AppendF32(buf, g_dayTimeSeconds); // Section 13 -- world state, not a settings.cfg preference
 
     // No settings block as of v3 -- gameplay/UI preferences live in the
     // separate global settings.cfg (Section 7.2.3) now, not here.
@@ -1407,21 +1431,29 @@ static bool LoadGame(World& w, Player& p, int slot) {
         return false;
     }
     uint32_t version = r.ReadU32();
-    // v2 (settings embedded in the save) is still loadable, not just v3
-    // (Section 7.2.3) -- its world/player data is identical to v3's,
-    // just followed by a settings block v3 no longer has. Migrating that
-    // block into the new settings.cfg is strictly better for the player
-    // than refusing to load an otherwise-fine world.
-    if (version != 2 && version != SAVE_VERSION) {
+    // v2 (settings embedded in the save) and v3 (settings moved out, no
+    // day clock yet) are both still loadable, not just the current v4
+    // (Section 7.2.3/13) -- each older version's world/player data is a
+    // strict prefix of the newer format, just missing fields added
+    // since. Loading an older save fills those in with sensible
+    // defaults (below) rather than refusing an otherwise-fine world.
+    if (version != 2 && version != 3 && version != SAVE_VERSION) {
         OutputDebugStringA("LoadGame: unsupported version, aborting load\n");
         return false;
     }
     bool hasLegacySettings = (version == 2);
+    bool hasDayTime = (version >= 4);
 
     Player loaded;
     loaded.x = r.ReadF32(); loaded.y = r.ReadF32(); loaded.z = r.ReadF32();
     loaded.yaw = r.ReadF32(); loaded.pitch = r.ReadF32();
     loaded.hotbarIndex = r.ReadI32();
+
+    // Day clock (Section 13): absent on v2/v3 saves made before it
+    // existed -- those resume at dawn (0.0) rather than needing a
+    // meaningless stored value.
+    float loadedDayTime = 0.0f;
+    if (hasDayTime) loadedDayTime = r.ReadF32();
 
     // Legacy (v2-only) settings block: read into locals first, same as
     // the rest of this function -- nothing gets applied to live state
@@ -1482,6 +1514,7 @@ static bool LoadGame(World& w, Player& p, int slot) {
 
     w.chunks = std::move(fresh.chunks);
     p = loaded;
+    g_dayTimeSeconds = loadedDayTime;
 
     if (hasLegacySettings) {
         g_sensitivityMultX = loadedSensX; g_sensitivityMultY = loadedSensY;
@@ -2014,8 +2047,8 @@ enum AudioRow { AROW_MASTER_VOLUME = 0, AROW_MUSIC_VOLUME = 1, AROW_RESET = 2, A
 // alone yet (nothing to remap); and a UI scale slider, which (unlike
 // the above) is real future work, just architecturally bigger -- every
 // hit-rect, not only the visuals, would need to move in lockstep.
-static const SubmenuLayout ACCESSIBILITY_LAYOUT = { 400.0f, 56.0f, 12.0f, 70.0f, 20.0f, 5 };
-enum AccessibilityRow { ARROW_FOV = 0, ARROW_TOGGLE_MOVE = 1, ARROW_HIGH_CONTRAST = 2, ARROW_RESET = 3, ARROW_BACK = 4 };
+static const SubmenuLayout ACCESSIBILITY_LAYOUT = { 400.0f, 56.0f, 12.0f, 70.0f, 20.0f, 6 };
+enum AccessibilityRow { ARROW_FOV = 0, ARROW_TOGGLE_MOVE = 1, ARROW_HIGH_CONTRAST = 2, ARROW_MUSIC_INTENSITY = 3, ARROW_RESET = 4, ARROW_BACK = 5 };
 
 // Keybindings: every action bindable to any keyboard key or the left/
 // right/middle mouse button (GameAction/g_actionNames/g_keyBindings/
@@ -2099,13 +2132,14 @@ static void ResetAccessibilitySettings() {
     g_fov = 45.0f;
     g_toggleMovement = false;
     g_highContrastUI = false;
+    g_musicIntensity = 1.0f;
     memset(g_moveToggleLatch, 0, sizeof(g_moveToggleLatch));
 }
 
 // A handful of settings are sliders rather than toggles/buttons. One
 // small generic slider system (value/range/row-rect all looked up by
 // ID) instead of one-off X-sensitivity-shaped code repeated per slider.
-enum SliderId { SLIDER_NONE = -1, SLIDER_SENS_X = 0, SLIDER_SENS_Y = 1, SLIDER_RENDER_DIST = 2, SLIDER_MASTER_VOLUME = 3, SLIDER_MUSIC_VOLUME = 4, SLIDER_FOV = 5 };
+enum SliderId { SLIDER_NONE = -1, SLIDER_SENS_X = 0, SLIDER_SENS_Y = 1, SLIDER_RENDER_DIST = 2, SLIDER_MASTER_VOLUME = 3, SLIDER_MUSIC_VOLUME = 4, SLIDER_FOV = 5, SLIDER_MUSIC_INTENSITY = 6 };
 static int g_draggingSlider = SLIDER_NONE;
 
 struct SliderRange { float minV, maxV; };
@@ -2115,6 +2149,7 @@ static SliderRange GetSliderRange(int id) {
     case SLIDER_RENDER_DIST: return { 1.0f, 8.0f };
     case SLIDER_MASTER_VOLUME: case SLIDER_MUSIC_VOLUME: return { 0.0f, 1.0f };
     case SLIDER_FOV: return { 45.0f, 100.0f };
+    case SLIDER_MUSIC_INTENSITY: return { 0.0f, 1.0f };
     default: return { 0.0f, 1.0f };
     }
 }
@@ -2128,6 +2163,7 @@ static UIRect GetSliderRowRect(int id) {
     case SLIDER_MASTER_VOLUME: return SubmenuRowRect(AUDIO_LAYOUT, AROW_MASTER_VOLUME);
     case SLIDER_MUSIC_VOLUME: return SubmenuRowRect(AUDIO_LAYOUT, AROW_MUSIC_VOLUME);
     case SLIDER_FOV: return SubmenuRowRect(ACCESSIBILITY_LAYOUT, ARROW_FOV);
+    case SLIDER_MUSIC_INTENSITY: return SubmenuRowRect(ACCESSIBILITY_LAYOUT, ARROW_MUSIC_INTENSITY);
     default: return { 0, 0, 0, 0 };
     }
 }
@@ -2139,6 +2175,7 @@ static float GetSliderValue(int id) {
     case SLIDER_MASTER_VOLUME: return g_masterVolume;
     case SLIDER_MUSIC_VOLUME: return g_musicVolume;
     case SLIDER_FOV: return g_fov;
+    case SLIDER_MUSIC_INTENSITY: return g_musicIntensity;
     default: return 0.0f;
     }
 }
@@ -2157,6 +2194,7 @@ static void SetSliderValue(int id, float v) {
     case SLIDER_MASTER_VOLUME: g_masterVolume = v; ApplyAudioVolumes(); break;
     case SLIDER_MUSIC_VOLUME: g_musicVolume = v; ApplyAudioVolumes(); break;
     case SLIDER_FOV: g_fov = v; break;
+    case SLIDER_MUSIC_INTENSITY: g_musicIntensity = v; break;
     }
 }
 static std::string GetSliderLabel(int id) {
@@ -2168,6 +2206,7 @@ static std::string GetSliderLabel(int id) {
     case SLIDER_MASTER_VOLUME: snprintf(buf, sizeof(buf), "MASTER VOLUME: %d%%", (int)(g_masterVolume * 100.0f + 0.5f)); break;
     case SLIDER_MUSIC_VOLUME: snprintf(buf, sizeof(buf), "MUSIC VOLUME: %d%%", (int)(g_musicVolume * 100.0f + 0.5f)); break;
     case SLIDER_FOV: snprintf(buf, sizeof(buf), "FIELD OF VIEW: %d DEG", (int)(g_fov + 0.5f)); break;
+    case SLIDER_MUSIC_INTENSITY: snprintf(buf, sizeof(buf), "MUSIC INTENSITY: %d%%", (int)(g_musicIntensity * 100.0f + 0.5f)); break;
     default: buf[0] = 0;
     }
     return buf;
@@ -2266,6 +2305,7 @@ static void HandleAccessibilityClick(int mx, int my) {
         return;
     }
     if (PointInRect(mx, my, SubmenuRowRect(ACCESSIBILITY_LAYOUT, ARROW_HIGH_CONTRAST))) { g_highContrastUI = !g_highContrastUI; SaveSettings(); return; }
+    if (PointInRect(mx, my, GetSliderHitRect(SubmenuRowRect(ACCESSIBILITY_LAYOUT, ARROW_MUSIC_INTENSITY)))) { BeginSliderDrag(SLIDER_MUSIC_INTENSITY, mx); return; }
     if (PointInRect(mx, my, SubmenuRowRect(ACCESSIBILITY_LAYOUT, ARROW_RESET))) { ResetAccessibilitySettings(); SaveSettings(); return; }
     if (PointInRect(mx, my, SubmenuRowRect(ACCESSIBILITY_LAYOUT, ARROW_BACK))) { g_menuScreen = MenuScreen::OptionsHub; return; }
 }
@@ -2286,6 +2326,7 @@ static void HandleKeybindingsClick(int mx, int my) {
 static void ResetWorldForNewGame() {
     g_world = World();
     g_player = Player();
+    g_dayTimeSeconds = 0.0f; // dawn -- first light in a land they've never seen (Section 13)
     g_generatedColumns.clear();
     g_pendingColumns.clear();
     g_pendingColumnSet.clear();
@@ -2739,6 +2780,7 @@ static void RenderUIPass() {
         drawSliderRow(SubmenuRowRect(ACCESSIBILITY_LAYOUT, ARROW_FOV), SLIDER_FOV);
         drawRowButton(SubmenuRowRect(ACCESSIBILITY_LAYOUT, ARROW_TOGGLE_MOVE), g_toggleMovement ? "TOGGLE-TO-MOVE: ON" : "TOGGLE-TO-MOVE: OFF");
         drawRowButton(SubmenuRowRect(ACCESSIBILITY_LAYOUT, ARROW_HIGH_CONTRAST), g_highContrastUI ? "HIGH-CONTRAST UI: ON" : "HIGH-CONTRAST UI: OFF");
+        drawSliderRow(SubmenuRowRect(ACCESSIBILITY_LAYOUT, ARROW_MUSIC_INTENSITY), SLIDER_MUSIC_INTENSITY);
         drawRowButton(SubmenuRowRect(ACCESSIBILITY_LAYOUT, ARROW_RESET), "RESET TO DEFAULT");
         drawRowButton(SubmenuRowRect(ACCESSIBILITY_LAYOUT, ARROW_BACK), "BACK");
     } else if (g_menuScreen == MenuScreen::Keybindings) {
@@ -2915,6 +2957,13 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
             accumulator = 0.0f;
         } else {
             while (accumulator >= FIXED_DT) {
+                // Day clock (Section 13): advances only here, gated
+                // identically to every other simulation system -- the
+                // single authoritative source of "what time is it,"
+                // which the music (Part XIV) reads directly rather than
+                // tracking its own independent notion of time.
+                g_dayTimeSeconds = fmodf(g_dayTimeSeconds + FIXED_DT, DAY_LENGTH_SECONDS);
+
                 int pcx = FloorDiv16((int)floor(g_player.x));
                 int pcz = FloorDiv16((int)floor(g_player.z));
                 EnsureChunksLoaded(pcx, pcz);
