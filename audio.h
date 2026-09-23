@@ -8,18 +8,6 @@
 
 #pragma once
 
-// MusicState is plain-old-data shared with music_synth.cpp by
-// convention (no shared header reaches across to that file either) --
-// its field-by-field meaning lives there.
-struct MusicState {
-    double filterZ1, filterZ2;
-    double secondsUntilNextNote;
-    int arpCursor;
-    double noteEnvTime;
-    double noteHoldDur;
-    double currentNoteFreq;
-};
-
 bool InitAudio();
 void ShutdownAudio();
 
@@ -36,7 +24,7 @@ void StartMusicPlayback();
 // Called whenever any menu opens during play (pause is silence, by
 // request) and on Quit to Title.
 void StopMusicPlayback();
-// Tops up the lookahead queue -- called once per simulation tick, only
-// ever while a game is actually running and unpaused, so it's a
-// natural no-op at the title screen and while paused.
+// Tops up the lookahead queue by at most one chunk -- called once per
+// frame; a natural no-op at the title screen and while paused, since
+// both have playback stopped.
 void RefillMusicQueueIfNeeded();

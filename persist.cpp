@@ -533,7 +533,7 @@ bool LoadGame(World& w, Player& p, int slot) {
             g_evictedChunks.emplace(kv.first, std::move(kv.second));
         }
     }
-    g_fallQueue.clear(); // entries from the previous world would apply to this one's coordinates
+    ClearFallQueue();
     g_pendingColumns.clear();
     g_pendingColumnSet.clear();
     g_pendingEvictions.clear();

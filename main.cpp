@@ -158,7 +158,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
         // Once per frame, not per tick: after a stall the tick loop runs
         // many catch-up ticks in one frame, and each would otherwise
         // generate another music chunk on top of the stall.
-        RefillMusicQueueIfNeeded();
+        if (g_menuScreen == MenuScreen::None) RefillMusicQueueIfNeeded();
         RebuildDirtyChunks(g_world);
 
         float clearColor[4] = { 0.4f, 0.6f, 0.9f, 1.0f };

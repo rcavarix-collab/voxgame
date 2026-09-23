@@ -151,6 +151,9 @@ extern int g_loadRadius;
 
 struct FallEntry { int x, y, z; };
 extern std::deque<FallEntry> g_fallQueue;
+// Empties the queue and its per-column bookkeeping together (New Game,
+// Load -- entries from the old world must not replay in the new one).
+void ClearFallQueue();
 
 void MaybeQueueFall(World& w, int x, int y, int z);
 // Drains at most MAX_FALLS entries per call regardless of queue length,
@@ -270,7 +273,7 @@ bool Raycast(World& w, float ox, float oy, float oz, float dx, float dy, float d
 // same gate that already freezes physics/chunk-gen while any menu is
 // open), wraps at DAY_LENGTH_SECONDS. A fresh New Game starts at 0
 // (dawn) -- the character's first light in a land they've never seen.
-static const float DAY_LENGTH_SECONDS = 3600.0f; // one in-game day = one real hour, locked in
+constexpr float DAY_LENGTH_SECONDS = 3600.0f; // one in-game day = one real hour, locked in
 extern float g_dayTimeSeconds;
 
 // The live world/player -- defined in world.cpp, used everywhere.

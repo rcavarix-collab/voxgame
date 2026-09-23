@@ -524,7 +524,7 @@ static void ResetWorldForNewGame() {
     g_generatedColumns.clear();
     g_residentColumns.clear();
     g_evictedChunks.clear();
-    g_fallQueue.clear(); // entries from the previous world would apply to this one's coordinates
+    ClearFallQueue();
     g_pendingColumns.clear();
     g_pendingColumnSet.clear();
     g_pendingEvictions.clear();
@@ -631,7 +631,14 @@ static void FireBoundAction(int code) {
     }
     if (g_gameState == GameState::Title) return; // Save/Load/Break/Place all require an actual game running
     if (code == g_keyBindings[ACT_SAVE]) { DoSave(); return; }
-    if (code == g_keyBindings[ACT_LOAD]) { DoLoad(); StartMusicPlayback(); return; } // DoLoad may change g_dayTimeSeconds -- re-anchor, same as the pause-menu Load button
+    if (code == g_keyBindings[ACT_LOAD]) {
+        DoLoad();
+        // DoLoad may change g_dayTimeSeconds, so re-anchor the music -- but
+        // only if play is live. Quick-loading from a menu leaves it paused
+        // and silent; Resume restarts the music at the loaded time.
+        if (g_menuScreen == MenuScreen::None) StartMusicPlayback();
+        return;
+    }
     if (g_menuScreen != MenuScreen::None) return; // Break/Place only fire during actual play
     if (!g_mouseCaptured) return;
     if (code == g_keyBindings[ACT_BREAK]) { PickAndAct(true); return; }

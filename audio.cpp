@@ -21,32 +21,32 @@
 #include <windows.h>
 #include <xaudio2.h>
 #include "audio.h"
+#include "music_synth.h"
 #include "world.h"   // g_dayTimeSeconds
 #include "persist.h" // g_masterVolume / g_musicVolume / g_musicIntensity
 #include <cstdint>
 
 #pragma comment(lib, "xaudio2.lib")
 
-// Defined in music_synth.cpp; MusicState's layout above must match its
-// use there exactly (no shared header enforces this, by convention).
-extern "C" void ResetMusicState(MusicState* s);
-extern "C" void GenerateMusicChunk(double startTime, int sampleCount, double intensity, MusicState* state, int16_t* outPCM);
+// The music is composed against a fixed hour; a different day length would
+// silently desync every section and chord from the clock.
+static_assert((double)DAY_LENGTH_SECONDS == MUSIC_DAY_LENGTH, "music day length must match world.h DAY_LENGTH_SECONDS");
 
 static IXAudio2* g_xaudio2 = nullptr;
 static IXAudio2MasteringVoice* g_masteringVoice = nullptr;
 static IXAudio2SourceVoice* g_musicVoice = nullptr;
 static MusicState g_musicState;
 static double g_nextChunkStartTime = -1.0; // -1 = inactive (title screen / paused)
-static const int MUSIC_SAMPLE_RATE = 44100; // must match music_synth.cpp's kMusicSampleRate
 // Quarter-second chunks, 16 of lookahead (4 s buffered) -- enough slack
 // for a brief message-loop stall (e.g. dragging the window) before the
 // queue runs dry.
 static const int MUSIC_CHUNK_SAMPLES = MUSIC_SAMPLE_RATE / 4;
 static const int MUSIC_LOOKAHEAD_CHUNKS = 16;
-// Chunks generated synchronously when playback (re)starts; the rest of
-// the lookahead fills at one chunk per refill call, so starting music
-// never costs more than a couple of chunks' generation in one frame.
-static const int MUSIC_PRIME_CHUNKS = 2;
+// Chunks generated synchronously when playback (re)starts (~1.3 ms each):
+// a full second of audio, so the heavy first frames after a New Game or
+// Load (column generation, a burst of mesh rebuilds) can't drain the voice
+// before the one-chunk-per-frame refill catches up.
+static const int MUSIC_PRIME_CHUNKS = 4;
 
 // Fixed pool of PCM buffers, reused cyclically instead of new/delete per
 // chunk. XAudio2 reads a submitted buffer from its own thread until it

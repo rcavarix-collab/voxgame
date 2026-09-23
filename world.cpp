@@ -28,6 +28,14 @@ float g_dayTimeSeconds = 0.0f;
 // =======================================================================
 
 std::deque<FallEntry> g_fallQueue;
+// Pending falls per column, kept in step with g_fallQueue so eviction can
+// ask "is a cascade still running here?" without scanning the queue.
+static std::unordered_map<long long, int> g_fallsPerColumn;
+
+void ClearFallQueue() {
+    g_fallQueue.clear();
+    g_fallsPerColumn.clear();
+}
 
 void MaybeQueueFall(World& w, int x, int y, int z) {
     if (y < Y_MIN || y > Y_MAX) return;
@@ -38,6 +46,7 @@ void MaybeQueueFall(World& w, int x, int y, int z) {
     if (y - 1 < Y_MIN) return;         // resting on the world floor
     if (w.Solid(x, y - 1, z)) return;  // supported
     g_fallQueue.push_back({ x, y, z });
+    g_fallsPerColumn[ColumnKey(FloorDiv16(x), FloorDiv16(z))]++;
 }
 
 void ProcessFalls(World& w) {
@@ -45,6 +54,8 @@ void ProcessFalls(World& w) {
     for (int i = 0; i < n; i++) {
         FallEntry e = g_fallQueue.front();
         g_fallQueue.pop_front();
+        auto fc = g_fallsPerColumn.find(ColumnKey(FloorDiv16(e.x), FloorDiv16(e.z)));
+        if (fc != g_fallsPerColumn.end() && --fc->second <= 0) g_fallsPerColumn.erase(fc);
 
         BlockID id = w.Get(e.x, e.y, e.z);
         if (id == BLOCK_AIR || g_info[id].foundational) continue; // stale entry
@@ -141,9 +152,7 @@ static void RestoreColumnToWorld(World& w, int cx, int cz) {
 // make every remaining entry read air and get discarded as stale,
 // leaving the rest of the structure floating once the column returns.
 static bool ColumnHasPendingFalls(int cx, int cz) {
-    for (const FallEntry& e : g_fallQueue)
-        if (FloorDiv16(e.x) == cx && FloorDiv16(e.z) == cz) return true;
-    return false;
+    return g_fallsPerColumn.count(ColumnKey(cx, cz)) != 0;
 }
 
 void GenerateColumn(World& w, int cx, int cz) {
