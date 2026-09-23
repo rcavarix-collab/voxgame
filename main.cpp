@@ -144,6 +144,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
                 int pcz = FloorDiv16((int)floor(g_player.z));
                 EnsureChunksLoaded(pcx, pcz);
                 ProcessColumnGeneration(g_world);
+                ProcessColumnEviction(g_world);
 
                 bool fwd = IsActionDown(ACT_FORWARD), back = IsActionDown(ACT_BACK);
                 bool left = IsActionDown(ACT_LEFT), right = IsActionDown(ACT_RIGHT);

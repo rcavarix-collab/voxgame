@@ -291,28 +291,34 @@ bool SaveGame(World& w, Player& p, int slot) {
     AppendU32(buf, BLOCK_COUNT);
     for (int i = 0; i < BLOCK_COUNT; i++) AppendStr(buf, g_blockNames[i]);
 
-    // Count non-air blocks first.
+    // Count non-air blocks first. Walks both World::chunks (currently
+    // resident) and g_evictedChunks (out-of-radius but real, Section
+    // 2.4-perf) -- a chunk is in exactly one of the two at any time, and
+    // skipping the second would silently drop whatever the player built
+    // in any area they've since walked away from.
     uint32_t blockCount = 0;
-    for (auto& kv : w.chunks) {
-        Chunk& c = *kv.second;
-        for (int i = 0; i < CHUNK_CELLS; i++) if (c.blocks[i] != BLOCK_AIR) blockCount++;
-    }
+    auto countBlocks = [&](const uint8_t* blocks) {
+        for (int i = 0; i < CHUNK_CELLS; i++) if (blocks[i] != BLOCK_AIR) blockCount++;
+    };
+    for (auto& kv : w.chunks) countBlocks(kv.second->blocks);
+    for (auto& kv : g_evictedChunks) countBlocks(kv.second.data());
     AppendU32(buf, blockCount);
-    for (auto& kv : w.chunks) {
-        const ChunkCoord& cc = kv.first;
-        Chunk& c = *kv.second;
+
+    auto writeBlocks = [&](const ChunkCoord& cc, const uint8_t* blocks) {
         int baseX = cc.x * CHUNK_SIZE, baseY = cc.y * CHUNK_SIZE, baseZ = cc.z * CHUNK_SIZE;
         for (int ly = 0; ly < CHUNK_SIZE; ly++)
             for (int lz = 0; lz < CHUNK_SIZE; lz++)
                 for (int lx = 0; lx < CHUNK_SIZE; lx++) {
-                    uint8_t id = c.blocks[Chunk::LocalIndex(lx, ly, lz)];
+                    uint8_t id = blocks[Chunk::LocalIndex(lx, ly, lz)];
                     if (id == BLOCK_AIR) continue;
                     AppendI32(buf, baseX + lx);
                     AppendI32(buf, baseY + ly);
                     AppendI32(buf, baseZ + lz);
                     AppendU8(buf, id);
                 }
-    }
+    };
+    for (auto& kv : w.chunks) writeBlocks(kv.first, kv.second->blocks);
+    for (auto& kv : g_evictedChunks) writeBlocks(kv.first, kv.second.data());
 
     uint32_t checksum = Fnv1a(buf.data(), buf.size());
     AppendU32(buf, checksum);
@@ -485,14 +491,26 @@ bool LoadGame(World& w, Player& p, int slot) {
     }
 
     // Mark every column present in the loaded world as already
-    // generated, so the next chunk-load pass never re-runs procedural
-    // generation over it and stomps loaded/edited blocks with fresh
-    // terrain -- only genuinely new columns around the player (beyond
-    // what this save covered) will generate normally from here.
+    // generated AND resident, so the next chunk-load pass never re-runs
+    // procedural generation over it and stomps loaded/edited blocks with
+    // fresh terrain -- only genuinely new columns around the player
+    // (beyond what this save covered) will generate normally from here.
+    // Everything just loaded lives in w.chunks now, not the eviction
+    // store, so any evicted data from before this load is stale --
+    // SaveGame already captured it (it walks both), the fresh w.chunks
+    // this load just built is now the complete, authoritative state.
     g_generatedColumns.clear();
-    for (auto& kv : w.chunks) g_generatedColumns.insert(ColumnKey(kv.first.x, kv.first.z));
+    g_residentColumns.clear();
+    for (auto& kv : w.chunks) {
+        long long key = ColumnKey(kv.first.x, kv.first.z);
+        g_generatedColumns.insert(key);
+        g_residentColumns.insert(key);
+    }
+    g_evictedChunks.clear();
     g_pendingColumns.clear();
     g_pendingColumnSet.clear();
+    g_pendingEvictions.clear();
+    g_pendingEvictionSet.clear();
     g_lastPlayerChunkX = INT32_MIN;
     g_lastPlayerChunkZ = INT32_MIN;
     return true;

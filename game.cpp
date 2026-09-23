@@ -522,8 +522,12 @@ static void ResetWorldForNewGame() {
     g_player = Player();
     g_dayTimeSeconds = 0.0f; // dawn -- first light in a land they've never seen (Section 13)
     g_generatedColumns.clear();
+    g_residentColumns.clear();
+    g_evictedChunks.clear();
     g_pendingColumns.clear();
     g_pendingColumnSet.clear();
+    g_pendingEvictions.clear();
+    g_pendingEvictionSet.clear();
     g_lastPlayerChunkX = INT32_MIN;
     g_lastPlayerChunkZ = INT32_MIN;
 }

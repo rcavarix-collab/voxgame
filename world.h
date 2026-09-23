@@ -171,6 +171,11 @@ int TerrainHeight(int wx, int wz);
 long long ColumnKey(int cx, int cz);
 void GenerateColumn(World& w, int cx, int cz);
 
+// Once true, always true: "real data exists for this column somewhere"
+// (either resident in World::chunks or evicted below), so terrain-gen
+// never re-runs over it and stomps player edits. Never shrinks, and
+// deliberately not iterated per-frame anywhere -- only ever a set of
+// int64 keys, checked by O(1) lookup.
 extern std::unordered_set<long long> g_generatedColumns;
 extern std::deque<std::pair<int, int>> g_pendingColumns;
 extern std::unordered_set<long long> g_pendingColumnSet;
@@ -180,11 +185,34 @@ extern std::unordered_set<long long> g_pendingColumnSet;
 extern int g_lastPlayerChunkX, g_lastPlayerChunkZ;
 static const int MAX_COLUMN_GENS_PER_TICK = 4;
 
+// Columns currently backing real Chunk objects in World::chunks --
+// unlike g_generatedColumns, this one DOES shrink (a column leaving the
+// load radius is evicted below) and stays bounded by roughly the loaded
+// area rather than growing with lifetime-explored area. This is what
+// keeps RebuildDirtyChunks's per-frame scan and the world draw loop
+// bounded by "near the player" instead of "everywhere ever visited"
+// (DESIGN.md Part 1.3) -- frustum culling alone only skipped the draw
+// call, not the growth of what there was to scan.
+extern std::unordered_set<long long> g_residentColumns;
+// Raw block data for evicted (out-of-radius) chunks, keyed by the exact
+// coordinate they were evicted from. A ChunkCoord is in World::chunks
+// XOR here, never both -- GenerateColumn and the evict/restore helpers
+// in world.cpp are what maintain that invariant. SaveGame (persist.cpp)
+// must walk both this map and World::chunks to capture the complete
+// world, or anything currently evicted would silently vanish from the
+// save.
+extern std::unordered_map<ChunkCoord, std::vector<uint8_t>, ChunkCoordHash> g_evictedChunks;
+extern std::deque<std::pair<int, int>> g_pendingEvictions;
+extern std::unordered_set<long long> g_pendingEvictionSet;
+static const int MAX_COLUMN_EVICTIONS_PER_TICK = 4;
+
 // Only enqueues columns now (Section 5.1's queue pattern applied to
 // generation) -- it never touches World directly, unlike its
-// gravity/mesh-rebuild counterparts.
+// gravity/mesh-rebuild counterparts. Also queues eviction for resident
+// columns that have drifted well outside the load radius.
 void EnsureChunksLoaded(int playerChunkX, int playerChunkZ);
 void ProcessColumnGeneration(World& w);
+void ProcessColumnEviction(World& w);
 
 // =======================================================================
 // Section 4.7 - Camera / player
