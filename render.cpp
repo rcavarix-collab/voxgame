@@ -290,6 +290,44 @@ void UpdateCBuffer(const Mat4& mvp) {
 }
 
 // =======================================================================
+// View-frustum culling
+// =======================================================================
+//
+// Mat4 here is row-major with the row-vector convention this project
+// uses throughout (clip = pos * viewProj, see common.h's MatMul/
+// MatLookToLH/MatPerspectiveFovLH) -- clip[j] = x*M[0][j] + y*M[1][j] +
+// z*M[2][j] + w*M[3][j], so a plane's (a,b,c,d) coefficients for a given
+// clip component come from that COLUMN of M, not its row (the transpose
+// of the usual column-vector-convention Gribb/Hartmann derivation).
+// Near/far use clip_z directly rather than clip_z +/- clip_w, matching
+// MatPerspectiveFovLH's D3D-style [0,1] depth range (not OpenGL's
+// [-1,1]) -- using the OpenGL form here would cull most of the view.
+Frustum ExtractFrustum(const Mat4& M) {
+    Frustum f;
+    auto set = [](FrustumPlane& p, float a, float b, float c, float d) { p.a = a; p.b = b; p.c = c; p.d = d; };
+    set(f.planes[0], M.m[0][3] + M.m[0][0], M.m[1][3] + M.m[1][0], M.m[2][3] + M.m[2][0], M.m[3][3] + M.m[3][0]); // left
+    set(f.planes[1], M.m[0][3] - M.m[0][0], M.m[1][3] - M.m[1][0], M.m[2][3] - M.m[2][0], M.m[3][3] - M.m[3][0]); // right
+    set(f.planes[2], M.m[0][3] + M.m[0][1], M.m[1][3] + M.m[1][1], M.m[2][3] + M.m[2][1], M.m[3][3] + M.m[3][1]); // bottom
+    set(f.planes[3], M.m[0][3] - M.m[0][1], M.m[1][3] - M.m[1][1], M.m[2][3] - M.m[2][1], M.m[3][3] - M.m[3][1]); // top
+    set(f.planes[4], M.m[0][2], M.m[1][2], M.m[2][2], M.m[3][2]);                                                 // near
+    set(f.planes[5], M.m[0][3] - M.m[0][2], M.m[1][3] - M.m[1][2], M.m[2][3] - M.m[2][2], M.m[3][3] - M.m[3][2]); // far
+    return f;
+}
+
+bool FrustumIntersectsAABB(const Frustum& f, Vec3 minB, Vec3 maxB) {
+    for (int i = 0; i < 6; i++) {
+        const FrustumPlane& p = f.planes[i];
+        // The AABB corner furthest along this plane's normal -- if even
+        // that corner is outside, the whole box is.
+        float px = p.a >= 0 ? maxB.x : minB.x;
+        float py = p.b >= 0 ? maxB.y : minB.y;
+        float pz = p.c >= 0 ? maxB.z : minB.z;
+        if (p.a * px + p.b * py + p.c * pz + p.d < 0.0f) return false;
+    }
+    return true;
+}
+
+// =======================================================================
 // D3D11 initialization
 // =======================================================================
 

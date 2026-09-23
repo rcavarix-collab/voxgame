@@ -79,3 +79,20 @@ void UpdateCBuffer(const Mat4& mvp);
 // render.cpp for the full reasoning; this is the single entry point
 // the game loop calls once per frame.
 void RebuildDirtyChunks(World& w);
+
+// ---- View-frustum culling (Section 4.2-perf) ----
+//
+// Six planes extracted directly from the combined view-projection
+// matrix (Gribb/Hartmann), each as (a,b,c,d) with "inside" meaning
+// a*x + b*y + c*z + d >= 0 -- world-space coordinates plug in directly,
+// with no per-chunk transform needed to test against them. Bounds the
+// world/pipe draw loops' per-frame cost by what the camera can actually
+// see instead of by total loaded chunk count, which otherwise grows
+// forever since chunks are never unloaded (Section 2.4).
+struct FrustumPlane { float a, b, c, d; };
+struct Frustum { FrustumPlane planes[6]; };
+Frustum ExtractFrustum(const Mat4& viewProj);
+// True if the AABB is at least partially inside the frustum (a
+// conservative test -- may pass a few actually-outside chunks near the
+// frustum's edges, but never rejects one that's actually visible).
+bool FrustumIntersectsAABB(const Frustum& f, Vec3 minB, Vec3 maxB);

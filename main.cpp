@@ -175,6 +175,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
         float fovRadians = g_fov * (3.14159265359f / 180.0f);
         Mat4 proj = MatPerspectiveFovLH(fovRadians, (float)SCREEN_W / SCREEN_H, 0.1f, 500.0f);
         Mat4 viewProj = MatMul(view, proj);
+        Frustum frustum = ExtractFrustum(viewProj);
 
         // Sky pass: depth off (reusing the UI pass's depth-disabled
         // state), drawn before the opaque world pass so normal depth-
@@ -215,6 +216,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
         for (auto& kv : g_world.chunks) {
             Chunk& c = *kv.second;
             if (c.indexCount == 0) continue;
+            const ChunkCoord& cc = kv.first;
+            Vec3 minB = { (float)(cc.x * CHUNK_SIZE), (float)(cc.y * CHUNK_SIZE), (float)(cc.z * CHUNK_SIZE) };
+            Vec3 maxB = { minB.x + CHUNK_SIZE, minB.y + CHUNK_SIZE, minB.z + CHUNK_SIZE };
+            if (!FrustumIntersectsAABB(frustum, minB, maxB)) continue;
             g_context->IASetVertexBuffers(0, 1, &c.vb, &stride, &offset);
             g_context->IASetIndexBuffer(c.ib, DXGI_FORMAT_R32_UINT, 0);
             g_context->DrawIndexed(c.indexCount, 0, 0);
