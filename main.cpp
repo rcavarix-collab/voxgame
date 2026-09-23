@@ -138,7 +138,6 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
                 // which the music (Part XIV) reads directly rather than
                 // tracking its own independent notion of time.
                 g_dayTimeSeconds = fmodf(g_dayTimeSeconds + FIXED_DT, DAY_LENGTH_SECONDS);
-                RefillMusicQueueIfNeeded();
 
                 int pcx = FloorDiv16((int)floor(g_player.x));
                 int pcz = FloorDiv16((int)floor(g_player.z));
@@ -156,6 +155,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
             }
         }
 
+        // Once per frame, not per tick: after a stall the tick loop runs
+        // many catch-up ticks in one frame, and each would otherwise
+        // generate another music chunk on top of the stall.
+        RefillMusicQueueIfNeeded();
         RebuildDirtyChunks(g_world);
 
         float clearColor[4] = { 0.4f, 0.6f, 0.9f, 1.0f };

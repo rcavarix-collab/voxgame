@@ -196,6 +196,22 @@ bool SaveSettings() {
     return !ec;
 }
 
+// settings.cfg is plain text a player may hand-edit, so values read from
+// it (or from a legacy v2 save) are clamped to the same ranges the menu
+// sliders allow -- an out-of-range render distance alone would have
+// EnsureChunksLoaded enqueue millions of columns.
+static float ClampF(float v, float lo, float hi) { return v < lo ? lo : (v > hi ? hi : v); }
+void ClampSettingsToValidRanges() {
+    g_sensitivityMultX = ClampF(g_sensitivityMultX, 0.25f, 3.0f);
+    g_sensitivityMultY = ClampF(g_sensitivityMultY, 0.25f, 3.0f);
+    if (g_loadRadius < 1) g_loadRadius = 1;
+    if (g_loadRadius > 8) g_loadRadius = 8;
+    g_masterVolume = ClampF(g_masterVolume, 0.0f, 1.0f);
+    g_musicVolume = ClampF(g_musicVolume, 0.0f, 1.0f);
+    g_fov = ClampF(g_fov, 45.0f, 100.0f);
+    g_musicIntensity = ClampF(g_musicIntensity, 0.0f, 1.0f);
+}
+
 // Missing file (first run) or missing/unrecognized individual keys
 // (an older settings.cfg from before some setting existed) both just
 // keep whatever the caller's compiled-in default already was -- loading
@@ -232,6 +248,7 @@ void LoadSettings() {
         std::string key = std::string("keybind.") + g_actionNames[i];
         g_keyBindings[i] = getI(key.c_str(), g_keyBindings[i]);
     }
+    ClampSettingsToValidRanges();
 }
 
 static uint32_t Fnv1a(const uint8_t* data, size_t len) {
@@ -301,7 +318,7 @@ bool SaveGame(World& w, Player& p, int slot) {
         for (int i = 0; i < CHUNK_CELLS; i++) if (blocks[i] != BLOCK_AIR) blockCount++;
     };
     for (auto& kv : w.chunks) countBlocks(kv.second->blocks);
-    for (auto& kv : g_evictedChunks) countBlocks(kv.second.data());
+    for (auto& kv : g_evictedChunks) countBlocks(kv.second->blocks);
     AppendU32(buf, blockCount);
 
     auto writeBlocks = [&](const ChunkCoord& cc, const uint8_t* blocks) {
@@ -318,7 +335,7 @@ bool SaveGame(World& w, Player& p, int slot) {
                 }
     };
     for (auto& kv : w.chunks) writeBlocks(kv.first, kv.second->blocks);
-    for (auto& kv : g_evictedChunks) writeBlocks(kv.first, kv.second.data());
+    for (auto& kv : g_evictedChunks) writeBlocks(kv.first, kv.second->blocks);
 
     uint32_t checksum = Fnv1a(buf.data(), buf.size());
     AppendU32(buf, checksum);
@@ -453,7 +470,10 @@ bool LoadGame(World& w, Player& p, int slot) {
         fresh.SetRaw(x, y, z, id); // bulk load path, no gravity (Section 5.2)
     }
 
-    w.chunks = std::move(fresh.chunks);
+    // The placeable roster can shrink between builds (pipes were removed),
+    // so a save made with a now-nonexistent hotbar slot selected must not
+    // index past the end of g_placeable.
+    if (loaded.hotbarIndex < 0 || loaded.hotbarIndex >= g_placeableCount) loaded.hotbarIndex = 0;
     p = loaded;
     g_dayTimeSeconds = loadedDayTime;
 
@@ -461,6 +481,7 @@ bool LoadGame(World& w, Player& p, int slot) {
         g_sensitivityMultX = loadedSensX; g_sensitivityMultY = loadedSensY;
         g_invertX = loadedInvertX; g_invertY = loadedInvertY;
         g_loadRadius = loadedRenderDist;
+        ClampSettingsToValidRanges();
         g_showFPS = loadedShowFPS;
         g_masterVolume = loadedVolume;
         // Remap saved keybinding action names -> current GameAction indices,
@@ -490,23 +511,29 @@ bool LoadGame(World& w, Player& p, int slot) {
         }
     }
 
-    // Mark every column present in the loaded world as already
-    // generated AND resident, so the next chunk-load pass never re-runs
-    // procedural generation over it and stomps loaded/edited blocks with
-    // fresh terrain -- only genuinely new columns around the player
-    // (beyond what this save covered) will generate normally from here.
-    // Everything just loaded lives in w.chunks now, not the eviction
-    // store, so any evicted data from before this load is stale --
-    // SaveGame already captured it (it walks both), the fresh w.chunks
-    // this load just built is now the complete, authoritative state.
+    // Every column in the save is marked generated, so terrain-gen never
+    // re-runs over it and stomps edits. Only columns near the loaded
+    // player become resident; the rest go straight to the eviction store
+    // rather than all being meshed on the first frames and then evicted
+    // (a large save would otherwise stall the view around the player
+    // behind thousands of far-away rebuilds). Placed after the legacy
+    // settings block since that can change g_loadRadius.
+    w.chunks.clear();
+    g_evictedChunks.clear();
     g_generatedColumns.clear();
     g_residentColumns.clear();
-    for (auto& kv : w.chunks) {
+    int pcx = FloorDiv16((int)floorf(p.x)), pcz = FloorDiv16((int)floorf(p.z));
+    for (auto& kv : fresh.chunks) {
         long long key = ColumnKey(kv.first.x, kv.first.z);
         g_generatedColumns.insert(key);
-        g_residentColumns.insert(key);
+        if (ColumnDistance(kv.first.x, kv.first.z, pcx, pcz) <= g_loadRadius + CHUNK_EVICT_MARGIN) {
+            g_residentColumns.insert(key);
+            w.chunks.emplace(kv.first, std::move(kv.second));
+        } else {
+            g_evictedChunks.emplace(kv.first, std::move(kv.second));
+        }
     }
-    g_evictedChunks.clear();
+    g_fallQueue.clear(); // entries from the previous world would apply to this one's coordinates
     g_pendingColumns.clear();
     g_pendingColumnSet.clear();
     g_pendingEvictions.clear();

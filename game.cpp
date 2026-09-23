@@ -524,6 +524,7 @@ static void ResetWorldForNewGame() {
     g_generatedColumns.clear();
     g_residentColumns.clear();
     g_evictedChunks.clear();
+    g_fallQueue.clear(); // entries from the previous world would apply to this one's coordinates
     g_pendingColumns.clear();
     g_pendingColumnSet.clear();
     g_pendingEvictions.clear();
@@ -766,21 +767,23 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     }
 }
 
-// Draws one small dynamic-VB batch through the UI pipeline. Called
-// several times per frame (once per bound texture) since the UI pass
-// mixes the font/white atlas with the block atlases for hotbar icons.
-static void UIDrawBatch(const std::vector<UIVertex>& verts, ID3D11ShaderResourceView* srv) {
-    if (verts.empty()) return;
-    D3D11_MAPPED_SUBRESOURCE mapped;
-    g_context->Map(g_uiVB, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
-    size_t count = std::min<size_t>(verts.size(), UI_VB_CAPACITY);
-    memcpy(mapped.pData, verts.data(), count * sizeof(UIVertex));
-    g_context->Unmap(g_uiVB, 0);
-
+// Draws a run of UI vertices through the UI pipeline, splitting it into
+// pieces that fit g_uiVB (whole quads only) rather than truncating --
+// a dense menu like Keybindings can exceed one buffer's worth of text.
+static void UIDrawBatch(const UIVertex* verts, size_t count, ID3D11ShaderResourceView* srv) {
+    if (count == 0) return;
+    const size_t PIECE = (UI_VB_CAPACITY / 6) * 6;
     UINT stride = sizeof(UIVertex), offset = 0;
     g_context->IASetVertexBuffers(0, 1, &g_uiVB, &stride, &offset);
     g_context->PSSetShaderResources(0, 1, &srv);
-    g_context->Draw((UINT)count, 0);
+    for (size_t start = 0; start < count; start += PIECE) {
+        size_t n = std::min(PIECE, count - start);
+        D3D11_MAPPED_SUBRESOURCE mapped;
+        g_context->Map(g_uiVB, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
+        memcpy(mapped.pData, verts + start, n * sizeof(UIVertex));
+        g_context->Unmap(g_uiVB, 0);
+        g_context->Draw((UINT)n, 0);
+    }
 }
 
 // Second pass: orthographic-in-pixel-space, depth off, alpha blend on
@@ -800,10 +803,9 @@ void RenderUIPass() {
         UIDrawRect(glyphVerts, cx - 1, cy - 8, cx + 1, cy + 8, 1, 1, 1, 0.85f);
     }
 
-    // All placeable blocks are plain textured cubes now (pipes removed --
-    // see DESIGN.md), so every hotbar icon samples the one block atlas
-    // and can be built straight into glyphVerts' own batch instead of a
-    // separate per-icon draw call.
+    // Every placeable block is a plain textured cube, so all hotbar icons
+    // sample the one block atlas and share a single batch (drawn between
+    // the HUD and menu glyph runs -- see the end of this function).
     const int SLOT = 48, GAP = 4;
     int hotbarN = g_placeableCount;
     int totalW = hotbarN * SLOT + (hotbarN - 1) * GAP;
@@ -880,6 +882,10 @@ void RenderUIPass() {
         if (g_highContrastUI) UIDrawRect(glyphVerts, panel.x0, panel.y0, panel.x1, panel.y1, 0.0f, 0.0f, 0.0f, 0.98f);
         else UIDrawRect(glyphVerts, panel.x0, panel.y0, panel.x1, panel.y1, 0.10f, 0.10f, 0.13f, 0.95f);
     };
+
+    // Everything before this point is HUD; menus, FPS and toasts after it
+    // must draw over the hotbar icons, which are a separate texture batch.
+    size_t hudVertCount = glyphVerts.size();
 
     if (g_menuScreen != MenuScreen::None) {
         UIDrawRect(glyphVerts, 0, 0, (float)SCREEN_W, (float)SCREEN_H, 0, 0, 0, 0.55f);
@@ -1035,8 +1041,9 @@ void RenderUIPass() {
         g_context->Unmap(g_uiCBuffer, 0);
     }
 
-    UIDrawBatch(glyphVerts, g_uiSRV);
-    UIDrawBatch(iconVerts, g_atlasSRV);
+    UIDrawBatch(glyphVerts.data(), hudVertCount, g_uiSRV);
+    UIDrawBatch(iconVerts.data(), iconVerts.size(), g_atlasSRV);
+    UIDrawBatch(glyphVerts.data() + hudVertCount, glyphVerts.size() - hudVertCount, g_uiSRV);
 
     // Restore world-pass defaults so next frame's world draws don't
     // inherit UI blend/depth state.

@@ -85,10 +85,9 @@ void RebuildDirtyChunks(World& w);
 // Six planes extracted directly from the combined view-projection
 // matrix (Gribb/Hartmann), each as (a,b,c,d) with "inside" meaning
 // a*x + b*y + c*z + d >= 0 -- world-space coordinates plug in directly,
-// with no per-chunk transform needed to test against them. Bounds the
-// world/pipe draw loops' per-frame cost by what the camera can actually
-// see instead of by total loaded chunk count, which otherwise grows
-// forever since chunks are never unloaded (Section 2.4).
+// with no per-chunk transform needed to test against them. Keeps the
+// world draw loop's GPU submissions to what the camera can actually see
+// rather than every resident chunk around the player.
 struct FrustumPlane { float a, b, c, d; };
 struct Frustum { FrustumPlane planes[6]; };
 Frustum ExtractFrustum(const Mat4& viewProj);

@@ -47,6 +47,7 @@ extern float g_musicIntensity;
 
 bool SaveSettings();
 void LoadSettings();
+void ClampSettingsToValidRanges();
 
 // =======================================================================
 // Versioned world+player save/load, multi-slot

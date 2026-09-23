@@ -10,7 +10,6 @@
 #include <d3d11.h>
 #include <cmath>
 #include <cfloat>
-#include <cstring>
 #include <algorithm>
 
 Chunk::~Chunk() {
@@ -79,7 +78,7 @@ int TerrainHeight(int wx, int wz) {
 
 std::unordered_set<long long> g_generatedColumns;
 std::unordered_set<long long> g_residentColumns;
-std::unordered_map<ChunkCoord, std::vector<uint8_t>, ChunkCoordHash> g_evictedChunks;
+std::unordered_map<ChunkCoord, std::unique_ptr<Chunk>, ChunkCoordHash> g_evictedChunks;
 
 long long ColumnKey(int cx, int cz) {
     return ((long long)(uint32_t)cx << 32) | (uint32_t)cz;
@@ -89,34 +88,62 @@ static void DecodeColumnKey(long long key, int& cx, int& cz) {
     cz = (int)(uint32_t)((uint64_t)key & 0xFFFFFFFFu);
 }
 
-// Moves every resident chunk in this column's raw block data into
-// g_evictedChunks and erases it from World::chunks (releasing its GPU
-// buffers via ~Chunk). The inverse of RestoreColumnToWorld below.
+int ColumnDistance(int cx, int cz, int playerChunkX, int playerChunkZ) {
+    long long adx = (long long)cx - playerChunkX; if (adx < 0) adx = -adx;
+    long long adz = (long long)cz - playerChunkZ; if (adz < 0) adz = -adz;
+    long long d = adx > adz ? adx : adz;
+    return d > INT32_MAX ? INT32_MAX : (int)d;
+}
+
+// Faces on a chunk's side toward a neighbor column are culled while that
+// neighbor is resident and solid there (and emitted while it's absent),
+// so any column appearing or disappearing changes the correct mesh of
+// the resident chunks beside it.
+static void MarkHorizontalNeighborsDirty(World& w, const ChunkCoord& cc) {
+    w.MarkChunkDirty({ cc.x - 1, cc.y, cc.z });
+    w.MarkChunkDirty({ cc.x + 1, cc.y, cc.z });
+    w.MarkChunkDirty({ cc.x, cc.y, cc.z - 1 });
+    w.MarkChunkDirty({ cc.x, cc.y, cc.z + 1 });
+}
+
+// Moves each resident chunk of this column into g_evictedChunks as-is
+// (no copy of its block data), releasing only its GPU buffers. The
+// inverse of RestoreColumnToWorld below.
 static void EvictColumnFromWorld(World& w, int cx, int cz) {
     for (int cy = 0; cy <= FloorDiv16(Y_MAX); cy++) {
         ChunkCoord cc{ cx, cy, cz };
         auto it = w.chunks.find(cc);
         if (it == w.chunks.end()) continue;
-        std::vector<uint8_t> blocks(it->second->blocks, it->second->blocks + CHUNK_CELLS);
-        g_evictedChunks.emplace(cc, std::move(blocks));
+        std::unique_ptr<Chunk> c = std::move(it->second);
         w.chunks.erase(it);
+        if (c->vb) { c->vb->Release(); c->vb = nullptr; }
+        if (c->ib) { c->ib->Release(); c->ib = nullptr; }
+        c->indexCount = 0;
+        c->dirty = true; // its mesh is gone; rebuild whenever it comes back
+        g_evictedChunks.emplace(cc, std::move(c));
+        MarkHorizontalNeighborsDirty(w, cc);
     }
 }
 
-// Pulls every evicted chunk belonging to this column back into
-// World::chunks, marking each dirty so it re-meshes on the next
-// RebuildDirtyChunks pass (its old mesh was discarded along with the
-// GPU buffers at eviction time).
 static void RestoreColumnToWorld(World& w, int cx, int cz) {
     for (int cy = 0; cy <= FloorDiv16(Y_MAX); cy++) {
         ChunkCoord cc{ cx, cy, cz };
         auto it = g_evictedChunks.find(cc);
         if (it == g_evictedChunks.end()) continue;
-        Chunk* c = w.GetOrCreateChunk(cc);
-        memcpy(c->blocks, it->second.data(), CHUNK_CELLS);
-        c->dirty = true;
+        w.chunks.emplace(cc, std::move(it->second));
         g_evictedChunks.erase(it);
+        MarkHorizontalNeighborsDirty(w, cc);
     }
+}
+
+// Gravity only ever moves a block straight down, so a pending fall only
+// ever touches its own column. Evicting that column mid-cascade would
+// make every remaining entry read air and get discarded as stale,
+// leaving the rest of the structure floating once the column returns.
+static bool ColumnHasPendingFalls(int cx, int cz) {
+    for (const FallEntry& e : g_fallQueue)
+        if (FloorDiv16(e.x) == cx && FloorDiv16(e.z) == cz) return true;
+    return false;
 }
 
 void GenerateColumn(World& w, int cx, int cz) {
@@ -218,13 +245,10 @@ void EnsureChunksLoaded(int playerChunkX, int playerChunkZ) {
     // applied here too). g_residentColumns only ever holds roughly the
     // loaded area's worth of keys, so this scan stays cheap regardless
     // of how much total ground the player has covered this session.
-    const int EVICT_MARGIN = 2;
     for (long long key : g_residentColumns) {
         int cx, cz; DecodeColumnKey(key, cx, cz);
-        int adx = cx - playerChunkX; if (adx < 0) adx = -adx;
-        int adz = cz - playerChunkZ; if (adz < 0) adz = -adz;
-        int dist = adx > adz ? adx : adz;
-        if (dist > g_loadRadius + EVICT_MARGIN && !g_pendingEvictionSet.count(key)) {
+        int dist = ColumnDistance(cx, cz, playerChunkX, playerChunkZ);
+        if (dist > g_loadRadius + CHUNK_EVICT_MARGIN && !g_pendingEvictionSet.count(key)) {
             g_pendingEvictionSet.insert(key);
             g_pendingEvictions.push_back({ cx, cz });
         }
@@ -248,10 +272,17 @@ void ProcessColumnEviction(World& w) {
         g_pendingEvictions.pop_front();
         long long key = ColumnKey(col.first, col.second);
         g_pendingEvictionSet.erase(key);
-        // A column can be enqueued for eviction and then walked back
-        // into range before its turn comes up -- re-check residency
-        // rather than trusting the queue entry is still accurate.
         if (!g_residentColumns.count(key)) continue;
+        // The player can walk back into range between enqueue and now --
+        // evicting then would punch a hole inside the load radius that
+        // nothing refills until the next chunk crossing.
+        if (ColumnDistance(col.first, col.second, g_lastPlayerChunkX, g_lastPlayerChunkZ)
+                <= g_loadRadius + CHUNK_EVICT_MARGIN) continue;
+        if (ColumnHasPendingFalls(col.first, col.second)) {
+            g_pendingEvictionSet.insert(key);
+            g_pendingEvictions.push_back(col); // retry once the cascade drains
+            continue;
+        }
         EvictColumnFromWorld(w, col.first, col.second);
         g_residentColumns.erase(key);
     }

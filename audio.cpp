@@ -24,7 +24,6 @@
 #include "world.h"   // g_dayTimeSeconds
 #include "persist.h" // g_masterVolume / g_musicVolume / g_musicIntensity
 #include <cstdint>
-#include <deque>
 
 #pragma comment(lib, "xaudio2.lib")
 
@@ -38,39 +37,64 @@ static IXAudio2MasteringVoice* g_masteringVoice = nullptr;
 static IXAudio2SourceVoice* g_musicVoice = nullptr;
 static MusicState g_musicState;
 static double g_nextChunkStartTime = -1.0; // -1 = inactive (title screen / paused)
-static std::deque<int16_t*> g_musicPendingBuffers; // FIFO, oldest-submitted first; freed once XAudio2 finishes each one
 static const int MUSIC_SAMPLE_RATE = 44100; // must match music_synth.cpp's kMusicSampleRate
-// Quarter-second chunks rather than whole-second ones: each chord-bed
-// sample can cost dozens of sin() calls (up to 5 tones x 6 harmonics x
-// 2 during a mode-crossfade window, plus the arp's own 6), so a whole
-// second of it generated in one synchronous call is real, occasionally
-// visible work on the main thread. Four times as many, four times
-// smaller calls spread that same total cost more evenly across frames
-// instead of risking one periodic ~1-second-cadence hitch. 16 chunks
-// of lookahead (4s buffered) also gives more tolerance for a brief
-// stall (e.g. dragging the window, which blocks the message loop
-// entirely) before the queue actually runs dry and goes quiet.
+// Quarter-second chunks, 16 of lookahead (4 s buffered) -- enough slack
+// for a brief message-loop stall (e.g. dragging the window) before the
+// queue runs dry.
 static const int MUSIC_CHUNK_SAMPLES = MUSIC_SAMPLE_RATE / 4;
 static const int MUSIC_LOOKAHEAD_CHUNKS = 16;
+// Chunks generated synchronously when playback (re)starts; the rest of
+// the lookahead fills at one chunk per refill call, so starting music
+// never costs more than a couple of chunks' generation in one frame.
+static const int MUSIC_PRIME_CHUNKS = 2;
+
+// Fixed pool of PCM buffers, reused cyclically instead of new/delete per
+// chunk. XAudio2 reads a submitted buffer from its own thread until it
+// stops counting it in BuffersQueued; submission and consumption are
+// both FIFO, so with one more slot than the lookahead, the slot about to
+// be overwritten is always older than every buffer still queued.
+static const int MUSIC_POOL_SIZE = MUSIC_LOOKAHEAD_CHUNKS + 1;
+static int16_t (*g_musicPool)[MUSIC_CHUNK_SAMPLES] = nullptr;
+static int g_musicPoolNext = 0;
+// Set after Stop+Flush: the flush only takes effect on the audio
+// thread's next processing pass, so no pool slot may be rewritten until
+// BuffersQueued has actually reached zero.
+static bool g_musicNeedsDrain = false;
 
 void ApplyAudioVolumes() {
     if (g_musicVoice) g_musicVoice->SetVolume(g_masterVolume * g_musicVolume);
 }
 
-static void FreeAllPendingMusicBuffers() {
-    for (int16_t* p : g_musicPendingBuffers) delete[] p;
-    g_musicPendingBuffers.clear();
+static UINT32 QueuedMusicBuffers() {
+    XAUDIO2_VOICE_STATE vstate;
+    g_musicVoice->GetState(&vstate, XAUDIO2_VOICE_NOSAMPLESPLAYED);
+    return vstate.BuffersQueued;
+}
+
+// Normally already drained (a pause lasts far longer than one ~10 ms
+// processing pass), so this rarely waits at all. If it somehow doesn't
+// drain, the old pool is abandoned rather than risk rewriting memory the
+// audio thread may still read -- a small leak beats a use-after-free.
+static void WaitForMusicDrain() {
+    if (!g_musicNeedsDrain) return;
+    for (int i = 0; i < 100 && QueuedMusicBuffers() > 0; i++) Sleep(1);
+    if (QueuedMusicBuffers() > 0) {
+        OutputDebugStringA("audio: music voice did not drain after flush; abandoning buffer pool\n");
+        g_musicPool = new int16_t[MUSIC_POOL_SIZE][MUSIC_CHUNK_SAMPLES];
+        g_musicPoolNext = 0;
+    }
+    g_musicNeedsDrain = false;
 }
 
 static void SubmitOneMusicChunk() {
-    int16_t* chunk = new int16_t[MUSIC_CHUNK_SAMPLES];
+    int16_t* chunk = g_musicPool[g_musicPoolNext];
+    g_musicPoolNext = (g_musicPoolNext + 1) % MUSIC_POOL_SIZE;
     GenerateMusicChunk(g_nextChunkStartTime, MUSIC_CHUNK_SAMPLES, (double)g_musicIntensity, &g_musicState, chunk);
     g_nextChunkStartTime += (double)MUSIC_CHUNK_SAMPLES / MUSIC_SAMPLE_RATE;
     XAUDIO2_BUFFER buf = {};
     buf.AudioBytes = MUSIC_CHUNK_SAMPLES * sizeof(int16_t);
     buf.pAudioData = (const BYTE*)chunk;
     g_musicVoice->SubmitSourceBuffer(&buf);
-    g_musicPendingBuffers.push_back(chunk);
 }
 
 // Called on New Game, Load Game, Resume from Pause, and Quick Load --
@@ -82,48 +106,35 @@ static void SubmitOneMusicChunk() {
 void StartMusicPlayback() {
     if (!g_musicVoice) return;
     g_musicVoice->Stop();
-    // Every current call site already routes through StopMusicPlayback
-    // (or has never started at all) before reaching here, so the
-    // voice's internal queue should already be empty -- but flushing
-    // defensively costs nothing and means freeing g_musicPendingBuffers
-    // right after can never race a still-referenced buffer, regardless
-    // of how future call sites end up wired.
     g_musicVoice->FlushSourceBuffers();
-    FreeAllPendingMusicBuffers();
+    g_musicNeedsDrain = true;
+    WaitForMusicDrain();
     ResetMusicState(&g_musicState);
     g_nextChunkStartTime = g_dayTimeSeconds;
-    for (int i = 0; i < MUSIC_LOOKAHEAD_CHUNKS; i++) SubmitOneMusicChunk();
+    for (int i = 0; i < MUSIC_PRIME_CHUNKS; i++) SubmitOneMusicChunk();
     g_musicVoice->Start();
 }
 
 // Called whenever any menu opens during play (pause is silence, by
 // request -- it signals the passage of in-game time stopping, not a
 // real-time-continues-in-the-background pause) and on Quit to Title.
+// Doesn't wait for the drain itself -- the next StartMusicPlayback does,
+// by which point it has almost always already happened.
 void StopMusicPlayback() {
     if (!g_musicVoice) return;
     g_musicVoice->Stop();
     g_musicVoice->FlushSourceBuffers();
-    FreeAllPendingMusicBuffers();
+    g_musicNeedsDrain = true;
     g_nextChunkStartTime = -1.0;
 }
 
-// Tops up the lookahead queue -- called once per simulation tick, only
-// ever while a game is actually running and unpaused (Section 13's
-// clock-advance gate), so it's a natural no-op at the title screen and
-// while paused without needing its own separate condition.
+// Tops up the lookahead queue by at most one chunk per call, so music
+// generation never costs more than one chunk in any single frame. A
+// natural no-op at the title screen and while paused, since both stop
+// playback (g_nextChunkStartTime < 0).
 void RefillMusicQueueIfNeeded() {
     if (!g_musicVoice || g_nextChunkStartTime < 0.0) return;
-    XAUDIO2_VOICE_STATE vstate;
-    g_musicVoice->GetState(&vstate);
-    UINT32 queued = vstate.BuffersQueued;
-    while (g_musicPendingBuffers.size() > (size_t)queued) {
-        delete[] g_musicPendingBuffers.front();
-        g_musicPendingBuffers.pop_front();
-    }
-    while (queued < (UINT32)MUSIC_LOOKAHEAD_CHUNKS) {
-        SubmitOneMusicChunk();
-        queued++;
-    }
+    if (QueuedMusicBuffers() < (UINT32)MUSIC_LOOKAHEAD_CHUNKS) SubmitOneMusicChunk();
 }
 
 // Failure anywhere here (no audio device, driver issue, etc.) leaves
@@ -144,6 +155,7 @@ bool InitAudio() {
     wfx.nAvgBytesPerSec = wfx.nSamplesPerSec * wfx.nBlockAlign;
 
     if (FAILED(g_xaudio2->CreateSourceVoice(&g_musicVoice, &wfx))) return false;
+    g_musicPool = new int16_t[MUSIC_POOL_SIZE][MUSIC_CHUNK_SAMPLES];
     ApplyAudioVolumes();
     // Deliberately not started here -- the title screen is silent by
     // design (Section 13); playback only begins via StartMusicPlayback().
@@ -154,5 +166,7 @@ void ShutdownAudio() {
     if (g_musicVoice) { g_musicVoice->Stop(); g_musicVoice->DestroyVoice(); g_musicVoice = nullptr; }
     if (g_masteringVoice) { g_masteringVoice->DestroyVoice(); g_masteringVoice = nullptr; }
     if (g_xaudio2) { g_xaudio2->Release(); g_xaudio2 = nullptr; }
-    FreeAllPendingMusicBuffers();
+    // DestroyVoice is synchronous, so nothing can still be reading these.
+    delete[] g_musicPool;
+    g_musicPool = nullptr;
 }
