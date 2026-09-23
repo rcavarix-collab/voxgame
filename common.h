@@ -111,9 +111,6 @@ enum BlockID : uint8_t {
     BLOCK_WOOD,
     BLOCK_CHEST,
     BLOCK_MACHINE,
-    BLOCK_PIPE_STRAIGHT,
-    BLOCK_PIPE_CORNER,
-    BLOCK_PIPE_JUNCTION,
     BLOCK_COUNT
 };
 
@@ -128,31 +125,24 @@ static const char* g_blockNames[BLOCK_COUNT] = {
     "wood",
     "chest",
     "machine",
-    "pipe_straight",
-    "pipe_corner",
-    "pipe_junction",
 };
 
 struct BlockInfo {
     bool foundational; // never falls, always supports (Part V)
     bool solid;         // collision / raycast / face-culling participant
-    int shape;           // 0 cube, 1 straight pipe, 2 corner, 3 junction
-    int tex;              // atlas slot for cube blocks, -1 otherwise
+    int tex;              // atlas slot
 };
 
 // Single source of truth per block (Section 3.2) -- no virtual dispatch
 // in the hot paths (meshing, gravity, picking) reads this table instead.
 static const BlockInfo g_info[BLOCK_COUNT] = {
-    /* air            */ { false, false, 0, -1 },
-    /* foundation     */ { true,  true,  0,  0 },
-    /* stone          */ { false, true,  0,  1 },
-    /* dirt           */ { false, true,  0,  2 },
-    /* wood           */ { false, true,  0,  3 },
-    /* chest          */ { true,  true,  0,  4 },
-    /* machine        */ { true,  true,  0,  5 },
-    /* pipe_straight  */ { true,  false, 1, -1 },
-    /* pipe_corner    */ { true,  false, 2, -1 },
-    /* pipe_junction  */ { true,  false, 3, -1 },
+    /* air            */ { false, false, -1 },
+    /* foundation     */ { true,  true,   0 },
+    /* stone          */ { false, true,   1 },
+    /* dirt           */ { false, true,   2 },
+    /* wood           */ { false, true,   3 },
+    /* chest          */ { true,  true,   4 },
+    /* machine        */ { true,  true,   5 },
 };
 
 // Atlas layout. NOTE: this order (foundation, stone, dirt, wood, chest,

@@ -796,14 +796,16 @@ void RenderUIPass() {
         UIDrawRect(glyphVerts, cx - 1, cy - 8, cx + 1, cy + 8, 1, 1, 1, 0.85f);
     }
 
-    struct IconQuad { float x0, y0, x1, y1, u0, v0, u1, v1; bool pipe; };
-    std::vector<IconQuad> icons;
-
+    // All placeable blocks are plain textured cubes now (pipes removed --
+    // see DESIGN.md), so every hotbar icon samples the one block atlas
+    // and can be built straight into glyphVerts' own batch instead of a
+    // separate per-icon draw call.
     const int SLOT = 48, GAP = 4;
     int hotbarN = g_placeableCount;
     int totalW = hotbarN * SLOT + (hotbarN - 1) * GAP;
     float hbStartX = (SCREEN_W - totalW) / 2.0f;
     float hbY0 = SCREEN_H - SLOT - 16.0f;
+    std::vector<UIVertex> iconVerts;
     for (int i = 0; i < hotbarN; i++) {
         float x0 = hbStartX + i * (SLOT + GAP), x1 = x0 + SLOT;
         float y0 = hbY0, y1 = y0 + SLOT;
@@ -813,10 +815,8 @@ void RenderUIPass() {
 
         BlockID b = g_placeable[i];
         float iu0, iv0, iu1, iv1;
-        bool pipe = g_info[b].shape != 0;
-        if (pipe) { iu0 = 0.05f; iv0 = 0.05f; iu1 = 0.95f; iv1 = 0.95f; }
-        else AtlasRect(g_info[b].tex, iu0, iv0, iu1, iv1);
-        icons.push_back({ x0 + 6, y0 + 6, x1 - 6, y1 - 6, iu0, iv0, iu1, iv1, pipe });
+        AtlasRect(g_info[b].tex, iu0, iv0, iu1, iv1);
+        UIAddQuad(iconVerts, x0 + 6, y0 + 6, x1 - 6, y1 - 6, iu0, iv0, iu1, iv1, 1, 1, 1, 1);
     }
 
     if (!menuIsOpen) {
@@ -1032,12 +1032,7 @@ void RenderUIPass() {
     }
 
     UIDrawBatch(glyphVerts, g_uiSRV);
-
-    for (auto& ic : icons) {
-        std::vector<UIVertex> iconVerts;
-        UIAddQuad(iconVerts, ic.x0, ic.y0, ic.x1, ic.y1, ic.u0, ic.v0, ic.u1, ic.v1, 1, 1, 1, 1);
-        UIDrawBatch(iconVerts, ic.pipe ? g_pipeSRV : g_atlasSRV);
-    }
+    UIDrawBatch(iconVerts, g_atlasSRV);
 
     // Restore world-pass defaults so next frame's world draws don't
     // inherit UI blend/depth state.

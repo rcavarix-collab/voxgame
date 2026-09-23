@@ -1,7 +1,7 @@
 // render.h
 //
-// D3D11 device/pipeline state, chunk meshing, and the procedural
-// pipe/sky meshes. Owns every ID3D11* global -- both main.cpp's frame
+// D3D11 device/pipeline state, chunk meshing, and the procedural sky
+// mesh. Owns every ID3D11* global -- both main.cpp's frame
 // loop and game.cpp's UI pass reach into these directly (the same
 // unencapsulated-globals design the project has always used; this
 // split relocates that design into files, it doesn't redesign it).
@@ -30,17 +30,8 @@ extern ID3D11SamplerState* g_sampler;
 extern ID3D11RasterizerState* g_rasterState;
 extern ID3D11DepthStencilState* g_depthState;
 extern ID3D11ShaderResourceView* g_atlasSRV;
-extern ID3D11ShaderResourceView* g_pipeSRV;
 
 struct CBData { Mat4 mvp; };
-
-// One mesh per pipe shape (index by BlockInfo.shape: 1 straight, 2
-// corner, 3 junction; [0] unused). Distinct silhouettes per shape, but
-// still a fixed canonical orientation -- real per-instance orientation
-// and connection-aware geometry is still Milestone 2 work alongside
-// network connectivity (Section 4.4).
-struct PipeMesh { ID3D11Buffer* vb = nullptr; ID3D11Buffer* ib = nullptr; UINT indexCount = 0; };
-extern PipeMesh g_pipeMeshes[4];
 
 // ---- UI pass objects (Section 4.6): own shaders/layout/cbuffer/
 // sampler/blend/depth state, fully separate from the world pass's. ----
@@ -81,7 +72,6 @@ extern UINT g_skyIndexCount;
 
 bool InitD3D(HWND hwnd);
 bool InitTextures();
-void BuildPipeMeshes();
 void BuildSkyMesh();
 void UpdateCBuffer(const Mat4& mvp);
 

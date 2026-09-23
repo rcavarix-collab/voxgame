@@ -60,7 +60,6 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
     if (!InitD3D(g_hwnd)) return -1;
     if (!InitTextures()) return -1;
     InitAudio(); // a machine with no usable audio device still gets a silent but playable game (Section 10)
-    BuildPipeMeshes();
     BuildSkyMesh();
 
     LARGE_INTEGER freq, lastTime;
@@ -219,23 +218,6 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
             g_context->IASetVertexBuffers(0, 1, &c.vb, &stride, &offset);
             g_context->IASetIndexBuffer(c.ib, DXGI_FORMAT_R32_UINT, 0);
             g_context->DrawIndexed(c.indexCount, 0, 0);
-        }
-
-        // Pipe instances: one draw call per instance (documented scaling
-        // limit, Section 4.4) -- fine at prototype density. Which mesh
-        // is bound switches per instance based on shape, still with no
-        // extra draw calls added.
-        g_context->PSSetShaderResources(0, 1, &g_pipeSRV);
-        for (auto& kv : g_world.chunks) {
-            for (auto& pipe : kv.second->pipes) {
-                PipeMesh& mesh = g_pipeMeshes[pipe.shape];
-                if (mesh.indexCount == 0) continue;
-                g_context->IASetVertexBuffers(0, 1, &mesh.vb, &stride, &offset);
-                g_context->IASetIndexBuffer(mesh.ib, DXGI_FORMAT_R32_UINT, 0);
-                Mat4 world = MatTranslation((float)pipe.worldX, (float)pipe.worldY, (float)pipe.worldZ);
-                UpdateCBuffer(MatMul(world, viewProj));
-                g_context->DrawIndexed(mesh.indexCount, 0, 0);
-            }
         }
 
         RenderUIPass();

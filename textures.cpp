@@ -104,18 +104,6 @@ static void DrawMachineTile(Graphics& g, int x, int y, int size) {
     g.FillRectangle(&panel, x + pm, y + pm, size - 2 * pm, size - 2 * pm);
 }
 
-static void DrawPipeTexture(Graphics& g, int size) {
-    SolidBrush base(Color(255, 150, 150, 160));
-    g.FillRectangle(&base, 0, 0, size, size);
-    Pen band(Color(255, 90, 90, 100), 2.0f);
-    int step = size / 5;
-    for (int i = step; i < size; i += step) {
-        g.DrawLine(&band, 0, i, size, i);
-    }
-    Pen border(Color(255, 60, 60, 70), 2.0f);
-    g.DrawRectangle(&border, 0, 0, size - 1, size - 1);
-}
-
 static uint8_t* CopyBitmapBGRA(Bitmap& bmp, int w, int h) {
     Rect rect(0, 0, w, h);
     BitmapData data;
@@ -132,8 +120,7 @@ static uint8_t* CopyBitmapBGRA(Bitmap& bmp, int w, int h) {
 
 extern "C" bool GenerateGameTextures(
     int tileSize, int atlasCols, int atlasRows,
-    uint8_t** outAtlasPixelsBGRA, int* outAtlasW, int* outAtlasH,
-    uint8_t** outPipePixelsBGRA, int* outPipeSize)
+    uint8_t** outAtlasPixelsBGRA, int* outAtlasW, int* outAtlasH)
 {
     ULONG_PTR token;
     GdiplusStartupInput startupInput;
@@ -164,20 +151,6 @@ extern "C" bool GenerateGameTextures(
         *outAtlasPixelsBGRA = pixels;
         *outAtlasW = atlasW;
         *outAtlasH = atlasH;
-    }
-
-    if (ok) {
-        int pipeSize = tileSize;
-        Bitmap pipeBmp(pipeSize, pipeSize, PixelFormat32bppARGB);
-        {
-            Graphics g(&pipeBmp);
-            g.SetSmoothingMode(SmoothingModeNone);
-            DrawPipeTexture(g, pipeSize);
-        }
-        uint8_t* pixels = CopyBitmapBGRA(pipeBmp, pipeSize, pipeSize);
-        if (!pixels) ok = false;
-        *outPipePixelsBGRA = pixels;
-        *outPipeSize = pipeSize;
     }
 
     GdiplusShutdown(token);

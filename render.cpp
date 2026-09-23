@@ -1,6 +1,6 @@
 // render.cpp
 //
-// D3D11 setup, chunk meshing, and the procedural pipe/sky meshes.
+// D3D11 setup, chunk meshing, and the procedural sky mesh.
 
 #include "render.h"
 #include <d3dcompiler.h>
@@ -19,8 +19,7 @@
 // ---------------------------------------------------------------------
 extern "C" bool GenerateGameTextures(
     int tileSize, int atlasCols, int atlasRows,
-    uint8_t** outAtlasPixelsBGRA, int* outAtlasW, int* outAtlasH,
-    uint8_t** outPipePixelsBGRA, int* outPipeSize);
+    uint8_t** outAtlasPixelsBGRA, int* outAtlasW, int* outAtlasH);
 extern "C" void FreeGeneratedPixels(uint8_t* p);
 extern "C" bool GenerateUIAtlas(
     int cellW, int cellH, int cols, int rows,
@@ -40,9 +39,6 @@ ID3D11SamplerState* g_sampler = nullptr;
 ID3D11RasterizerState* g_rasterState = nullptr;
 ID3D11DepthStencilState* g_depthState = nullptr;
 ID3D11ShaderResourceView* g_atlasSRV = nullptr;
-ID3D11ShaderResourceView* g_pipeSRV = nullptr;
-
-PipeMesh g_pipeMeshes[4];
 
 ID3D11VertexShader* g_uiVS = nullptr;
 ID3D11PixelShader* g_uiPS = nullptr;
@@ -157,7 +153,6 @@ static bool NeighborSolid(World& w, Chunk& c, int lx, int ly, int lz, int dx, in
 static void RebuildChunkMesh(World& w, const ChunkCoord& cc, Chunk& c) {
     std::vector<Vertex> verts;
     std::vector<uint32_t> indices;
-    c.pipes.clear();
 
     int baseX = cc.x * CHUNK_SIZE, baseY = cc.y * CHUNK_SIZE, baseZ = cc.z * CHUNK_SIZE;
 
@@ -167,11 +162,6 @@ static void RebuildChunkMesh(World& w, const ChunkCoord& cc, Chunk& c) {
                 BlockID id = (BlockID)c.blocks[Chunk::LocalIndex(lx, ly, lz)];
                 if (id == BLOCK_AIR) continue;
                 int wx = baseX + lx, wy = baseY + ly, wz = baseZ + lz;
-
-                if (g_info[id].shape != 0) {
-                    c.pipes.push_back({ wx, wy, wz, g_info[id].shape });
-                    continue;
-                }
 
                 float u0, v0, u1, v1;
                 AtlasRect(g_info[id].tex, u0, v0, u1, v1);
@@ -239,69 +229,6 @@ void RebuildDirtyChunks(World& w) {
     for (auto& kv : w.chunks) {
         if (rebuilt >= MAX_CHUNK_REBUILDS_PER_FRAME) break;
         if (kv.second->dirty) { RebuildChunkMesh(w, kv.first, *kv.second); rebuilt++; }
-    }
-}
-
-// Emits a full 6-faced box between two corners, in the same local
-// unit-cube space EmitFace's callers already use (the box origin passed
-// to EmitFace is always 0,0,0 and the corners carry the real offsets).
-static void AddBox(std::vector<Vertex>& verts, std::vector<uint32_t>& indices,
-                    float x0, float y0, float z0, float x1, float y1, float z1,
-                    float u0, float v0, float u1, float v1) {
-    EmitFace(verts, indices, 0,0,0, x1,y0,z0, x1,y1,z0, x1,y1,z1, x1,y0,z1, u0,v0,u1,v1); // +X
-    EmitFace(verts, indices, 0,0,0, x0,y0,z1, x0,y1,z1, x0,y1,z0, x0,y0,z0, u0,v0,u1,v1); // -X
-    EmitFace(verts, indices, 0,0,0, x0,y1,z0, x0,y1,z1, x1,y1,z1, x1,y1,z0, u0,v0,u1,v1); // +Y
-    EmitFace(verts, indices, 0,0,0, x0,y0,z1, x0,y0,z0, x1,y0,z0, x1,y0,z1, u0,v0,u1,v1); // -Y
-    EmitFace(verts, indices, 0,0,0, x1,y0,z1, x1,y1,z1, x0,y1,z1, x0,y0,z1, u0,v0,u1,v1); // +Z
-    EmitFace(verts, indices, 0,0,0, x0,y0,z0, x0,y1,z0, x1,y1,z0, x1,y0,z0, u0,v0,u1,v1); // -Z
-}
-
-static PipeMesh UploadPipeMesh(const std::vector<Vertex>& verts, const std::vector<uint32_t>& indices) {
-    PipeMesh mesh;
-    D3D11_BUFFER_DESC vbd = {};
-    vbd.Usage = D3D11_USAGE_DEFAULT;
-    vbd.ByteWidth = (UINT)(verts.size() * sizeof(Vertex));
-    vbd.BindFlags = D3D11_BIND_VERTEX_BUFFER;
-    D3D11_SUBRESOURCE_DATA vinit = {}; vinit.pSysMem = verts.data();
-    g_device->CreateBuffer(&vbd, &vinit, &mesh.vb);
-
-    D3D11_BUFFER_DESC ibd = {};
-    ibd.Usage = D3D11_USAGE_DEFAULT;
-    ibd.ByteWidth = (UINT)(indices.size() * sizeof(uint32_t));
-    ibd.BindFlags = D3D11_BIND_INDEX_BUFFER;
-    D3D11_SUBRESOURCE_DATA iinit = {}; iinit.pSysMem = indices.data();
-    g_device->CreateBuffer(&ibd, &iinit, &mesh.ib);
-
-    mesh.indexCount = (UINT)indices.size();
-    return mesh;
-}
-
-void BuildPipeMeshes() {
-    const float u0 = 0.05f, v0 = 0.05f, u1 = 0.95f, v1 = 0.95f;
-    const float lo = 0.35f, hi = 0.65f; // pipe cross-section: 0.3 thick, centered
-
-    // Straight: a through-pipe spanning the full cell vertically.
-    {
-        std::vector<Vertex> verts; std::vector<uint32_t> indices;
-        AddBox(verts, indices, lo, 0.0f, lo, hi, 1.0f, hi, u0, v0, u1, v1);
-        g_pipeMeshes[1] = UploadPipeMesh(verts, indices);
-    }
-    // Corner: a vertical stub from the floor up to mid-height, elbowing
-    // into a horizontal stub out to the +X face at that height.
-    {
-        std::vector<Vertex> verts; std::vector<uint32_t> indices;
-        AddBox(verts, indices, lo, 0.0f, lo, hi, 0.5f, hi, u0, v0, u1, v1);
-        AddBox(verts, indices, lo, lo, lo, 1.0f, hi, hi, u0, v0, u1, v1);
-        g_pipeMeshes[2] = UploadPipeMesh(verts, indices);
-    }
-    // Junction: a full vertical through-pipe crossed by a full
-    // horizontal through-pipe at mid-height, suggesting multiple
-    // connections branching through this cell.
-    {
-        std::vector<Vertex> verts; std::vector<uint32_t> indices;
-        AddBox(verts, indices, lo, 0.0f, lo, hi, 1.0f, hi, u0, v0, u1, v1);
-        AddBox(verts, indices, 0.0f, lo, lo, 1.0f, hi, hi, u0, v0, u1, v1);
-        g_pipeMeshes[3] = UploadPipeMesh(verts, indices);
     }
 }
 
@@ -564,8 +491,7 @@ bool InitD3D(HWND hwnd) {
 
 bool InitTextures() {
     uint8_t* atlasPixels = nullptr; int atlasW = 0, atlasH = 0;
-    uint8_t* pipePixels = nullptr; int pipeSize = 0;
-    if (!GenerateGameTextures(TILE_SIZE, ATLAS_COLS, ATLAS_ROWS, &atlasPixels, &atlasW, &atlasH, &pipePixels, &pipeSize))
+    if (!GenerateGameTextures(TILE_SIZE, ATLAS_COLS, ATLAS_ROWS, &atlasPixels, &atlasW, &atlasH))
         return false;
 
     D3D11_TEXTURE2D_DESC td = {};
@@ -583,23 +509,7 @@ bool InitTextures() {
     g_device->CreateShaderResourceView(atlasTex, nullptr, &g_atlasSRV);
     atlasTex->Release();
 
-    D3D11_TEXTURE2D_DESC td2 = {};
-    td2.Width = pipeSize; td2.Height = pipeSize;
-    td2.MipLevels = 1; td2.ArraySize = 1;
-    td2.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
-    td2.SampleDesc.Count = 1;
-    td2.Usage = D3D11_USAGE_IMMUTABLE;
-    td2.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-    D3D11_SUBRESOURCE_DATA sd2 = {};
-    sd2.pSysMem = pipePixels;
-    sd2.SysMemPitch = pipeSize * 4;
-    ID3D11Texture2D* pipeTex = nullptr;
-    g_device->CreateTexture2D(&td2, &sd2, &pipeTex);
-    g_device->CreateShaderResourceView(pipeTex, nullptr, &g_pipeSRV);
-    pipeTex->Release();
-
     FreeGeneratedPixels(atlasPixels);
-    FreeGeneratedPixels(pipePixels);
 
     uint8_t* uiPixels = nullptr; int uiW = 0, uiH = 0;
     if (!GenerateUIAtlas(UI_CELL_W, UI_CELL_H, UI_ATLAS_COLS, UI_ATLAS_ROWS, &uiPixels, &uiW, &uiH))

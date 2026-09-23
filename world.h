@@ -47,11 +47,6 @@ struct ChunkCoordHash {
     }
 };
 
-struct PipeInstance {
-    int worldX, worldY, worldZ;
-    int shape;
-};
-
 struct Vertex {
     float px, py, pz;
     float u, v;
@@ -63,7 +58,6 @@ struct Chunk {
     ID3D11Buffer* vb = nullptr;
     ID3D11Buffer* ib = nullptr;
     unsigned int indexCount = 0; // UINT, spelled out so this header doesn't need <windows.h>
-    std::vector<PipeInstance> pipes;
 
     ~Chunk(); // defined in world.cpp, where <d3d11.h> (for ->Release()) is actually included
 
@@ -206,7 +200,7 @@ struct Player {
 
 static const BlockID g_placeable[] = {
     BLOCK_FOUNDATION, BLOCK_STONE, BLOCK_DIRT, BLOCK_WOOD,
-    BLOCK_CHEST, BLOCK_MACHINE, BLOCK_PIPE_STRAIGHT, BLOCK_PIPE_CORNER, BLOCK_PIPE_JUNCTION
+    BLOCK_CHEST, BLOCK_MACHINE
 };
 static const int g_placeableCount = sizeof(g_placeable) / sizeof(g_placeable[0]);
 

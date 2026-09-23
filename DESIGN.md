@@ -3,7 +3,7 @@
 ## Part I — Vision and Constraints
 
 ### 1.1 What this is
-A first-person 3D voxel game combining grid-locked terrain manipulation (Minecraft-lineage) with automated item logistics (BuildCraft-lineage). The player places blocks by hand early on and, as the game progresses, builds pipe/machine networks that move and transform items without further manual handling. Progression is tiered: later recipes and machines require materials or unlocks gated behind earlier ones.
+A first-person 3D voxel game. Grid-locked terrain manipulation (Minecraft-lineage) is the solid foundation; automated item logistics (BuildCraft-lineage) was the original second pillar, but it's currently an open question rather than a committed direction — the pipe blocks that would carry it were pulled back out of the prototype (Part IV §4.4, Part VI §6.5) while what kind of game this actually becomes gets figured out on top of the world/render/save foundation Milestone 1 already proved. If logistics is the answer, Part VI's design (interface, network model, algorithm choice) is ready to pick back up largely as-is.
 
 ### 1.2 Non-negotiable constraints, and why each exists
 - **Multi-file project, mechanically decomposed by subsystem** (`common.h`; `world.h`/`world.cpp`; `render.h`/`render.cpp`; `audio.h`/`audio.cpp`; `persist.h`/`persist.cpp`; `game.h`/`game.cpp`; `textures.cpp`; `music_synth.cpp`; `main.cpp` as the thin entry point) plus save files on disk. The original two-source-file rule (chosen to sidestep multi-file Visual Studio project configuration, historically a recurring blocker) was explicitly lifted once the single-file monolith's own size started costing more — in build/edit friction and in chunk-load-time frame stutter traced partly to it — than the file-count risk it was written to avoid. The split is a mechanical decomposition, not a redesign: every global stays a global (`extern` in its owning header, defined once in exactly one `.cpp`), split along existing subsystem boundaries the design doc already named as Parts.
@@ -52,8 +52,7 @@ One flat array, `BlockInfo g_info[BLOCK_COUNT]`, is the single source of truth p
 ```
 foundational : bool   — never falls, always supports (Section V)
 solid        : bool   — participates in collision and raycast hits
-shape        : int    — 0 cube, 1 straight pipe, 2 corner, 3 junction
-tex          : int    — atlas slot (cubes) or unused (pipes share one texture)
+tex          : int    — atlas slot
 ```
 No virtual dispatch, no per-block class hierarchy — a block's behavior is entirely data-driven from this table plus the systems that read it. This is deliberate: virtual calls inside the meshing and simulation inner loops would violate the "no virtual dispatch in hot paths" resource rule.
 
@@ -67,7 +66,6 @@ No virtual dispatch, no per-block class hierarchy — a block's behavior is enti
 | Wood | no | cube | Building material |
 | Chest | yes | cube | Storage container (item-handler interface, Part VI) |
 | Machine | yes | cube | Placeholder processing block |
-| Pipe straight/corner/junction | yes | non-cube | Item transport geometry |
 
 ---
 
@@ -86,14 +84,14 @@ Every exposed face of every cube-shaped block in a chunk is combined into one ve
 ### 4.3 Texture atlas — fixing the single hardcoded-texture bug
 The originally reviewed prototype's `RebuildMesh` merged cube geometry correctly but rendered the *entire merged mesh* with one hardcoded texture slot regardless of the actual block type at each face — meaning dirt, wood, and every other cube-shaped block visually rendered as stone. The fix: one shared atlas texture built once at startup (currently a 3-column × 2-row grid of tiles), with each emitted face's UV computed from *that voxel's own* atlas slot (`AtlasRect(slot, ...)`) rather than a single fixed rectangle. One draw call per chunk is preserved; per-voxel texture correctness is restored. The atlas layout constants in `common.h` (`ATLAS_COLS`/`ATLAS_ROWS`) and the tile order baked in `textures.cpp`'s `GenerateGameTextures()` must stay in agreement — documented explicitly in both files' comments so a future edit to one doesn't silently desync from the other.
 
-### 4.4 Non-cube shapes — pipes
-Straight/corner/junction pipe geometry is excluded from the merged chunk mesh (its silhouette isn't a full cube face) and drawn individually per instance, sharing one pipe texture. **This is a known, explicitly flagged scaling limit**, not an oversight: fine at prototype density, but once pipe networks become the majority of placed blocks (the expected end-state of a BuildCraft-style base), per-segment draw calls reproduce the exact per-object cost problem the chunk-mesh fix solved for cubes. Two documented remedies for later, neither implemented now: (a) bake oriented pipe geometry into the chunk mesh too, with a per-instance transform baked at mesh-build time, or (b) instanced rendering — one draw call per pipe *shape* across all loaded chunks, using a per-instance transform buffer. Left as a deliberate, visible technical debt marker rather than solved prematurely. The prototype now gives each shape a distinct box-based silhouette (straight: a full-height through-pipe; corner: a floor-to-mid-height stub elbowing sideways; junction: a full vertical through-pipe crossed by a full horizontal one) rather than one placeholder cube for all three — but still in a single fixed canonical orientation with no awareness of which neighbors it's actually connected to. Real per-instance orientation and connection-aware geometry is still deferred alongside network connectivity to Milestone 2.
+### 4.4 Non-cube shapes — removed pending direction
+Pipe blocks (straight/corner/junction) and their per-instance rendering were implemented in an earlier pass — drawn individually outside the merged chunk mesh, since their silhouette isn't a full cube face — but pulled back out of the prototype entirely (block types, meshes, texture, hotbar icons) while the game's actual direction is still being decided. The scaling problem that implementation ran into is still worth remembering if any non-cube geometry returns: per-instance draw calls reproduce the exact per-object cost problem the chunk-mesh fix (4.2) solved for cubes, so it doesn't scale past prototype density without either (a) baking oriented geometry into the chunk mesh with a per-instance transform at mesh-build time, or (b) instanced rendering (one draw call per shape across all loaded chunks via a transform buffer). Neither is implemented, and there's currently nothing in the block roster that needs either — every current block is a plain cube.
 
 ### 4.5 Block picking — GPU-exact, not CPU-approximate
 Two options were compared for "what block is the player looking at":
 - **CPU raycast with fixed-step marching** (the original Prismative.cpp approach, `t += 0.1f`): rejected — can skip thin geometry at shallow angles, and face normals are inferred after the fact by comparing consecutive sampled cells, which is wrong at cell-corner crossings.
 - **Amanatides–Woo exact voxel DDA traversal** (1987): the algorithm actually implemented. Steps exactly one voxel boundary at a time using only comparisons and one addition per step; the crossed face's normal falls directly out of which axis was stepped, not inferred. This is precise, well-understood, and cheap.
-- **GPU ID-buffer readback** (discussed as a theoretically superior alternative once shapes get complex): render block-ID+face-index as color into a tiny offscreen target and read back the pixel under the crosshair. Correct for arbitrary non-cube geometry (a raycast against a ramp's *actual surface*, not its bounding cube) since it reuses the exact geometry already rasterized. **Not implemented in the prototype** — flagged as the eventual right answer once shapes beyond simple pipes exist, but Amanatides–Woo is sufficient and simpler while every solid shape is either a full cube or well-approximated by one for picking purposes.
+- **GPU ID-buffer readback** (discussed as a theoretically superior alternative once shapes get complex): render block-ID+face-index as color into a tiny offscreen target and read back the pixel under the crosshair. Correct for arbitrary non-cube geometry (a raycast against a ramp's *actual surface*, not its bounding cube) since it reuses the exact geometry already rasterized. **Not implemented in the prototype** — flagged as the eventual right answer once non-cube shapes exist again, but Amanatides–Woo is sufficient and simpler while every solid shape in the current roster is a full cube.
 
 ### 4.6 2D/3D split
 One D3D11 device, three passes, never two graphics APIs at runtime:
@@ -101,7 +99,7 @@ One D3D11 device, three passes, never two graphics APIs at runtime:
 2. **World pass** — perspective projection, depth test on, chunk meshes plus individually-drawn special shapes.
 3. **UI pass** — its own shader/input-layout/cbuffer/blend-state/depth-state, drawn last each frame. Vertex positions are supplied already in pixel space and mapped straight to NDC in the vertex shader (`x/screenW*2-1`, `1-y/screenH*2`) — an orthographic projection in substance, without needing a matrix for it. Depth test/write off, alpha blending on (standard src-alpha/inv-src-alpha), so panels and text composite correctly over the 3D scene. Every UI vertex carries a color tint alongside its UV, so the same textured-quad pipeline draws plain glyphs, tinted panels/borders, and full-color icons.
 
-A small font-glyph atlas (ASCII 32–126, monospace grid, one reserved solid-white cell for untextured tinted rectangles) is generated by GDI+ at load time the same way the block atlas is — this is what the crosshair, hotbar, pause menu, and Look Settings submenu (including its two sensitivity sliders) are built from. Hotbar item icons are drawn by sampling the *same* block atlas / pipe texture the world pass uses, rather than generating separate icon art.
+A small font-glyph atlas (ASCII 32–126, monospace grid, one reserved solid-white cell for untextured tinted rectangles) is generated by GDI+ at load time the same way the block atlas is — this is what the crosshair, hotbar, pause menu, and Look Settings submenu (including its two sensitivity sliders) are built from. Hotbar item icons are drawn by sampling the *same* block atlas the world pass uses, rather than generating separate icon art.
 
 GDI+ is used exclusively at load time to *generate* textures into bitmaps that get uploaded once to GPU textures; it never touches the frame loop. This was an explicit decision against mixing GDI+ and Direct3D rendering live, which would fight over the swap chain surface.
 
@@ -164,7 +162,7 @@ Two literature detours were explicitly rejected as loose fits for this specific 
 The disjoint-set structure, by contrast, is an exact match: the problem it was proven optimal for (maintaining connected components under incremental merges) is *literally* the problem pipe-network connectivity poses.
 
 ### 6.5 Status
-Fully designed, **not yet coded**. This is explicitly Milestone 2+ work (see Part IX) — the prototype's job is to prove the world/render/save foundation first.
+Fully designed, **not yet coded**, and now provisional rather than committed: the pipe blocks that would have been this system's visible surface were pulled back out of the prototype (4.4) while the game's actual direction is still being decided. The design here is kept as a record of the thinking, not a queued-up Milestone 2 task list — whether item logistics is what this game becomes is an open question again, not a foregone conclusion the prototype is just waiting to catch up to.
 
 ---
 
@@ -261,7 +259,7 @@ Per-region multi-chunk files (grouping a 16×16 column of chunks behind one smal
 
 **Milestone 1 (current prototype target — implemented):** world storage, chunked meshing with correct per-block atlas texturing, gravity/falling blocks, exact-DDA block picking, place/break, crash-safe versioned save/load across five independent slots (7.2.4), a separate global settings file (7.2.2) for gameplay/UI preferences, basic FPS movement and collision, a title screen (New Game / Load Game / Options / Quit, Part XII) fronting gameplay rather than dropping straight into it, a rudimentary dual-pass UI (crosshair, hotbar with selection highlight, an in-game Pause menu with Resume/Options/Save/Load/Quit to Title/Quit, an Options hub shared by Pause and the title screen alike branching into six settings submenus: Look Settings with independent X/Y sensitivity sliders and X/Y inversion, Graphics with a render-distance slider, Display with an FPS-counter toggle, Audio with working Master/Music volume sliders, Accessibility with a field-of-view slider, toggle-to-move, and a high-contrast UI palette (Part XI), and fully remappable Keybindings covering every keyboard-or-mouse-bound action — each submenu with its own Reset to Default), a basic camera-following skybox, and a looping procedural ambient music track (Part X). No items, no crafting, no machines beyond a placeholder block.
 
-**Milestone 2:** `IItemHandler` interface implemented for chests and player inventory; basic UI (2D ortho pass) for inventory/hotbar; pipe placement forms visible networks (union-find connectivity, no item flow yet); per-instance oriented, connection-aware pipe geometry replacing the current fixed-orientation per-shape placeholders.
+**Milestone 2 (provisional — see Part VI §6.5):** `IItemHandler` interface implemented for chests and player inventory; basic UI (2D ortho pass) for inventory/hotbar; pipe placement forms visible networks (union-find connectivity, no item flow yet); per-instance oriented, connection-aware pipe geometry. Contingent on item logistics actually being the direction this game takes — not committed the way Milestone 1 was.
 
 **Milestone 3:** item flow through networks (graph-based transfer, not entity-based); machine processing state (input buffer → timed transform → output buffer) using the same interface chests use.
 
