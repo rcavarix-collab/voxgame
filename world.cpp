@@ -1,0 +1,282 @@
+// world.cpp
+//
+// Implementations for world.h: the Chunk destructor (needs the real
+// <d3d11.h> for ->Release(), which world.h itself deliberately avoids
+// including), gravity, terrain generation/column loading, player
+// physics, and the DDA raycast.
+
+#define NOMINMAX // see render.cpp for why this precedes windows.h (pulled in transitively via d3d11.h here)
+#include "world.h"
+#include <d3d11.h>
+#include <cmath>
+#include <cfloat>
+#include <algorithm>
+
+Chunk::~Chunk() {
+    if (vb) vb->Release();
+    if (ib) ib->Release();
+}
+
+int g_loadRadius = 3; // chunks, horizontal only (Section 2.4); a Graphics Settings slider now [1,8]
+
+World g_world;
+Player g_player;
+float g_dayTimeSeconds = 0.0f;
+
+// =======================================================================
+// Part V - Falling-block gravity system
+// =======================================================================
+
+std::deque<FallEntry> g_fallQueue;
+
+void MaybeQueueFall(World& w, int x, int y, int z) {
+    if (y < Y_MIN || y > Y_MAX) return;
+    BlockID id = w.Get(x, y, z);
+    if (id == BLOCK_AIR) return;
+    if (g_info[id].foundational) return;
+    if (!g_info[id].solid) return;
+    if (y - 1 < Y_MIN) return;         // resting on the world floor
+    if (w.Solid(x, y - 1, z)) return;  // supported
+    g_fallQueue.push_back({ x, y, z });
+}
+
+void ProcessFalls(World& w) {
+    int n = (int)std::min<size_t>(MAX_FALLS, g_fallQueue.size());
+    for (int i = 0; i < n; i++) {
+        FallEntry e = g_fallQueue.front();
+        g_fallQueue.pop_front();
+
+        BlockID id = w.Get(e.x, e.y, e.z);
+        if (id == BLOCK_AIR || g_info[id].foundational) continue; // stale entry
+        if (e.y - 1 < Y_MIN) continue;
+        if (w.Solid(e.x, e.y - 1, e.z)) continue; // became supported since queued
+
+        w.SetRaw(e.x, e.y - 1, e.z, id);
+        w.SetRaw(e.x, e.y, e.z, BLOCK_AIR);
+
+        MaybeQueueFall(w, e.x, e.y + 1, e.z); // whatever was resting on top
+        MaybeQueueFall(w, e.x, e.y - 1, e.z); // keep falling if still unsupported
+    }
+}
+
+void LiveEdit(World& w, int x, int y, int z, BlockID id) {
+    w.Set(x, y, z, id);
+    MaybeQueueFall(w, x, y + 1, z);
+}
+
+// =======================================================================
+// World generation and chunk loading
+// =======================================================================
+
+int TerrainHeight(int wx, int wz) {
+    double h = 40.0 + 6.0 * sin(wx * 0.15) + 4.0 * cos(wz * 0.13);
+    int ih = (int)h;
+    if (ih < 20) ih = 20;
+    if (ih > 60) ih = 60;
+    return ih;
+}
+
+std::unordered_set<long long> g_generatedColumns;
+
+long long ColumnKey(int cx, int cz) {
+    return ((long long)(uint32_t)cx << 32) | (uint32_t)cz;
+}
+
+void GenerateColumn(World& w, int cx, int cz) {
+    long long key = ColumnKey(cx, cz);
+    if (g_generatedColumns.count(key)) return;
+    g_generatedColumns.insert(key);
+
+    int baseX = cx * CHUNK_SIZE, baseZ = cz * CHUNK_SIZE;
+
+    // Cached per column and reused below for every vertical chunk level
+    // (both the anyContent check and the fill pass) instead of calling
+    // TerrainHeight -- and re-running its trig -- once per level.
+    int heights[CHUNK_SIZE][CHUNK_SIZE];
+    int maxHeightInColumn = 0;
+    for (int lx = 0; lx < CHUNK_SIZE; lx++) {
+        for (int lz = 0; lz < CHUNK_SIZE; lz++) {
+            int h = TerrainHeight(baseX + lx, baseZ + lz);
+            heights[lx][lz] = h;
+            if (h > maxHeightInColumn) maxHeightInColumn = h;
+        }
+    }
+
+    int maxCy = FloorDiv16(maxHeightInColumn);
+    for (int cy = 0; cy <= maxCy; cy++) {
+        int chunkYLow = cy * CHUNK_SIZE;
+        // Skip chunks that would contain nothing but air anywhere in this
+        // column -- chunks only exist when they hold real content
+        // (Section 2.1).
+        bool anyContent = false;
+        for (int lx = 0; lx < CHUNK_SIZE && !anyContent; lx++)
+            for (int lz = 0; lz < CHUNK_SIZE && !anyContent; lz++)
+                if (chunkYLow <= heights[lx][lz]) anyContent = true;
+        if (!anyContent) continue;
+
+        for (int lx = 0; lx < CHUNK_SIZE; lx++) {
+            for (int lz = 0; lz < CHUNK_SIZE; lz++) {
+                int wx = baseX + lx, wz = baseZ + lz;
+                int h = heights[lx][lz];
+                for (int ly = 0; ly < CHUNK_SIZE; ly++) {
+                    int wy = chunkYLow + ly;
+                    if (wy > h) continue;
+                    BlockID id;
+                    if (wy == 0) id = BLOCK_FOUNDATION;
+                    else if (wy >= h - 2) id = BLOCK_DIRT;
+                    else id = BLOCK_STONE;
+                    w.SetRaw(wx, wy, wz, id);
+                }
+            }
+        }
+    }
+}
+
+int g_lastPlayerChunkX = INT32_MIN, g_lastPlayerChunkZ = INT32_MIN;
+
+// Columns queued for generation but not yet generated. Entering view
+// range only enqueues a column; ProcessColumnGeneration below drains a
+// capped number per tick, following the exact pattern the falling-block
+// queue already established (Section 5.1): a hard per-tick work cap
+// instead of an unbounded burst, so crossing into a large unexplored
+// area -- or the initial spawn, which needs the whole load radius at
+// once -- can't spike a single frame.
+std::deque<std::pair<int, int>> g_pendingColumns;
+std::unordered_set<long long> g_pendingColumnSet;
+
+void EnsureChunksLoaded(int playerChunkX, int playerChunkZ) {
+    // Recomputed only when the player's chunk coordinate actually
+    // changes (Section 2.4) -- not every frame.
+    if (playerChunkX == g_lastPlayerChunkX && playerChunkZ == g_lastPlayerChunkZ) return;
+    g_lastPlayerChunkX = playerChunkX;
+    g_lastPlayerChunkZ = playerChunkZ;
+
+    for (int dx = -g_loadRadius; dx <= g_loadRadius; dx++) {
+        for (int dz = -g_loadRadius; dz <= g_loadRadius; dz++) {
+            int cx = playerChunkX + dx, cz = playerChunkZ + dz;
+            long long key = ColumnKey(cx, cz);
+            if (g_generatedColumns.count(key) || g_pendingColumnSet.count(key)) continue;
+            g_pendingColumnSet.insert(key);
+            g_pendingColumns.push_back({ cx, cz });
+        }
+    }
+}
+
+void ProcessColumnGeneration(World& w) {
+    int n = (int)std::min<size_t>(MAX_COLUMN_GENS_PER_TICK, g_pendingColumns.size());
+    for (int i = 0; i < n; i++) {
+        auto col = g_pendingColumns.front();
+        g_pendingColumns.pop_front();
+        g_pendingColumnSet.erase(ColumnKey(col.first, col.second));
+        GenerateColumn(w, col.first, col.second);
+    }
+}
+
+// =======================================================================
+// Section 4.7 - Player physics
+// =======================================================================
+
+// BoxIntersectsSolid tests every voxel cell the box's full vertical
+// extent overlaps (not just a few discrete height samples) -- a
+// complete AABB-vs-voxel-grid overlap rather than sampled points.
+static bool BoxIntersectsSolid(World& w, float cx, float cy, float cz) {
+    int minX = (int)floor(cx - PLAYER_HALFW), maxX = (int)floor(cx + PLAYER_HALFW);
+    int minY = (int)floor(cy),                  maxY = (int)floor(cy + PLAYER_HEIGHT);
+    int minZ = (int)floor(cz - PLAYER_HALFW), maxZ = (int)floor(cz + PLAYER_HALFW);
+    for (int x = minX; x <= maxX; x++)
+        for (int y = minY; y <= maxY; y++)
+            for (int z = minZ; z <= maxZ; z++)
+                if (w.Solid(x, y, z)) return true;
+    return false;
+}
+
+void UpdatePlayerPhysics(World& w, Player& p, float dt, bool fwd, bool back, bool left, bool right, bool jump) {
+    Vec3 f, r, u;
+    GetCameraVectors(p, f, r, u);
+    float fx = f.x, fz = f.z;
+    float rx = r.x, rz = r.z;
+    float len = sqrtf(fx * fx + fz * fz);
+    if (len > 0.0001f) { fx /= len; fz /= len; }
+
+    const float SPEED = 4.5f;
+    float mx = 0, mz = 0;
+    if (fwd)  { mx += fx; mz += fz; }
+    if (back) { mx -= fx; mz -= fz; }
+    if (right){ mx += rx; mz += rz; }
+    if (left) { mx -= rx; mz -= rz; }
+    float mlen = sqrtf(mx * mx + mz * mz);
+    if (mlen > 0.0001f) { mx = mx / mlen * SPEED * dt; mz = mz / mlen * SPEED * dt; }
+
+    if (!BoxIntersectsSolid(w, p.x + mx, p.y, p.z)) p.x += mx;
+    if (!BoxIntersectsSolid(w, p.x, p.y, p.z + mz)) p.z += mz;
+
+    const float GRAVITY = 20.0f;
+    const float JUMP_SPEED = 7.0f;
+    if (p.onGround && jump) { p.velY = JUMP_SPEED; p.onGround = false; }
+    p.velY -= GRAVITY * dt;
+    if (p.velY < -50.0f) p.velY = -50.0f;
+
+    float dy = p.velY * dt;
+    if (!BoxIntersectsSolid(w, p.x, p.y + dy, p.z)) {
+        p.y += dy;
+        p.onGround = false;
+    } else {
+        if (p.velY < 0) p.onGround = true;
+        p.velY = 0;
+    }
+}
+
+// =======================================================================
+// Section 4.5 - Amanatides-Woo exact voxel DDA raycast for block picking
+// =======================================================================
+
+bool Raycast(World& w, float ox, float oy, float oz, float dx, float dy, float dz, float maxDist,
+             int& hitX, int& hitY, int& hitZ, int& placeX, int& placeY, int& placeZ) {
+    float len = sqrtf(dx * dx + dy * dy + dz * dz);
+    if (len < 1e-6f) return false;
+    dx /= len; dy /= len; dz /= len;
+
+    int voxX = (int)floor(ox), voxY = (int)floor(oy), voxZ = (int)floor(oz);
+    int stepX = dx > 0 ? 1 : (dx < 0 ? -1 : 0);
+    int stepY = dy > 0 ? 1 : (dy < 0 ? -1 : 0);
+    int stepZ = dz > 0 ? 1 : (dz < 0 ? -1 : 0);
+
+    auto tDeltaOf = [](float d) { return d == 0.0f ? FLT_MAX : fabsf(1.0f / d); };
+    float tDeltaX = tDeltaOf(dx), tDeltaY = tDeltaOf(dy), tDeltaZ = tDeltaOf(dz);
+
+    auto tMaxOf = [](float origin, int vox, int step, float d) {
+        if (step == 0) return FLT_MAX;
+        float boundary = step > 0 ? (float)(vox + 1) : (float)vox;
+        return (boundary - origin) / d;
+    };
+    float tMaxX = tMaxOf(ox, voxX, stepX, dx);
+    float tMaxY = tMaxOf(oy, voxY, stepY, dy);
+    float tMaxZ = tMaxOf(oz, voxZ, stepZ, dz);
+
+    int prevX = voxX, prevY = voxY, prevZ = voxZ;
+    float traveled = 0.0f;
+
+    if (w.Solid(voxX, voxY, voxZ)) {
+        hitX = voxX; hitY = voxY; hitZ = voxZ;
+        placeX = voxX; placeY = voxY; placeZ = voxZ;
+        return true;
+    }
+
+    while (traveled <= maxDist) {
+        prevX = voxX; prevY = voxY; prevZ = voxZ;
+        if (tMaxX < tMaxY && tMaxX < tMaxZ) {
+            voxX += stepX; traveled = tMaxX; tMaxX += tDeltaX;
+        } else if (tMaxY < tMaxZ) {
+            voxY += stepY; traveled = tMaxY; tMaxY += tDeltaY;
+        } else {
+            voxZ += stepZ; traveled = tMaxZ; tMaxZ += tDeltaZ;
+        }
+
+        if (w.Solid(voxX, voxY, voxZ)) {
+            hitX = voxX; hitY = voxY; hitZ = voxZ;
+            placeX = prevX; placeY = prevY; placeZ = prevZ;
+            return true;
+        }
+    }
+    return false;
+}

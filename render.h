@@ -1,0 +1,91 @@
+// render.h
+//
+// D3D11 device/pipeline state, chunk meshing, and the procedural
+// pipe/sky meshes. Owns every ID3D11* global -- both main.cpp's frame
+// loop and game.cpp's UI pass reach into these directly (the same
+// unencapsulated-globals design the project has always used; this
+// split relocates that design into files, it doesn't redesign it).
+
+#pragma once
+
+#define NOMINMAX // MSVC's windows.h (pulled in via d3d11.h) defines min/max macros unless this precedes it
+#include "common.h"
+#include "world.h"
+#include <d3d11.h>
+#include <cstdint>
+#include <vector>
+
+// ---- Core device/pipeline objects (world pass) ----
+extern HWND g_hwnd;
+extern ID3D11Device* g_device;
+extern ID3D11DeviceContext* g_context;
+extern IDXGISwapChain* g_swapChain;
+extern ID3D11RenderTargetView* g_rtv;
+extern ID3D11DepthStencilView* g_dsv;
+extern ID3D11VertexShader* g_vs;
+extern ID3D11PixelShader* g_ps;
+extern ID3D11InputLayout* g_layout;
+extern ID3D11Buffer* g_cbuffer;
+extern ID3D11SamplerState* g_sampler;
+extern ID3D11RasterizerState* g_rasterState;
+extern ID3D11DepthStencilState* g_depthState;
+extern ID3D11ShaderResourceView* g_atlasSRV;
+extern ID3D11ShaderResourceView* g_pipeSRV;
+
+struct CBData { Mat4 mvp; };
+
+// One mesh per pipe shape (index by BlockInfo.shape: 1 straight, 2
+// corner, 3 junction; [0] unused). Distinct silhouettes per shape, but
+// still a fixed canonical orientation -- real per-instance orientation
+// and connection-aware geometry is still Milestone 2 work alongside
+// network connectivity (Section 4.4).
+struct PipeMesh { ID3D11Buffer* vb = nullptr; ID3D11Buffer* ib = nullptr; UINT indexCount = 0; };
+extern PipeMesh g_pipeMeshes[4];
+
+// ---- UI pass objects (Section 4.6): own shaders/layout/cbuffer/
+// sampler/blend/depth state, fully separate from the world pass's. ----
+extern ID3D11VertexShader* g_uiVS;
+extern ID3D11PixelShader* g_uiPS;
+extern ID3D11InputLayout* g_uiLayout;
+extern ID3D11Buffer* g_uiCBuffer;
+extern ID3D11SamplerState* g_uiSampler;
+extern ID3D11BlendState* g_uiBlendState;
+extern ID3D11DepthStencilState* g_uiDepthState;
+extern ID3D11ShaderResourceView* g_uiSRV; // font-glyph + white-cell atlas
+extern ID3D11Buffer* g_uiVB;              // dynamic, re-mapped per UI draw batch
+static const UINT UI_VB_CAPACITY = 4096;   // vertices
+
+// Font-glyph atlas layout (Section 4.6): 16 cols x 6 rows = 96 cells,
+// ASCII 32..126 at cell (code-32) plus one reserved solid-white cell.
+// The struct and these constants live here (not in game.h, where the
+// UIDraw* helper *functions* that use them live) because InitD3D needs
+// UIVertex to size g_uiVB and InitTextures needs the atlas dimensions
+// to generate it -- both purely rendering concerns.
+static const int UI_CELL_W = 20;
+static const int UI_CELL_H = 28;
+static const int UI_ATLAS_COLS = 16;
+static const int UI_ATLAS_ROWS = 6;
+static const int UI_WHITE_CELL = UI_ATLAS_COLS * UI_ATLAS_ROWS - 1;
+struct UIVertex { float x, y, u, v, r, g, b, a; };
+
+// ---- Sky pass objects (a third pass: depth off, drawn before the
+// world so opaque geometry always overdraws it) ----
+struct SkyVertex { float x, y, z; };
+extern ID3D11VertexShader* g_skyVS;
+extern ID3D11PixelShader* g_skyPS;
+extern ID3D11InputLayout* g_skyLayout;
+extern ID3D11Buffer* g_skyCBuffer;
+extern ID3D11Buffer* g_skyVB;
+extern ID3D11Buffer* g_skyIB;
+extern UINT g_skyIndexCount;
+
+bool InitD3D(HWND hwnd);
+bool InitTextures();
+void BuildPipeMeshes();
+void BuildSkyMesh();
+void UpdateCBuffer(const Mat4& mvp);
+
+// Capped per-frame chunk mesh rebuild (Section 4.2/4-perf) -- see
+// render.cpp for the full reasoning; this is the single entry point
+// the game loop calls once per frame.
+void RebuildDirtyChunks(World& w);

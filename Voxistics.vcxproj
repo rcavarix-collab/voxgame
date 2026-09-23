@@ -96,7 +96,21 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="main.cpp" />
-    <ClCompile Include="supplement.cpp" />
+    <ClCompile Include="world.cpp" />
+    <ClCompile Include="render.cpp" />
+    <ClCompile Include="audio.cpp" />
+    <ClCompile Include="persist.cpp" />
+    <ClCompile Include="game.cpp" />
+    <ClCompile Include="textures.cpp" />
+    <ClCompile Include="music_synth.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="common.h" />
+    <ClInclude Include="world.h" />
+    <ClInclude Include="render.h" />
+    <ClInclude Include="audio.h" />
+    <ClInclude Include="persist.h" />
+    <ClInclude Include="game.h" />
   </ItemGroup>
   <ItemGroup>
     <None Include="DESIGN.md" />
