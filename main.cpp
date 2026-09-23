@@ -732,6 +732,25 @@ static void EmitFace(std::vector<Vertex>& verts, std::vector<uint32_t>& indices,
     indices.push_back(base + 0); indices.push_back(base + 2); indices.push_back(base + 3);
 }
 
+// Neighbor solidity for face culling during meshing. The overwhelming
+// majority of a chunk's blocks (the 14x14x14 interior, ~67% of all
+// cells) have all 6 neighbors inside the same chunk -- reading straight
+// out of `c.blocks[]` for that case skips World::Solid's ToChunk
+// (a floor-divide per axis) plus an unordered_map lookup entirely, only
+// paying that cost for the minority of checks that actually cross a
+// chunk boundary. This is the single biggest cost in RebuildChunkMesh:
+// unconditionally routing every one of a chunk's up-to-24576 neighbor
+// checks (4096 cells x 6 faces) through the generic hash-map lookup was
+// real, measurable, and entirely avoidable work.
+static bool NeighborSolid(World& w, Chunk& c, int lx, int ly, int lz, int dx, int dy, int dz, int wx, int wy, int wz) {
+    int nlx = lx + dx, nly = ly + dy, nlz = lz + dz;
+    if ((unsigned)nlx < CHUNK_SIZE && (unsigned)nly < CHUNK_SIZE && (unsigned)nlz < CHUNK_SIZE) {
+        BlockID id = (BlockID)c.blocks[Chunk::LocalIndex(nlx, nly, nlz)];
+        return id != BLOCK_AIR && g_info[id].solid;
+    }
+    return w.Solid(wx, wy, wz);
+}
+
 static void RebuildChunkMesh(World& w, const ChunkCoord& cc, Chunk& c) {
     std::vector<Vertex> verts;
     std::vector<uint32_t> indices;
@@ -755,17 +774,17 @@ static void RebuildChunkMesh(World& w, const ChunkCoord& cc, Chunk& c) {
                 AtlasRect(g_info[id].tex, u0, v0, u1, v1);
                 float x = (float)wx, y = (float)wy, z = (float)wz;
 
-                if (!w.Solid(wx + 1, wy, wz))
+                if (!NeighborSolid(w, c, lx, ly, lz, 1,0,0, wx + 1, wy, wz))
                     EmitFace(verts, indices, x, y, z, 1,0,0, 1,1,0, 1,1,1, 1,0,1, u0,v0,u1,v1);
-                if (!w.Solid(wx - 1, wy, wz))
+                if (!NeighborSolid(w, c, lx, ly, lz, -1,0,0, wx - 1, wy, wz))
                     EmitFace(verts, indices, x, y, z, 0,0,1, 0,1,1, 0,1,0, 0,0,0, u0,v0,u1,v1);
-                if (!w.Solid(wx, wy + 1, wz))
+                if (!NeighborSolid(w, c, lx, ly, lz, 0,1,0, wx, wy + 1, wz))
                     EmitFace(verts, indices, x, y, z, 0,1,0, 0,1,1, 1,1,1, 1,1,0, u0,v0,u1,v1);
-                if (!w.Solid(wx, wy - 1, wz))
+                if (!NeighborSolid(w, c, lx, ly, lz, 0,-1,0, wx, wy - 1, wz))
                     EmitFace(verts, indices, x, y, z, 0,0,1, 0,0,0, 1,0,0, 1,0,1, u0,v0,u1,v1);
-                if (!w.Solid(wx, wy, wz + 1))
+                if (!NeighborSolid(w, c, lx, ly, lz, 0,0,1, wx, wy, wz + 1))
                     EmitFace(verts, indices, x, y, z, 1,0,1, 1,1,1, 0,1,1, 0,0,1, u0,v0,u1,v1);
-                if (!w.Solid(wx, wy, wz - 1))
+                if (!NeighborSolid(w, c, lx, ly, lz, 0,0,-1, wx, wy, wz - 1))
                     EmitFace(verts, indices, x, y, z, 0,0,0, 0,1,0, 1,1,0, 1,0,0, u0,v0,u1,v1);
             }
         }
@@ -798,9 +817,25 @@ static void RebuildChunkMesh(World& w, const ChunkCoord& cc, Chunk& c) {
     c.dirty = false;
 }
 
+// Capped the same way gravity (MAX_FALLS) and column generation
+// (MAX_COLUMN_GENS_PER_TICK) already are: entering a large unexplored
+// area can generate several new columns in a single tick (each up to a
+// few vertical chunks tall, per GenerateColumn), all newly dirty at
+// once -- rebuilding all of them here in the same frame means several
+// full 4096-cell mesh passes *and* several pairs of synchronous GPU
+// CreateBuffer calls back to back, which is exactly the kind of
+// single-frame spike that shows up as a stutter when moving into new
+// terrain. Capping it spreads that same total work across a handful of
+// frames (a burst of ~16 chunks at this cap resolves in ~3 frames, well
+// under 60ms) instead of paying for all of it at once; any chunk left
+// dirty this frame simply isn't drawn yet (the world draw loop already
+// skips a zero-index-count chunk) and gets its turn next frame.
+static const int MAX_CHUNK_REBUILDS_PER_FRAME = 6;
 static void RebuildDirtyChunks(World& w) {
+    int rebuilt = 0;
     for (auto& kv : w.chunks) {
-        if (kv.second->dirty) RebuildChunkMesh(w, kv.first, *kv.second);
+        if (rebuilt >= MAX_CHUNK_REBUILDS_PER_FRAME) break;
+        if (kv.second->dirty) { RebuildChunkMesh(w, kv.first, *kv.second); rebuilt++; }
     }
 }
 
