@@ -32,10 +32,18 @@ struct ShapePoly {
 
 struct ShapeBox { uint8_t x0, y0, z0, x1, y1, z1; };
 
-static const int MAX_SHAPE_POLYS = 16;
+static const int MAX_SHAPE_POLYS = 48;
 static const int MAX_SHAPE_BOXES = 4;
 
 // The shape's polygons / collision boxes for a block with this state
 // (facing, and STATE_UPPER for slabs), already oriented. Return count.
-int ShapePolys(BlockShape shape, uint8_t state, ShapePoly* out);
+// `variant` (0-3, from the cell's position: ShapeVariant) turns the
+// faceted props (4.15) a quarter turn at a time about their anchor, so a
+// scatter of the same prop never lines up.
+int ShapePolys(BlockShape shape, uint8_t state, ShapePoly* out, int variant = 0);
 int ShapeBoxes(BlockShape shape, uint8_t state, ShapeBox* out);
+static inline int ShapeVariant(int x, int y, int z) {
+    uint32_t h = (uint32_t)x * 73856093u ^ (uint32_t)y * 19349663u ^ (uint32_t)z * 83492791u;
+    h ^= h >> 13; h *= 0x5bd1e995u; h ^= h >> 15;
+    return (int)(h & 3u);
+}

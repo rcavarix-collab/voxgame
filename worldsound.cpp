@@ -110,6 +110,8 @@ void WorldSoundPlace(BlockID id) {
     g_soundscape.NoteInteraction();
     SoundCue c; c.id = SND_SET; c.material = BlockSoundMaterial(id);
     PlayWorldSound(c);
+    // The placeholder machine stands in for a machine starting up (5.6 P4).
+    if (id == BLOCK_MACHINE) { SoundCue o; o.id = SND_ONLINE; PlayWorldSound(o); }
     if (id < BLOCK_COUNT && !g_placedThisSession[id]) {
         g_placedThisSession[id] = true;
         SoundCue u; u.id = SND_UNVEIL; PlayWorldSound(u);

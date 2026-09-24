@@ -221,7 +221,7 @@ static const char* g_shaderSrc =
     "    o.pos = mul(float4(p, 1.0f), mvp);\n"
     "    o.uvl = float3(float2(i.uv) * 0.125f, (float)(i.layer & 0x7FFFu));\n"
     "    o.aoBias = float2(aoCurve[i.pos.w & 3u], card ? -1.0f : faceBias[face]);\n"    // negative: a card (cut out in the pixel shader)
-    "    float3 n = normalize(faceNormal[face]);\n"
+    "    float3 n = face >= 6u ? float3(0.0f, 0.0f, 0.0f) : faceNormal[face];\n" // slanted facets: found per pixel below
     "    o.wpos = p + n * 0.08f;\n"                                   // normal offset (> 1 shadow texel): no acne
     "    o.glowInfo = float4((float)((i.pos.w >> 5) & 7u), n);\n"   // glow kind, face normal
     "    return o;\n"
@@ -241,6 +241,15 @@ static const char* g_shaderSrc =
     "    float4 surf = surfTex.Sample(samp0, i.uvl);\n"
     "    float3 albedo = texel.rgb;\n"
     "    float3 nGeo = i.glowInfo.yzw;\n"                              // the face itself
+    // A slanted facet (ramps, pyramids, the faceted props of 4.15) is lit by
+    // its true, flat normal: the cross product of the position's screen
+    // derivatives, turned toward the viewer. Free, and exactly faceted.
+    "    float3 wpos = i.wpos;\n"
+    "    if (dot(nGeo, nGeo) < 0.25f) {\n"
+    "        nGeo = normalize(cross(ddy(i.wpos), ddx(i.wpos)));\n"
+    "        if (dot(nGeo, fCamPos.xyz - i.wpos) < 0.0f) nGeo = -nGeo;\n"
+    "        wpos += nGeo * 0.08f;\n"
+    "    }\n"
     // Per-pixel normal (4.13): the surface map's tangent-space normal, in
     // a frame built from screen-space derivatives of position and texture
     // coordinates -- right for every face and every shape, with no
@@ -263,7 +272,7 @@ static const char* g_shaderSrc =
     "    float sunLit = sqrt(saturate(dot(n, fSunDir.xyz))) * facing;\n"
     "#ifndef NO_SHADOWS\n"
     "    if (params.x > 0.5f && sunLit > 0.0f) {\n"
-    "        float4 lp = mul(float4(i.wpos, 1.0f), lightViewProj);\n"
+    "        float4 lp = mul(float4(wpos, 1.0f), lightViewProj);\n"
     "        float2 suv = float2(lp.x * 0.5f + 0.5f, 0.5f - lp.y * 0.5f);\n"
     "        if (suv.x > 0.0f && suv.x < 1.0f && suv.y > 0.0f && suv.y < 1.0f && lp.z < 1.0f) {\n"
     "            float o = params.y;\n"                               // 2x2 taps of hardware PCF

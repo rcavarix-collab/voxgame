@@ -72,6 +72,46 @@ enum BlockID : uint8_t {
     BLOCK_FERN_FROND,
     BLOCK_THORN_BRAMBLE,
     BLOCK_REED_GRASS,
+    BLOCK_MOSS_CLUMP,
+    BLOCK_MOSS_TUFT,
+    BLOCK_MEADOW_TUSSOCK,
+    BLOCK_EARTH_CLOD,
+    BLOCK_PEAT_CLOD,
+    BLOCK_GENESIS_CLOD,
+    BLOCK_GENESIS_ROOT_KNUCKLE,
+    BLOCK_SALT_BLISTER,
+    BLOCK_CORAL_NODE,
+    BLOCK_SORE_BULB,
+    BLOCK_CORRUPTED_BULB,
+    BLOCK_MEMBRANE_SAC,
+    BLOCK_SNOW_DRIFT,
+    BLOCK_PEBBLE_BOULDER,
+    BLOCK_COASTAL_BOULDER,
+    BLOCK_STONE_SHARD,
+    BLOCK_BASALT_SHARD,
+    BLOCK_MAGMA_SHARD,
+    BLOCK_SANDSTONE_SHARD,
+    BLOCK_MOSS_STONE_SHARD,
+    BLOCK_ORE_SHARD,
+    BLOCK_GLACIER_SHARD,
+    BLOCK_WATER_RIPPLE,
+    BLOCK_PEBBLE_BREAKER,
+    BLOCK_LEAF_PAD,
+    BLOCK_LOG_BEAM,
+    BLOCK_WOOD_BEAM,
+    BLOCK_WOOD_CORBEL,
+    BLOCK_STONE_CORBEL,
+    BLOCK_WOOD_SHUTTER,
+    BLOCK_WOOD_AWNING,
+    BLOCK_STONE_CHIMNEY_CAP,
+    BLOCK_CLAY_CHIMNEY_CAP,
+    BLOCK_CONDUIT_PIPE,
+    BLOCK_LATTICE_PIPE,
+    BLOCK_MACHINE_GEAR,
+    BLOCK_FOUNDATION_VENT,
+    BLOCK_ORE_HOPPER,
+    BLOCK_WOOD_STRUT,
+    BLOCK_LATTICE_STRUT,
     BLOCK_COUNT
 };
 
@@ -87,6 +127,29 @@ enum BlockShape : uint8_t {
     SHAPE_FUNNEL,        // upside-down pyramid
     SHAPE_FUNNEL_HALF,   // upside-down half pyramid, in the top half
     SHAPE_CARD,          // a plant: one upright card that turns to face the viewer (4.14); not solid
+    // Faceted props (DESIGN.md 4.15), anchored flush on the face they were
+    // placed against -- the same mesh reads as a mound on a floor, a drape
+    // from a ceiling, a snag or ledge from a wall:
+    SHAPE_SWELL_MOUND,   // low octagonal mound (clump, tussock, clod)
+    SHAPE_SWELL_BULB,    // lopsided bulb, pinched at the base
+    SHAPE_SWELL_KNOB,    // tall pinched knob / bud (root knuckle)
+    SHAPE_SWELL_BOULDER, // wide, flat, worn smooth (weathered rock, drift)
+    SHAPE_SWELL_BREAKER, // very flat and wide: a rock tip or pad at a water surface
+    SHAPE_SHARD,         // an angular broken chunk (scree; a ledge on a wall)
+    SHAPE_RIPPLE_LIP,    // a thin lapping ridge along one edge, on a water surface
+    // Dwelling
+    SHAPE_BEAM,          // a diagonal rafter, rising away; chains corner to corner
+    SHAPE_CORBEL,        // a stepped right-angle bracket off a wall
+    SHAPE_SHUTTER,       // a thin louvered panel flush on a face
+    SHAPE_CHIMNEY_CAP,   // a tiered, squared cap for a column
+    SHAPE_AWNING,        // a thin sloped overhang off a wall
+    // Industry
+    SHAPE_PIPE,          // an octagonal conduit along the clicked axis
+    SHAPE_GEAR,          // a notched disc in relief on a face
+    SHAPE_VENT,          // a column flaring at the top
+    SHAPE_HOPPER,        // an open inverted frustum that catches what falls in
+    SHAPE_STRUT,         // an X-brace in the plane facing the player
+    SHAPE_COUNT
 };
 
 // Blocks that light up on their own (world shader, Section 4.2): the
@@ -230,6 +293,50 @@ inline const BlockDef g_blocks[BLOCK_COUNT] = {
     { "fern_frond",          false, false, true,  false, false, SHAPE_CARD,         PLACE_PLAIN, GLOW_NONE,      false,       TEX("fern_frond", nullptr, nullptr, nullptr, nullptr) },
     { "thorn_bramble",       false, false, true,  false, false, SHAPE_CARD,         PLACE_PLAIN, GLOW_NONE,      false,       TEX("thorn_bramble", nullptr, nullptr, nullptr, nullptr) },
     { "reed_grass",          false, false, true,  false, false, SHAPE_CARD,         PLACE_PLAIN, GLOW_NONE,      false,       TEX("reed_grass", nullptr, nullptr, nullptr, nullptr) },
+    // Faceted props (4.15): scatter set-dressing, anchored on the face they're placed against.
+    { "moss_clump",            true,  true,  true,  false, false, SHAPE_SWELL_MOUND,   PLACE_CLICKED_AXIS, GLOW_NONE,  false, TEX("moss_stone", nullptr, nullptr, nullptr, nullptr) },
+    { "moss_tuft",             true,  true,  true,  false, false, SHAPE_SWELL_MOUND,   PLACE_CLICKED_AXIS, GLOW_NONE,  false, TEX("moss", nullptr, nullptr, nullptr, nullptr) },
+    { "meadow_tussock",        true,  true,  true,  false, false, SHAPE_SWELL_MOUND,   PLACE_CLICKED_AXIS, GLOW_NONE,  false, TEX("meadow_grass", nullptr, nullptr, nullptr, nullptr) },
+    { "earth_clod",            true,  true,  true,  false, false, SHAPE_SWELL_MOUND,   PLACE_CLICKED_AXIS, GLOW_NONE,  false, TEX("cracked_earth", nullptr, nullptr, nullptr, nullptr) },
+    { "peat_clod",             true,  true,  true,  false, false, SHAPE_SWELL_MOUND,   PLACE_CLICKED_AXIS, GLOW_NONE,  false, TEX("peat_bog", nullptr, nullptr, nullptr, nullptr) },
+    { "genesis_clod",          true,  true,  true,  false, false, SHAPE_SWELL_MOUND,   PLACE_CLICKED_AXIS, GLOW_NONE,  false, TEX("genesis_soil", nullptr, nullptr, nullptr, nullptr) },
+    { "genesis_root_knuckle",  true,  true,  true,  false, false, SHAPE_SWELL_KNOB,    PLACE_CLICKED_AXIS, GLOW_NONE,  false, TEX("genesis_soil", nullptr, nullptr, nullptr, nullptr) },
+    { "salt_blister",          true,  true,  true,  false, false, SHAPE_SWELL_BREAKER, PLACE_CLICKED_AXIS, GLOW_NONE,  false, TEX("salt_flat", nullptr, nullptr, nullptr, nullptr) },
+    { "coral_node",            true,  true,  true,  false, false, SHAPE_SWELL_BULB,    PLACE_CLICKED_AXIS, GLOW_NONE,  false, TEX("coral_reef", nullptr, nullptr, nullptr, nullptr) },
+    { "sore_bulb",             true,  true,  true,  false, false, SHAPE_SWELL_BULB,    PLACE_CLICKED_AXIS, GLOW_NONE,  false, TEX("weeping_sore", nullptr, nullptr, nullptr, nullptr) },
+    { "corrupted_bulb",        true,  true,  true,  false, false, SHAPE_SWELL_BULB,    PLACE_CLICKED_AXIS, GLOW_NONE,  false, TEX("corrupted_flesh", nullptr, nullptr, nullptr, nullptr) },
+    { "membrane_sac",          true,  true,  true,  false, false, SHAPE_SWELL_BULB,    PLACE_CLICKED_AXIS, GLOW_PULSE, false, TEX("pulsing_membrane", nullptr, nullptr, nullptr, nullptr) },
+    { "snow_drift",            true,  true,  true,  false, false, SHAPE_SWELL_BOULDER, PLACE_CLICKED_AXIS, GLOW_NONE,  false, TEX("snow", nullptr, nullptr, nullptr, nullptr) },
+    { "pebble_boulder",        true,  true,  true,  false, false, SHAPE_SWELL_BOULDER, PLACE_CLICKED_AXIS, GLOW_NONE,  false, TEX("river_pebble", nullptr, nullptr, nullptr, nullptr) },
+    { "coastal_boulder",       true,  true,  true,  false, false, SHAPE_SWELL_BOULDER, PLACE_CLICKED_AXIS, GLOW_NONE,  false, TEX("coastal_sand", nullptr, nullptr, nullptr, nullptr) },
+    { "stone_shard",           true,  true,  true,  false, false, SHAPE_SHARD,         PLACE_CLICKED_AXIS, GLOW_NONE,  false, TEX("stone", nullptr, nullptr, nullptr, nullptr) },
+    { "basalt_shard",          true,  true,  true,  false, false, SHAPE_SHARD,         PLACE_CLICKED_AXIS, GLOW_NONE,  false, TEX("basalt", nullptr, nullptr, nullptr, nullptr) },
+    { "magma_shard",           true,  true,  true,  false, false, SHAPE_SHARD,         PLACE_CLICKED_AXIS, GLOW_EMBER, false, TEX("magma_rock", nullptr, nullptr, nullptr, nullptr) },
+    { "sandstone_shard",       true,  true,  true,  false, false, SHAPE_SHARD,         PLACE_CLICKED_AXIS, GLOW_NONE,  false, TEX(nullptr, "sandstone_top", "sandstone_top", "sandstone_layered", nullptr) },
+    { "moss_stone_shard",      true,  true,  true,  false, false, SHAPE_SHARD,         PLACE_CLICKED_AXIS, GLOW_NONE,  false, TEX("moss_stone", nullptr, nullptr, nullptr, nullptr) },
+    { "ore_shard",             true,  true,  true,  false, false, SHAPE_SHARD,         PLACE_CLICKED_AXIS, GLOW_NONE,  false, TEX("raw_fragment_ore", nullptr, nullptr, nullptr, nullptr) },
+    { "glacier_shard",         true,  true,  true,  false, false, SHAPE_SHARD,         PLACE_CLICKED_AXIS, GLOW_NONE,  true,  TEX("glacier_ice", nullptr, nullptr, nullptr, nullptr) },
+    // On a water surface: a lapping edge for shorelines, and things breaking the surface.
+    { "water_ripple",          true,  true,  true,  false, false, SHAPE_RIPPLE_LIP,    PLACE_AWAY,         GLOW_NONE,  true,  TEX("shallow_water", nullptr, nullptr, nullptr, nullptr) },
+    { "pebble_breaker",        true,  true,  true,  false, false, SHAPE_SWELL_BREAKER, PLACE_CLICKED_AXIS, GLOW_NONE,  false, TEX("river_pebble", nullptr, nullptr, nullptr, nullptr) },
+    { "leaf_pad",              true,  true,  true,  false, false, SHAPE_SWELL_BREAKER, PLACE_CLICKED_AXIS, GLOW_NONE,  false, TEX("jungle_canopy", nullptr, nullptr, nullptr, nullptr) },
+    // Dwelling pieces.
+    { "log_beam",              true,  true,  true,  false, false, SHAPE_BEAM,          PLACE_AWAY,         GLOW_NONE,  false, TEX(nullptr, "log_top", "log_top", "log_bark", nullptr) },
+    { "wood_beam",             true,  true,  true,  false, false, SHAPE_BEAM,          PLACE_AWAY,         GLOW_NONE,  false, TEX("wood", nullptr, nullptr, nullptr, nullptr) },
+    { "wood_corbel",           true,  true,  true,  false, false, SHAPE_CORBEL,        PLACE_CLICKED_AXIS, GLOW_NONE,  false, TEX("wood", nullptr, nullptr, nullptr, nullptr) },
+    { "stone_corbel",          true,  true,  true,  false, false, SHAPE_CORBEL,        PLACE_CLICKED_AXIS, GLOW_NONE,  false, TEX("stone", nullptr, nullptr, nullptr, nullptr) },
+    { "wood_shutter",          true,  true,  true,  false, false, SHAPE_SHUTTER,       PLACE_CLICKED_AXIS, GLOW_NONE,  false, TEX("wood", nullptr, nullptr, nullptr, nullptr) },
+    { "wood_awning",           true,  true,  true,  false, false, SHAPE_AWNING,        PLACE_CLICKED_AXIS, GLOW_NONE,  false, TEX("wood", nullptr, nullptr, nullptr, nullptr) },
+    { "stone_chimney_cap",     true,  true,  true,  false, false, SHAPE_CHIMNEY_CAP,   PLACE_PLAIN,        GLOW_NONE,  false, TEX("stone", nullptr, nullptr, nullptr, nullptr) },
+    { "clay_chimney_cap",      true,  true,  true,  false, false, SHAPE_CHIMNEY_CAP,   PLACE_PLAIN,        GLOW_NONE,  false, TEX("clay", nullptr, nullptr, nullptr, nullptr) },
+    // Industry pieces.
+    { "conduit_pipe",          true,  true,  true,  false, false, SHAPE_PIPE,          PLACE_CLICKED_AXIS, GLOW_NONE,  false, TEX("tube", nullptr, nullptr, nullptr, nullptr) },
+    { "lattice_pipe",          true,  true,  true,  false, false, SHAPE_PIPE,          PLACE_CLICKED_AXIS, GLOW_NONE,  false, TEX("custodian_lattice", nullptr, nullptr, nullptr, nullptr) },
+    { "machine_gear",          true,  true,  true,  false, false, SHAPE_GEAR,          PLACE_CLICKED_AXIS, GLOW_NONE,  false, TEX("machine", nullptr, nullptr, nullptr, nullptr) },
+    { "foundation_vent",       true,  true,  true,  false, false, SHAPE_VENT,          PLACE_PLAIN,        GLOW_NONE,  false, TEX("foundation", nullptr, nullptr, nullptr, nullptr) },
+    { "ore_hopper",            true,  true,  true,  false, false, SHAPE_HOPPER,        PLACE_PLAIN,        GLOW_NONE,  false, TEX("foundation", nullptr, nullptr, nullptr, nullptr) },
+    { "wood_strut",            true,  true,  true,  false, false, SHAPE_STRUT,         PLACE_FACE_PLAYER,  GLOW_NONE,  false, TEX("wood", nullptr, nullptr, nullptr, nullptr) },
+    { "lattice_strut",         true,  true,  true,  false, false, SHAPE_STRUT,         PLACE_FACE_PLAYER,  GLOW_NONE,  false, TEX("custodian_lattice", nullptr, nullptr, nullptr, nullptr) },
 };
 #undef TEX
 

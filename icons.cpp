@@ -34,7 +34,9 @@ void RenderBlockIcons(BlockTextureSet& set) {
         uint8_t state = 0;
         if (g_blocks[id].place == PLACE_FACE_PLAYER) state = FACE_NEG_Z;
         else if (g_blocks[id].place == PLACE_AWAY) state = FACE_POS_Z;
-        else if (g_blocks[id].place == PLACE_CLICKED_AXIS) state = FACE_POS_X;
+        else if (g_blocks[id].place == PLACE_CLICKED_AXIS)
+            // Props (4.15) show sitting on a floor; tubes and pipes run across.
+            state = g_blocks[id].shape >= SHAPE_SWELL_MOUND && g_blocks[id].shape != SHAPE_PIPE ? FACE_POS_Y : FACE_POS_X;
         w.Set(0, 0, 0, (BlockID)id, state);
         BuildChunkMesh(w, { 0, 0, 0 }, *w.FindChunk({ 0, 0, 0 }), verts, idx);
 
@@ -57,6 +59,18 @@ void RenderBlockIcons(BlockTextureSet& set) {
             int y0 = std::max(0, (int)std::min({ Y[0], Y[1], Y[2] })), y1 = std::min(R - 1, (int)std::max({ Y[0], Y[1], Y[2] }) + 1);
             const uint8_t* tex = set.mips[0].data() + (size_t)tv[0]->layer * N * N * 4;
             float light = faceShade[VertexFace(*tv[0])];
+            if (VertexFace(*tv[0]) >= 6) {
+                // A slanted facet: shade by its true normal, blending the
+                // axis faces' shades (the shader does the same per pixel).
+                float ax = tv[1]->x - (float)tv[0]->x, ay = tv[1]->y - (float)tv[0]->y, az = tv[1]->z - (float)tv[0]->z;
+                float bx = tv[2]->x - (float)tv[0]->x, by = tv[2]->y - (float)tv[0]->y, bz = tv[2]->z - (float)tv[0]->z;
+                float nx = ay * bz - az * by, ny = az * bx - ax * bz, nz = ax * by - ay * bx;
+                float len = sqrtf(nx * nx + ny * ny + nz * nz);
+                if (len > 0) {
+                    nx /= len; ny /= len; nz /= len;
+                    light = nx * nx * faceShade[FACE_POS_X] + nz * nz * faceShade[FACE_POS_Z] + ny * ny * (ny > 0 ? faceShade[FACE_POS_Y] : faceShade[FACE_NEG_Y]);
+                }
+            }
             const bool see = g_blocks[id].translucent;
             for (int py = y0; py <= y1; py++)
                 for (int px = x0; px <= x1; px++) {

@@ -163,11 +163,16 @@ static void TestBlockTextures() {
             BlockTextureSet nt; BuildBlockTextures(nat, nt);
             CHECK(nt.warnings.empty());
             for (auto& w : nt.warnings) printf("    %s\n", w.c_str());
+            // Every natural block, and every prop or piece (4.15), wears
+            // authored art -- props may also borrow the industrial
+            // placeholders (tube, machine, foundation).
             for (int id = BLOCK_SNOW; id < BLOCK_COUNT; id++)
                 for (int f = 0; f < FACE_COUNT; f++) {
                     const std::string& name = nt.layerNames[nt.faceLayer[id][FACE_POS_Z][f]];
                     bool art = false; for (auto& tx : nat.textures) if (tx.name == name) art = true;
+                    if (id >= BLOCK_MOSS_CLUMP && (name == "tube" || name == "machine" || name == "foundation")) art = true;
                     CHECK(art);
+                    if (!art) printf("    %s: %s\n", g_blocks[id].name, name.c_str());
                 }
             // Every natural texture except the log's cut end tiles: each row's
             // and column's wrap step is no bigger than the steps inside it.
@@ -714,7 +719,8 @@ static void TestIcons() {
         CHECK(alpha(0, 0) == 0 && alpha(BLOCK_TEX_SIZE - 1, 0) == 0); // transparent corners
         int opaque = 0, drawn = 0;
         for (int y = 0; y < BLOCK_TEX_SIZE; y++) for (int x = 0; x < BLOCK_TEX_SIZE; x++) { if (alpha(x, y) == 255) opaque++; if (alpha(x, y) >= 90) drawn++; }
-        if (g_blocks[id].translucent) CHECK(drawn > 1000 && opaque < drawn); // see-through, but visible
+        if (g_blocks[id].translucent && g_blocks[id].shape == SHAPE_CUBE) CHECK(drawn > 1000 && opaque < drawn); // see-through, but visible
+        else if (g_blocks[id].translucent) CHECK(drawn > 20);             // a see-through prop: small, but there
         else CHECK(opaque > 40); // something drawn (the thin tube is the smallest)
     }
 }
@@ -1342,6 +1348,69 @@ static void TestSoundscape() {
     CHECK(BlockSoundClass(BLOCK_GENESIS_SOIL) == SC_GENESIS);
 }
 
+static void TestProps() {
+    printf("faceted props\n");
+    ShapePoly polys[MAX_SHAPE_POLYS];
+    ShapeBox box;
+    int bad = 0;
+    for (int shape = SHAPE_SWELL_MOUND; shape < SHAPE_COUNT; shape++)
+        for (int f = 0; f < FACE_COUNT; f++)
+            for (int variant = 0; variant < 4; variant++) {
+                int n = ShapePolys((BlockShape)shape, (uint8_t)f, polys, variant);
+                bool ok = n > 0 && n <= MAX_SHAPE_POLYS;
+                // Closed and wound outward: the signed volume about the
+                // cell's centre is positive (and matches a real solid).
+                double vol = 0;
+                for (int i = 0; i < n; i++) {
+                    const ShapePoly& p = polys[i];
+                    for (int k = 0; k < p.count; k++) ok = ok && p.v[k].x <= 8 && p.v[k].y <= 8 && p.v[k].z <= 8;
+                    for (int k = 1; k + 1 < p.count; k++) {
+                        double a[3] = { p.v[0].x - 4.0, p.v[0].y - 4.0, p.v[0].z - 4.0 };
+                        double b[3] = { p.v[k].x - 4.0, p.v[k].y - 4.0, p.v[k].z - 4.0 };
+                        double c[3] = { p.v[k + 1].x - 4.0, p.v[k + 1].y - 4.0, p.v[k + 1].z - 4.0 };
+                        vol += (a[0] * (b[1] * c[2] - b[2] * c[1]) - a[1] * (b[0] * c[2] - b[2] * c[0]) + a[2] * (b[0] * c[1] - b[1] * c[0])) / 6.0;
+                    }
+                }
+                ok = ok && vol > 1.0 && vol <= 512.0;
+                if (!ok) { bad++; if (bad < 5) printf("    shape %d facing %d variant %d: %d polys, volume %.1f\n", shape, f, variant, n, vol); }
+            }
+    CHECK(bad == 0);
+    // Anchored flush: a mound on a floor lies on the cell's bottom (hidden
+    // by a full block beneath); hung from a ceiling it lies on the top; on
+    // a wall it lies on that wall and droops.
+    auto anchorFace = [&](BlockShape s, int f) {
+        int n = ShapePolys(s, (uint8_t)f, polys, 0), found = -1;
+        for (int i = 0; i < n; i++) if (polys[i].boundary >= 0) found = polys[i].boundary;
+        return found;
+    };
+    CHECK(anchorFace(SHAPE_SWELL_MOUND, FACE_POS_Y) == FACE_NEG_Y);
+    CHECK(anchorFace(SHAPE_SWELL_MOUND, FACE_NEG_Y) == FACE_POS_Y);
+    CHECK(anchorFace(SHAPE_SWELL_KNOB, FACE_POS_X) == FACE_NEG_X);
+    CHECK(anchorFace(SHAPE_SHARD, FACE_NEG_Z) == FACE_POS_Z);
+    // Collision: one box within the cell; a mound is low enough to step onto.
+    CHECK(ShapeBoxes(SHAPE_SWELL_MOUND, FACE_POS_Y, &box) == 1 && box.y0 == 0 && box.y1 <= 4);
+    CHECK(ShapeBoxes(SHAPE_SWELL_MOUND, FACE_NEG_Y, &box) == 1 && box.y1 == 8 && box.y0 >= 4);
+    CHECK(ShapeBoxes(SHAPE_PIPE, FACE_POS_X, &box) == 1 && box.x0 == 0 && box.x1 == 8 && box.y1 - box.y0 == 6);
+    // A rafter chains: its top corner meets the next cell's bottom corner.
+    int n = ShapePolys(SHAPE_BEAM, FACE_POS_Z, polys, 0);
+    bool low = false, high = false;
+    for (int i = 0; i < n; i++) for (int k = 0; k < polys[i].count; k++) {
+        if (polys[i].v[k].y == 0 && polys[i].v[k].z == 0) low = true;
+        if (polys[i].v[k].y == 8 && polys[i].v[k].z == 8) high = true;
+    }
+    CHECK(low && high);
+    // Every prop block meshes; a see-through prop lands in the blended pass.
+    World w;
+    for (int id = BLOCK_MOSS_CLUMP; id < BLOCK_COUNT; id++) {
+        w = World();
+        w.Set(3, 3, 3, (BlockID)id, FACE_POS_Y);
+        std::vector<Vertex> verts; std::vector<uint16_t> idx; size_t firstClear = 0;
+        BuildChunkMesh(w, { 0, 0, 0 }, *w.FindChunk({ 0, 0, 0 }), verts, idx, &firstClear);
+        CHECK(!idx.empty());
+        if (g_blocks[id].translucent) CHECK(firstClear == 0); else CHECK(firstClear == idx.size());
+    }
+}
+
 int main() {
     TestVtex();
     TestBlockTextures();
@@ -1352,6 +1421,7 @@ int main() {
     TestMovement();
     TestMesher();
     TestShapes();
+    TestProps();
     TestIcons();
     TestScheduledUpdates();
     TestLibrary();

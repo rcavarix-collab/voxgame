@@ -40,8 +40,10 @@ extern uint16_t g_blockFaceLayer[BLOCK_COUNT][FACE_COUNT][FACE_COUNT];
 
 // Builds the mesh for chunk `cc` of `w`. Reads the 26 neighbouring
 // chunks once into a padded occupancy grid, so no per-face hash lookups.
-// 16-bit indices always suffice: the worst case (a 3D checkerboard) is
-// 2048 blocks x 6 faces x 4 = 49152 vertices.
+// 16-bit indices: the worst cube case (a 3D checkerboard) is 2048 blocks
+// x 6 faces x 4 = 49152 vertices; detailed props (4.15) could exceed that
+// if a chunk were packed solid with them, so props past the limit are
+// left out of that chunk's mesh rather than overflow.
 // Opaque triangles come first in `indices`, then the see-through ones
 // (translucent blocks, 4.11) from `*translucentFirst` on, so one buffer
 // serves both the opaque pass and the later blended pass.

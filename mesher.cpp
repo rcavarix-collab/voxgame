@@ -105,7 +105,13 @@ void BuildChunkMesh(World& w, const ChunkCoord& cc, const Chunk& c,
                     // flat on the cell boundary hidden by a full neighbour.
                     // No AO on shapes (their faces rarely meet the grid).
                     ShapePoly polys[MAX_SHAPE_POLYS];
-                    int np = ShapePolys(g_blocks[id].shape, c.state[li], polys);
+                    int variant = ShapeVariant(cc.x * CHUNK_SIZE + lx, cc.y * CHUNK_SIZE + ly, cc.z * CHUNK_SIZE + lz);
+                    int np = ShapePolys(g_blocks[id].shape, c.state[li], polys, variant);
+                    // 16-bit indices: a chunk packed solid with the most
+                    // detailed props could pass 65,536 vertices; the rest of
+                    // such a chunk's props go unmeshed rather than wrap.
+                    if (verts.size() + (size_t)np * 4 > 65535) continue;
+                    std::vector<uint16_t>& shapeOut = g_blocks[id].translucent ? clear : indices;
                     for (int i = 0; i < np; i++) {
                         const ShapePoly& sp = polys[i];
                         if (sp.boundary >= 0) {
@@ -125,7 +131,7 @@ void BuildChunkMesh(World& w, const ChunkCoord& cc, const Chunk& c,
                             verts.push_back(v);
                         }
                         const uint16_t tri[6] = { 0, 1, 2, 0, 2, 3 };
-                        for (int k = 0; k < (sp.count == 4 ? 6 : 3); k++) indices.push_back((uint16_t)(base + tri[k]));
+                        for (int k = 0; k < (sp.count == 4 ? 6 : 3); k++) shapeOut.push_back((uint16_t)(base + tri[k]));
                     }
                     continue;
                 }
