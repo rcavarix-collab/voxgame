@@ -329,29 +329,62 @@ void ProcessColumnEviction(World& w);
 // Section 4.7 - Camera / player
 // =======================================================================
 
+// Player half-width / heights used for AABB collision (Section 4.7).
+// Crouched (and sliding) the player is under a block tall, so they fit a
+// 1x1 gap.
+static const float PLAYER_HALFW = 0.3f;
+static const float PLAYER_HEIGHT = 1.8f;
+static const float PLAYER_EYE = 1.6f;
+static const float PLAYER_CROUCH_HEIGHT = 0.9f;
+static const float PLAYER_CROUCH_EYE = 0.75f;
+static const float PLAYER_SLIDE_EYE = 0.55f;
+
 struct Player {
     float x = 8.0f, y = 50.0f, z = 8.0f;
     float yaw = 0.0f, pitch = 0.0f;
     float velY = 0.0f;
     bool onGround = false;
     int hotbarIndex = 0;
+    // Movement state (not saved: a load into a tight spot just crouches).
+    bool sprinting = false;
+    bool crouching = false;       // crouch-height box (also while sliding)
+    bool crouchHeld = false;      // the crouch input last tick (a fresh press starts a slide)
+    float slideTime = 0.0f;       // > 0 while power-sliding: seconds so far
+    float slideVX = 0.0f, slideVZ = 0.0f; // the slide's momentum, blocks/s
+    // Camera only, eased toward their targets each tick.
+    float eyeHeight = PLAYER_EYE; // above the feet
+    float roll = 0.0f;            // lean, radians (+ = toward the right)
+    float leanPitch = 0.0f;       // added to pitch while leaning into a slide
 };
 
+static inline float PlayerHeight(const Player& p) { return p.crouching ? PLAYER_CROUCH_HEIGHT : PLAYER_HEIGHT; }
+static inline bool PlayerSliding(const Player& p) { return p.slideTime > 0.0f; }
 
+// View vectors, including a slide's lean (roll about the view direction,
+// a small pitch). `right` stays level, so movement never feels the lean.
 static inline void GetCameraVectors(const Player& p, Vec3& forward, Vec3& right, Vec3& up) {
-    float cp = cosf(p.pitch), sp = sinf(p.pitch);
+    float pitch = p.pitch + p.leanPitch;
+    float cp = cosf(pitch), sp = sinf(pitch);
     float cy = cosf(p.yaw), sy = sinf(p.yaw);
     forward = { sy * cp, sp, cy * cp };
-    up = { 0, 1, 0 };
-    right = Normalize(Cross(up, forward));
+    Vec3 worldUp = { 0, 1, 0 };
+    right = Normalize(Cross(worldUp, forward));
+    Vec3 levelUp = Cross(forward, right); // perpendicular to forward, in the vertical plane
+    float cr = cosf(p.roll), sr = sinf(p.roll);
+    up = { levelUp.x * cr + right.x * sr, levelUp.y * cr + right.y * sr, levelUp.z * cr + right.z * sr };
 }
 
-// Player half-width / height used for AABB collision (Section 4.7).
-static const float PLAYER_HALFW = 0.3f;
-static const float PLAYER_HEIGHT = 1.8f;
-static const float PLAYER_EYE = 1.6f;
+// One tick's movement input.
+struct MoveInput {
+    bool fwd = false, back = false, left = false, right = false, jump = false;
+    bool sprint = false, crouch = false;
+};
 
-void UpdatePlayerPhysics(World& w, Player& p, float dt, bool fwd, bool back, bool left, bool right, bool jump);
+void UpdatePlayerPhysics(World& w, Player& p, float dt, const MoveInput& in);
+static inline void UpdatePlayerPhysics(World& w, Player& p, float dt, bool fwd, bool back, bool left, bool right, bool jump) {
+    MoveInput in; in.fwd = fwd; in.back = back; in.left = left; in.right = right; in.jump = jump;
+    UpdatePlayerPhysics(w, p, dt, in);
+}
 
 // =======================================================================
 // Section 4.5 - Amanatides-Woo exact voxel DDA raycast for block picking

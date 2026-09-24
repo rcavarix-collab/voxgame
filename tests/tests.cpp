@@ -279,6 +279,70 @@ static void TestStreaming() {
     CHECK(g_evictedChunks.empty());
 }
 
+static void TestMovement() {
+    printf("sprint, crouch and power slide\n");
+    World w; ResetWorldState(w);
+    g_loadRadius = 2; g_worldGen = WorldGenParams(); g_worldGen.type = GEN_FLAT;
+    Stream(w, 8, 8, 200);
+    const int G = TerrainHeight(8, 8) + 1;   // feet level on the flat ground
+    for (int x = 10; x <= 20; x++) for (int z = 5; z <= 11; z++) w.Set(x, G + 1, z, BLOCK_STONE); // a roof 1 block up: a crawlspace
+    const float dt = 1.0f / 60.0f, EAST = 1.5707963f; // yaw pi/2: facing +X
+    auto run = [&](Player& p, MoveInput in, float seconds) { for (int i = 0; i < (int)(seconds * 60); i++) UpdatePlayerPhysics(w, p, dt, in); };
+    auto at = [&](float x, float z) { Player p; p.x = x; p.y = (float)G; p.z = z; p.yaw = EAST; run(p, MoveInput(), 0.2f); return p; };
+    MoveInput walk; walk.fwd = true;
+    MoveInput crawl = walk; crawl.crouch = true;
+    MoveInput sprint = walk; sprint.sprint = true;
+
+    // Standing, the crawlspace stops you at its mouth; crouched, you get in.
+    Player p = at(6.5f, 8.5f);
+    run(p, walk, 2.0f);
+    CHECK(p.x > 9.5f && p.x < 9.8f && !p.crouching);
+    run(p, crawl, 3.0f);
+    CHECK(p.x > 12.0f && p.crouching && fabsf(p.y - G) < 1e-3f);
+    // Letting go of crouch under the roof: still crouched (no room to stand).
+    run(p, MoveInput(), 0.3f);
+    CHECK(p.crouching && fabsf(p.y - G) < 1e-3f && p.eyeHeight < 0.8f);
+    // Back out into the open, and you stand up by yourself.
+    MoveInput back; back.back = true;
+    run(p, back, 5.0f);
+    CHECK(p.x < 9.7f && !p.crouching && p.eyeHeight > 1.5f);
+
+    // Sprinting beats walking; crouching is slow.
+    Player a = at(0.5f, 2.5f), b = at(0.5f, 2.5f), c = at(0.5f, 2.5f);
+    run(a, walk, 1.0f); run(b, sprint, 1.0f); run(c, crawl, 1.0f);
+    float dw = a.x - 0.5f, ds = b.x - 0.5f, dc = c.x - 0.5f;
+    printf("    1 s: walk %.2f, sprint %.2f, crouch %.2f blocks\n", dw, ds, dc);
+    CHECK(ds > dw * 1.3f && dc < dw * 0.5f && b.sprinting && !a.sprinting);
+
+    // Power slide: sprint, then crouch -- a burst faster than the sprint,
+    // bleeding off, ending crouched while crouch is held.
+    Player s = at(-20.5f, 2.5f);
+    run(s, sprint, 0.5f);
+    MoveInput slide = sprint; slide.crouch = true;
+    float x0 = s.x;
+    run(s, slide, 0.25f);
+    float burst = (s.x - x0) / 0.25f;
+    printf("    slide: %.2f blocks/s just after starting (sprint %.2f)\n", burst, 6.5f);
+    CHECK(PlayerSliding(s) && burst > 7.0f && s.crouching);
+    // Looking to the side mid-slide leans the view toward where it's carrying you.
+    s.yaw = 0.0f; // now facing +Z; the slide carries toward +X, i.e. the view's right
+    run(s, slide, 0.3f);
+    CHECK(s.roll > 0.08f && s.eyeHeight < 0.7f);
+    run(s, slide, 1.5f);
+    CHECK(!PlayerSliding(s) && s.crouching && fabsf(s.roll) < 0.02f);
+
+    // And a slide carries you straight under the roof.
+    Player u = at(0.5f, 8.5f);
+    run(u, sprint, 0.9f);           // up to speed, well short of the mouth at x = 9.7
+    CHECK(u.x < 9.0f);
+    MoveInput dive = sprint; dive.crouch = true;
+    run(u, dive, 0.05f);
+    MoveInput none;
+    run(u, none, 1.5f);             // let go of everything: momentum does the rest
+    printf("    slid under the roof to x = %.2f\n", u.x);
+    CHECK(u.x > 10.5f && u.crouching && fabsf(u.y - G) < 1e-3f);
+}
+
 static void TestPlayer() {
     printf("player spawn and unstick\n");
     World w; ResetWorldState(w);
@@ -899,6 +963,7 @@ int main() {
     TestLegacyLoad();
     TestStreaming();
     TestPlayer();
+    TestMovement();
     TestMesher();
     TestShapes();
     TestIcons();

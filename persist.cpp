@@ -31,10 +31,10 @@
 // =======================================================================
 
 const char* g_actionNames[ACT_COUNT] = {
-    "forward", "back", "left", "right", "jump", "break", "place", "menu", "save", "load", "map"
+    "forward", "back", "left", "right", "jump", "break", "place", "menu", "save", "load", "map", "sprint", "crouch"
 };
 int g_keyBindings[ACT_COUNT] = {
-    'W', 'S', 'A', 'D', VK_SPACE, MOUSE_LEFT, MOUSE_RIGHT, VK_ESCAPE, VK_F5, VK_F9, 'M'
+    'W', 'S', 'A', 'D', VK_SPACE, MOUSE_LEFT, MOUSE_RIGHT, VK_ESCAPE, VK_F5, VK_F9, 'M', VK_SHIFT, VK_CONTROL
 };
 float g_sensitivityMultX = 1.0f, g_sensitivityMultY = 1.0f;
 bool g_invertX = false, g_invertY = false;

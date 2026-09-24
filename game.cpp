@@ -141,7 +141,7 @@ static void PickAndAct(bool breakBlock) {
     Vec3 f, r, u;
     GetCameraVectors(g_player, f, r, u);
     float dx = f.x, dy = f.y, dz = f.z;
-    float ex = g_player.x, ey = g_player.y + PLAYER_EYE, ez = g_player.z;
+    float ex = g_player.x, ey = g_player.y + g_player.eyeHeight, ez = g_player.z;
 
     int hx, hy, hz, px, py, pz;
     if (!Raycast(g_world, ex, ey, ez, dx, dy, dz, 6.0f, hx, hy, hz, px, py, pz)) return;
@@ -158,7 +158,7 @@ static void PickAndAct(bool breakBlock) {
         // them up on top of it).
         const Player& p = g_player;
         bool overlapsPlayer = px + 1 > p.x - PLAYER_HALFW && px < p.x + PLAYER_HALFW
-                           && py + 1 > p.y && py < p.y + PLAYER_HEIGHT
+                           && py + 1 > p.y && py < p.y + PlayerHeight(p)
                            && pz + 1 > p.z - PLAYER_HALFW && pz < p.z + PLAYER_HALFW;
         if (overlapsPlayer) return;
         BlockID toPlace = g_placeableList.ids[g_player.hotbarIndex];
@@ -315,12 +315,14 @@ enum AccessibilityRow { ARROW_FOV = 0, ARROW_TOGGLE_MOVE = 1, ARROW_HIGH_CONTRAS
 // not warn about or prevent two actions sharing the same input.
 static const char* g_actionLabels[ACT_COUNT] = { // on-screen text
     "MOVE FORWARD", "MOVE BACK", "MOVE LEFT", "MOVE RIGHT", "JUMP",
-    "BREAK BLOCK", "PLACE BLOCK", "PAUSE MENU", "QUICK SAVE", "QUICK LOAD", "ESSENCE MAP"
+    "BREAK BLOCK", "PLACE BLOCK", "PAUSE MENU", "QUICK SAVE", "QUICK LOAD", "ESSENCE MAP",
+    "SPRINT", "CROUCH / SLIDE"
 };
-static const SubmenuLayout KEYBIND_LAYOUT = { 480.0f, 32.0f, 8.0f, 92.0f, 20.0f, ACT_COUNT + 2 }; // +reset +back
+// Rows sized so all of them (+reset +back) fit the minimum 680 px window.
+static const SubmenuLayout KEYBIND_LAYOUT = { 480.0f, 28.0f, 6.0f, 92.0f, 20.0f, ACT_COUNT + 2 };
 
 static const int g_defaultBindings[ACT_COUNT] = {
-    'W', 'S', 'A', 'D', VK_SPACE, MOUSE_LEFT, MOUSE_RIGHT, VK_ESCAPE, VK_F5, VK_F9, 'M'
+    'W', 'S', 'A', 'D', VK_SPACE, MOUSE_LEFT, MOUSE_RIGHT, VK_ESCAPE, VK_F5, VK_F9, 'M', VK_SHIFT, VK_CONTROL
 };
 static int g_rebindingAction = -1; // -1 = not capturing; else a GameAction index
 

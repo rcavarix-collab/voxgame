@@ -434,9 +434,9 @@ void ProcessColumnEviction(World& w) {
 // BoxIntersectsSolid tests every voxel cell the box's full vertical
 // extent overlaps (not just a few discrete height samples) -- a
 // complete AABB-vs-voxel-grid overlap rather than sampled points.
-static bool BoxIntersectsSolid(World& w, float cx, float cy, float cz) {
+static bool BoxIntersectsSolid(World& w, float cx, float cy, float cz, float height = PLAYER_HEIGHT) {
     float ax0 = cx - PLAYER_HALFW, ax1 = cx + PLAYER_HALFW;
-    float ay0 = cy,                ay1 = cy + PLAYER_HEIGHT;
+    float ay0 = cy,                ay1 = cy + height;
     float az0 = cz - PLAYER_HALFW, az1 = cz + PLAYER_HALFW;
     int minX = (int)floor(ax0), maxX = (int)floor(ax1);
     int minY = (int)floor(ay0), maxY = (int)floor(ay1);
@@ -468,7 +468,17 @@ static bool ColumnResidentAt(float x, float z) {
     return g_residentColumns.count(ColumnKey(FloorDiv16((int)floor(x)), FloorDiv16((int)floor(z)))) != 0;
 }
 
-void UpdatePlayerPhysics(World& w, Player& p, float dt, bool fwd, bool back, bool left, bool right, bool jump) {
+// Movement speeds and the power slide, blocks per second (Section 4.7).
+static const float WALK_SPEED = 4.5f;
+static const float SPRINT_SPEED = 6.5f;
+static const float CROUCH_SPEED = 1.8f;
+static const float SLIDE_START_SPEED = 9.0f;  // the burst when a sprint drops into a slide
+static const float SLIDE_FRICTION = 1.5f;     // per second: speed falls as e^(-friction * t) on the ground
+static const float SLIDE_MAX_SECONDS = 1.4f;
+static const float SLIDE_LEAN_ROLL = 0.21f;   // radians (~12 degrees) of lean at full sideways slide
+static const float SLIDE_LEAN_PITCH = 0.08f;  // radians of dip at full forward slide
+
+void UpdatePlayerPhysics(World& w, Player& p, float dt, const MoveInput& in) {
     // Ground that doesn't exist yet reads as air. Until the player's own
     // column is generated (spawn, a load, a teleport-sized jump) hold
     // them exactly where they are instead of letting them fall into the
@@ -484,10 +494,14 @@ void UpdatePlayerPhysics(World& w, Player& p, float dt, bool fwd, bool back, boo
         p.velY = 0.0f;
         return;
     }
+    // No room to stand (a load or a block placed in a crawlspace) but room
+    // to crouch: crouch, rather than being pushed up out of it.
+    if (!p.crouching && BoxIntersectsSolid(w, p.x, p.y, p.z, PLAYER_HEIGHT) && !BoxIntersectsSolid(w, p.x, p.y, p.z, PLAYER_CROUCH_HEIGHT))
+        p.crouching = true;
     // Never entombed: if the box overlaps solid blocks anyway (terrain
     // that appeared around an edge, a block that fell onto the player),
     // lift them a block per tick until they're standing free.
-    if (BoxIntersectsSolid(w, p.x, p.y, p.z)) {
+    if (BoxIntersectsSolid(w, p.x, p.y, p.z, PlayerHeight(p))) {
         p.y = floorf(p.y) + 1.0f;
         p.velY = 0.0f;
         p.onGround = false;
@@ -501,46 +515,103 @@ void UpdatePlayerPhysics(World& w, Player& p, float dt, bool fwd, bool back, boo
     float len = sqrtf(fx * fx + fz * fz);
     if (len > 0.0001f) { fx /= len; fz /= len; }
 
-    const float SPEED = 4.5f;
     float mx = 0, mz = 0;
-    if (fwd)  { mx += fx; mz += fz; }
-    if (back) { mx -= fx; mz -= fz; }
-    if (right){ mx += rx; mz += rz; }
-    if (left) { mx -= rx; mz -= rz; }
+    if (in.fwd)  { mx += fx; mz += fz; }
+    if (in.back) { mx -= fx; mz -= fz; }
+    if (in.right){ mx += rx; mz += rz; }
+    if (in.left) { mx -= rx; mz -= rz; }
     float mlen = sqrtf(mx * mx + mz * mz);
-    if (mlen > 0.0001f) { mx = mx / mlen * SPEED * dt; mz = mz / mlen * SPEED * dt; }
+    if (mlen > 0.0001f) { mx /= mlen; mz /= mlen; } // unit direction (or zero)
+
+    // Crouch, sprint and the power slide. A fresh crouch press while
+    // sprinting on the ground drops into a slide: a burst of speed along
+    // the way the player was running that bleeds off over about a second,
+    // at crouch height (so a slide goes under a 1-block gap). Otherwise
+    // holding crouch crouches; letting go stands up only where there's
+    // room to.
+    bool crouchPressed = in.crouch && !p.crouchHeld;
+    p.crouchHeld = in.crouch;
+    if (crouchPressed && p.onGround && p.sprinting && !PlayerSliding(p) && mlen > 0.0001f) {
+        p.slideTime = 1e-4f;
+        p.slideVX = mx * SLIDE_START_SPEED; p.slideVZ = mz * SLIDE_START_SPEED;
+        p.crouching = true;
+    }
+    if (PlayerSliding(p)) {
+        float speed = sqrtf(p.slideVX * p.slideVX + p.slideVZ * p.slideVZ);
+        if (in.jump || speed < CROUCH_SPEED || p.slideTime > SLIDE_MAX_SECONDS) p.slideTime = 0.0f; // over (a jump ends it)
+    }
+    bool sliding = PlayerSliding(p);
+    if (in.crouch || sliding) p.crouching = true;
+    else if (p.crouching && !BoxIntersectsSolid(w, p.x, p.y, p.z, PLAYER_HEIGHT)) p.crouching = false;
+    p.sprinting = in.sprint && in.fwd && !in.back && !p.crouching;
 
     // Horizontal moves, one axis at a time. Don't walk off the edge of
     // generated ground; and when blocked while standing, step up onto
     // anything up to half a block high (slabs, ramps, pyramid bases) --
-    // but never a full block.
+    // but never a full block. Returns whether the move happened.
     const float STEP = 0.5f;
+    const float h = PlayerHeight(p);
     auto tryMove = [&](float dx, float dz) {
-        if (dx == 0.0f && dz == 0.0f) return;
-        if (!ColumnResidentAt(p.x + dx, p.z + dz)) return;
-        if (!BoxIntersectsSolid(w, p.x + dx, p.y, p.z + dz)) { p.x += dx; p.z += dz; return; }
-        if (p.onGround && !BoxIntersectsSolid(w, p.x, p.y + STEP, p.z) &&
-            !BoxIntersectsSolid(w, p.x + dx, p.y + STEP, p.z + dz)) {
+        if (dx == 0.0f && dz == 0.0f) return true;
+        if (!ColumnResidentAt(p.x + dx, p.z + dz)) return false;
+        if (!BoxIntersectsSolid(w, p.x + dx, p.y, p.z + dz, h)) { p.x += dx; p.z += dz; return true; }
+        if (p.onGround && !BoxIntersectsSolid(w, p.x, p.y + STEP, p.z, h) &&
+            !BoxIntersectsSolid(w, p.x + dx, p.y + STEP, p.z + dz, h)) {
             p.x += dx; p.z += dz; p.y += STEP;
+            return true;
         }
+        return false;
     };
-    tryMove(mx, 0.0f);
-    tryMove(0.0f, mz);
+    if (sliding) {
+        // Momentum, not input: friction on the ground, none in the air;
+        // a wall stops that axis.
+        if (p.onGround) {
+            float k = expf(-SLIDE_FRICTION * dt);
+            p.slideVX *= k; p.slideVZ *= k;
+        }
+        if (!tryMove(p.slideVX * dt, 0.0f)) p.slideVX = 0.0f;
+        if (!tryMove(0.0f, p.slideVZ * dt)) p.slideVZ = 0.0f;
+        p.slideTime += dt;
+    } else {
+        float speed = p.crouching ? CROUCH_SPEED : (p.sprinting ? SPRINT_SPEED : WALK_SPEED);
+        tryMove(mx * speed * dt, 0.0f);
+        tryMove(0.0f, mz * speed * dt);
+    }
 
     const float GRAVITY = 20.0f;
     const float JUMP_SPEED = 7.0f;
-    if (p.onGround && jump) { p.velY = JUMP_SPEED; p.onGround = false; }
+    if (p.onGround && in.jump) { p.velY = JUMP_SPEED; p.onGround = false; }
     p.velY -= GRAVITY * dt;
     if (p.velY < -50.0f) p.velY = -50.0f;
 
     float dy = p.velY * dt;
-    if (!BoxIntersectsSolid(w, p.x, p.y + dy, p.z)) {
+    if (!BoxIntersectsSolid(w, p.x, p.y + dy, p.z, h)) {
         p.y += dy;
         p.onGround = false;
     } else {
         if (p.velY < 0) p.onGround = true;
         p.velY = 0;
     }
+
+    // Camera: the eye drops when crouching and further in a slide, and a
+    // slide leans the view into the way it's carrying the player relative
+    // to where they look -- sideways rolls toward that side, straight
+    // ahead dips forward, backwards tips back -- scaled by its speed.
+    float eyeTarget = sliding ? PLAYER_SLIDE_EYE : (p.crouching ? PLAYER_CROUCH_EYE : PLAYER_EYE);
+    float rollTarget = 0.0f, pitchTarget = 0.0f;
+    if (sliding) {
+        float speed = sqrtf(p.slideVX * p.slideVX + p.slideVZ * p.slideVZ);
+        if (speed > 1e-3f) {
+            float amount = speed / SLIDE_START_SPEED; amount = amount > 1.0f ? 1.0f : amount;
+            float sx = p.slideVX / speed, sz = p.slideVZ / speed;
+            rollTarget = (sx * rx + sz * rz) * SLIDE_LEAN_ROLL * amount;
+            pitchTarget = -(sx * fx + sz * fz) * SLIDE_LEAN_PITCH * amount;
+        }
+    }
+    float ease = 1.0f - expf(-dt / 0.08f);
+    p.eyeHeight += (eyeTarget - p.eyeHeight) * ease;
+    p.roll += (rollTarget - p.roll) * ease;
+    p.leanPitch += (pitchTarget - p.leanPitch) * ease;
 }
 
 // =======================================================================

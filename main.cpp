@@ -176,12 +176,14 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
                     ProcessColumnEviction(g_world);
                 }
 
-                bool fwd = IsActionDown(ACT_FORWARD), back = IsActionDown(ACT_BACK);
-                bool left = IsActionDown(ACT_LEFT), right = IsActionDown(ACT_RIGHT);
-                bool jump = IsActionDown(ACT_JUMP);
+                MoveInput in;
+                in.fwd = IsActionDown(ACT_FORWARD); in.back = IsActionDown(ACT_BACK);
+                in.left = IsActionDown(ACT_LEFT); in.right = IsActionDown(ACT_RIGHT);
+                in.jump = IsActionDown(ACT_JUMP);
+                in.sprint = IsActionDown(ACT_SPRINT); in.crouch = IsActionDown(ACT_CROUCH);
                 {
                     ProfScope prof(PROF_PHYSICS);
-                    UpdatePlayerPhysics(g_world, g_player, FIXED_DT, fwd, back, left, right, jump);
+                    UpdatePlayerPhysics(g_world, g_player, FIXED_DT, in);
                 }
                 {
                     ProfScope prof(PROF_UPDATES);
@@ -204,7 +206,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
         {
             ProfScope prof(PROF_MESH);
             RebuildDirtyChunks(g_world, FloorDiv16((int)floorf(g_player.x)),
-                               FloorDiv16((int)floorf(g_player.y + PLAYER_EYE)), FloorDiv16((int)floorf(g_player.z)));
+                               FloorDiv16((int)floorf(g_player.y + g_player.eyeHeight)), FloorDiv16((int)floorf(g_player.z)));
         }
         ProfSetCounter(PCOUNT_CHUNKS_RESIDENT, (int64_t)g_world.chunks.size());
         ProfSetCounter(PCOUNT_DIRTY_WAITING, (int64_t)g_world.dirtyChunks.size());
@@ -212,7 +214,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
         ProfSetCounter(PCOUNT_UPDATES_WAITING, (int64_t)ScheduledUpdateCount());
         Vec3 f, r, u;
         GetCameraVectors(g_player, f, r, u);
-        Vec3 eye = { g_player.x, g_player.y + PLAYER_EYE, g_player.z };
+        Vec3 eye = { g_player.x, g_player.y + g_player.eyeHeight, g_player.z };
         Mat4 view = MatLookToLH(eye, f, u);
         // g_fov (Accessibility, Section 11) is stored in degrees since
         // that's the meaningful unit for a player-facing slider.
