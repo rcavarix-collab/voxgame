@@ -24,6 +24,7 @@
 #include "music_synth.h"
 #include "world.h"   // g_dayTimeSeconds
 #include "persist.h" // g_masterVolume / g_musicVolume / g_musicIntensity
+#include "musiclevel.h"
 #include <cstdint>
 #include <cmath>
 
@@ -57,12 +58,14 @@ static const int MUSIC_PRIME_CHUNKS = 4;
 static const int MUSIC_POOL_SIZE = MUSIC_LOOKAHEAD_CHUNKS + 1;
 static int16_t (*g_musicPool)[MUSIC_CHUNK_SAMPLES] = nullptr;
 static int g_musicPoolNext = 0;
-// Loudness of each pooled chunk in quarters (1/16 s each), measured when
-// the chunk is synthesized; read back at the chunk actually playing, so
-// anything that reacts to the music follows what's heard, not the audio
-// generated seconds ahead (Section 10.4).
-static const int LEVEL_STEPS = 4;
+// Note onsets (musiclevel.h) in each pooled chunk, 1/64 s steps, measured
+// when the chunk is synthesized; read back at the chunk actually playing,
+// so anything that reacts to the music follows what's heard, not the
+// audio generated seconds ahead (Section 10.4).
+static const int LEVEL_STEPS = 16;
 static float g_chunkLevels[MUSIC_POOL_SIZE][LEVEL_STEPS] = {};
+static MusicLevelMeter g_levelMeter;  // carried from chunk to chunk, in generation order
+static double g_levelLastNow = 0;     // last CurrentMusicLevel call, seconds (QPC)
 static int g_levelSlot = -1;          // pool slot last seen playing
 static double g_levelSlotStart = 0;   // when it started, seconds (QPC)
 static float g_levelSmoothed = 0;
@@ -101,14 +104,7 @@ static void SubmitOneMusicChunk() {
     g_musicPoolNext = (g_musicPoolNext + 1) % MUSIC_POOL_SIZE;
     GenerateMusicChunk(g_nextChunkStartTime, MUSIC_CHUNK_SAMPLES, (double)g_musicIntensity, &g_musicState, chunk);
     int slot = (int)(chunk - g_musicPool[0]) / MUSIC_CHUNK_SAMPLES;
-    const int per = MUSIC_CHUNK_SAMPLES / LEVEL_STEPS;
-    for (int q = 0; q < LEVEL_STEPS; q++) {
-        double sum = 0;
-        for (int i = q * per; i < (q + 1) * per; i++) sum += (double)chunk[i] * chunk[i];
-        float rms = (float)(sqrt(sum / per) / 32768.0);
-        float level = rms / 0.18f; // typical loud passages ~1
-        g_chunkLevels[slot][q] = level > 1.0f ? 1.0f : level;
-    }
+    MeasureMusicLevels(g_levelMeter, chunk, MUSIC_CHUNK_SAMPLES, LEVEL_STEPS, MUSIC_SAMPLE_RATE, g_chunkLevels[slot]);
     g_nextChunkStartTime += (double)MUSIC_CHUNK_SAMPLES / MUSIC_SAMPLE_RATE;
     XAUDIO2_BUFFER buf = {};
     buf.AudioBytes = MUSIC_CHUNK_SAMPLES * sizeof(int16_t);
@@ -129,6 +125,7 @@ void StartMusicPlayback() {
     g_musicNeedsDrain = true;
     WaitForMusicDrain();
     ResetMusicState(&g_musicState);
+    g_levelMeter = MusicLevelMeter();
     g_nextChunkStartTime = g_dayTimeSeconds;
     for (int i = 0; i < MUSIC_PRIME_CHUNKS; i++) SubmitOneMusicChunk();
     g_musicVoice->Start();
@@ -169,8 +166,12 @@ float CurrentMusicLevel() {
     int q = (int)((now - g_levelSlotStart) * MUSIC_SAMPLE_RATE / (MUSIC_CHUNK_SAMPLES / LEVEL_STEPS));
     q = q < 0 ? 0 : (q >= LEVEL_STEPS ? LEVEL_STEPS - 1 : q);
     float target = g_chunkLevels[slot][q];
-    // Quick to rise, slower to fall: reads as a pulse, not flicker.
-    g_levelSmoothed = target > g_levelSmoothed ? g_levelSmoothed + (target - g_levelSmoothed) * 0.5f : g_levelSmoothed * 0.92f + target * 0.08f;
+    // Flashes on a note at once, then fades in ~0.1 s: a pulse per note,
+    // the same at any frame rate.
+    double dt = g_levelLastNow > 0 ? now - g_levelLastNow : 0.0;
+    g_levelLastNow = now;
+    float fade = (float)exp(-(dt < 0.25 ? dt : 0.25) / 0.1);
+    g_levelSmoothed = target > g_levelSmoothed * fade ? target : g_levelSmoothed * fade;
     return g_levelSmoothed;
 }
 

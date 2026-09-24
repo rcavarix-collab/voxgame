@@ -134,6 +134,7 @@
     <ClInclude Include="theline.h" />
     <ClInclude Include="essencemap.h" />
     <ClInclude Include="glowlight.h" />
+    <ClInclude Include="musiclevel.h" />
     <ClInclude Include="essence.h" />
     <ClInclude Include="sky.h" />
   </ItemGroup>

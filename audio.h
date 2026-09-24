@@ -28,6 +28,7 @@ void StopMusicPlayback();
 // frame; a natural no-op at the title screen and while paused, since
 // both have playback stopped.
 void RefillMusicQueueIfNeeded();
-// Loudness 0..1 of the music currently audible (not the audio queued
-// ahead), smoothed; 0 while silent or paused. Once per frame.
+// 0..1 pulse on each note onset in the music currently audible (not the
+// audio queued ahead; musiclevel.h), fading ~0.1 s after each; 0 while
+// silent or paused. Once per frame.
 float CurrentMusicLevel();

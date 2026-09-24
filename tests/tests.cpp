@@ -11,6 +11,7 @@
 #include "../vtex.h"
 #include "../blocktex.h"
 #include "../glowlight.h"
+#include "../musiclevel.h"
 #include "../mesher.h"
 #include "../shapes.h"
 #include "../icons.h"
@@ -533,6 +534,40 @@ static Vec3 XformPoint(const Mat4& m, Vec3 p) {
     return { x / w, y / w, z / w };
 }
 
+static void TestMusicLevel() {
+    printf("music onset level\n");
+    const int SR = 44100, CH = SR / 4;
+    std::vector<int16_t> pcm(CH);
+    float out[16];
+    auto run = [&](MusicLevelMeter& m, auto sample, int chunks, float* maxOut, float* meanOut) {
+        float mx = 0, sum = 0; int n = 0;
+        for (int c = 0; c < chunks; c++) {
+            for (int i = 0; i < CH; i++) pcm[i] = (int16_t)sample(c * CH + i);
+            MeasureMusicLevels(m, pcm.data(), CH, 16, SR, out);
+            if (c < 4) continue; // settle
+            for (float v : out) { mx = std::max(mx, v); sum += v; n++; }
+        }
+        *maxOut = mx; *meanOut = sum / n;
+    };
+    // A sustained pad (the bulk of the day's music): dark once settled.
+    MusicLevelMeter pad; float mx, mean;
+    run(pad, [&](int i) { return 6000.0 * sin(i * 2 * 3.14159265 * 220.0 / SR); }, 20, &mx, &mean);
+    CHECK(mx < 0.05f);
+    // The same pad with a soft plucked note every half second: flashes on
+    // each note, dark most of the time in between.
+    MusicLevelMeter pl;
+    run(pl, [&](int i) {
+        double t = (double)i / SR, since = fmod(t, 0.5);
+        return 6000.0 * sin(i * 2 * 3.14159265 * 220.0 / SR) + 2500.0 * exp(-since * 30.0) * sin(i * 2 * 3.14159265 * 1760.0 / SR);
+    }, 20, &mx, &mean);
+    printf("    plucks over a pad: peak %.2f, mean %.2f\n", mx, mean);
+    CHECK(mx > 0.9f && mean < 0.35f);
+    // Near-silence never flashes, however it wobbles.
+    MusicLevelMeter q;
+    run(q, [&](int i) { return (i / 441) % 7 == 0 ? 3.0 : -2.0; }, 20, &mx, &mean);
+    CHECK(mx == 0.0f);
+}
+
 static void TestGlowLight() {
     printf("glow light grid\n");
     World w;
@@ -845,6 +880,7 @@ int main() {
     TestShapes();
     TestIcons();
     TestScheduledUpdates();
+    TestMusicLevel();
     TestGlowLight();
     TestSky();
     TestTheLine();
