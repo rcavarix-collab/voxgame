@@ -175,7 +175,16 @@ void UpdateLine(LineState& s, const LineTuning& t, float x, float y, float z, fl
     s.wobblePhase += s.spin * (t.wobbleRate + t.wobbleRateGain * s.intensity) * dt;
     s.wobblePhase = fmodf(s.wobblePhase, TWO_PI);
 
-    // 6. The sky clock. Near the line the visible sky races ahead, faster
+    // 6. The band: diffusers' feed (pulses a second, judged over
+    // feedMemory seconds) widens it, with diminishing returns; unfed, it
+    // eases back to its base.
+    s.feedRate += ((float)s.pendingFeed / dt - s.feedRate) * (1.0f - expf(-dt / t.feedMemory));
+    s.pendingFeed = 0;
+    if (s.feedRate < 1e-4f) s.feedRate = 0;
+    float band = t.baseHalfHeight + t.halfHeightPerRootFeed * sqrtf(s.feedRate);
+    s.halfHeight = band > t.maxHalfHeight ? t.maxHalfHeight : band;
+
+    // 7. The sky clock. Near the line the visible sky races ahead, faster
     // the closer the player is (the square root lets the race build over
     // the approach rather than only at the last step). Away from it, the
     // sky heads back into step by the shorter way: a little ahead, it runs
@@ -239,15 +248,17 @@ void RestoreLine(LineState& s, const LineTuning& t, const LineSaveData& d) {
     MovePivot(s, t, 0.0f); // first placement: straight onto the target
 }
 
-float LineIntensityAt(const LineState& s, const LineTuning& t, float x, float z) {
+float LineIntensityAt(const LineState& s, const LineTuning& t, float x, float y, float z) {
     float ux = cosf(s.theta), uz = sinf(s.theta);
     float rx = x - s.pivotX, rz = z - s.pivotZ;
-    float dist = fabsf(rx * (-uz) + rz * ux);
+    float across = fabsf(rx * (-uz) + rz * ux);
+    float above = fabsf(y - s.lineY) - s.halfHeight; // outside the band, how far
+    float dist = above > 0 ? sqrtf(across * across + above * above) : across;
     float still = expf(0.5f * (logf(t.decadeAgainst) + logf(t.decadeWith))); // the still-standing falloff
     return powf(10.0f, -Staircase(dist / still, t.stepSharpness));
 }
 
-float LineTimeRateAt(const LineState& s, const LineTuning& t, float x, float z) {
-    float i = LineIntensityAt(s, t, x, z);
+float LineTimeRateAt(const LineState& s, const LineTuning& t, float x, float y, float z) {
+    float i = LineIntensityAt(s, t, x, y, z);
     return 1.0f + t.skyRace * sqrtf(i > 0 ? i : 0.0f);
 }

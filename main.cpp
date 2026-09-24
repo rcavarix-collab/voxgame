@@ -209,9 +209,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
                 {
                     // Harvesters gather steadily, faster where The Line bends time.
                     ProfScope prof(PROF_PULSE);
-                    g_pulse.Tick(g_world, g_pulseTuning, FIXED_DT, [](int x, int, int z) {
-                        return LineTimeRateAt(g_line, g_lineTuning, x + 0.5f, z + 0.5f);
+                    g_pulse.Tick(g_world, g_pulseTuning, FIXED_DT, [](int x, int y, int z) {
+                        return LineTimeRateAt(g_line, g_lineTuning, x + 0.5f, y + 0.5f, z + 0.5f);
                     });
+                    FeedLine(g_line, g_pulse.TakeDiffused()); // diffusers widen the line's band
                 }
                 UpdateLine(g_line, g_lineTuning, g_player.x, g_player.y, g_player.z, FIXED_DT);
                 WorldSoundTick(FIXED_DT); // footfalls, landings, slides, The Line passing

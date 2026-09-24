@@ -55,6 +55,7 @@ std::vector<uint8_t>* Record(World& w, int x, int y, int z, bool create) {
 
 int PulseCapacity(BlockID id) {
     switch (id) {
+    case BLOCK_PULSE_DIFFUSER:              // takes all it's given (and keeps none)
     case BLOCK_PULSE_STORE:                 // storage: without limit, for now (owner)
     case BLOCK_CHEST: return PULSE_UNLIMITED;
     case BLOCK_MACHINE: return 32;          // a buffer, until pulse has a use
@@ -91,9 +92,11 @@ void SetPulseHeld(World& w, int x, int y, int z, const PulseCounts& c) {
 }
 
 namespace {
-// One more pulse of this spin into a block, if there's room.
-bool Deposit(World& w, const PulseCell& at, int spin) {
+// One more pulse of this spin into a block, if there's room. A diffuser
+// keeps nothing: it spends each pulse widening The Line (counted in *spent).
+bool Deposit(World& w, const PulseCell& at, int spin, long long* spent) {
     BlockID b = w.Get(at.x, at.y, at.z);
+    if (b == BLOCK_PULSE_DIFFUSER) { (*spent)++; return true; }
     PulseCounts c = PulseHeld(w, at.x, at.y, at.z);
     if (c.Total() >= PulseCapacity(b)) return false;
     c.n[SpinIndex(spin)]++;
@@ -280,7 +283,7 @@ bool PulseSystem::StepPiped(World& w, const PulseTuning& t, Moving& m, float dt)
     // At the store: in, if there's still room; otherwise on to wherever
     // else will have it.
     Unreserve(m);
-    if (IsStore(w.Get(m.target.x, m.target.y, m.target.z)) && Deposit(w, m.target, m.spin)) {
+    if (IsStore(w.Get(m.target.x, m.target.y, m.target.z)) && Deposit(w, m.target, m.spin, &m_spent)) {
         delivered++;
         return false;
     }
@@ -326,7 +329,7 @@ void PulseSystem::Tick(World& w, const PulseTuning& t, float dt, TimeRateFn time
                         Moving m;
                         if (Route(w, t, n, &h, -1, m)) { m_moving.push_back(std::move(m)); sent = true; }
                     } else if (IsStore(b)) { // a store right beside it: straight in
-                        if (Deposit(w, n, 0)) { delivered++; sent = true; }
+                        if (Deposit(w, n, 0, &m_spent)) { delivered++; sent = true; }
                     }
                 }
                 m_turn++;

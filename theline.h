@@ -49,6 +49,13 @@ struct LineTuning {
     float skyLag = 0.9f;             // a little ahead: the sky runs this much slower than the clock (down to 0.1x) until back in step
     float skyCoast = 90.0f;          // well ahead: it runs on round to the next day, slowing as it nears it (seconds of lead per 1x extra)
     float skyEase = 2.0f;            // seconds for the sky's speed to settle on a new rate
+    // Vertical reach: the line is a band this many blocks either side of its
+    // height, which diffusers widen by the pulse they take each second
+    // (Part VI) -- with diminishing returns, and only while they're fed.
+    float baseHalfHeight = 1.0f;     // blocks above and below the line, unfed
+    float halfHeightPerRootFeed = 2.0f; // + this x sqrt(pulses per second fed)
+    float feedMemory = 10.0f;        // seconds over which the feed rate is judged
+    float maxHalfHeight = 64.0f;
     float starWobble = 0.015f;       // radians of star precession at full intensity (faint: time is the expression)
     float moonGhostScale = 0.25f;    // ghost moon amplitude relative to the stars (always < 1)
     float wobbleRate = 0.05f;        // rad/s of precession at zero intensity...
@@ -92,6 +99,9 @@ struct LineState {
     float blocksPerDecade = 6;
     float intensity = 0;      // smoothed 0..1
     float wobblePhase = 0;
+    float feedRate = 0;       // pulses per second diffusers have been taking (smoothed)
+    int pendingFeed = 0;      // pulses taken since the last tick
+    float halfHeight = 1.0f;  // how far up and down the line reaches, blocks
     float skyLead = 0;        // seconds the visible sky is ahead of the day clock, 0..one day (the sky repeats daily)
     float cloudLead = 0;      // the same lead, never wrapped: clouds don't repeat, so they mustn't jump
     float skyRate = 1;        // how fast the visible sky is running (1 = with the clock)
@@ -102,13 +112,16 @@ struct LineState {
 // One simulation tick for a player at (x, y, z).
 void UpdateLine(LineState& s, const LineTuning& t, float x, float y, float z, float dt);
 
-// How strongly the line reaches a place (x, z) right now, 0..1: the same
-// order-of-magnitude falloff as the player feels standing still there.
-float LineIntensityAt(const LineState& s, const LineTuning& t, float x, float z);
+// How strongly the line reaches a place right now, 0..1: the same
+// order-of-magnitude falloff as the player feels standing still there,
+// measured from the band the line fills (its height, +- halfHeight).
+float LineIntensityAt(const LineState& s, const LineTuning& t, float x, float y, float z);
 // How fast time runs at a place because of the line: the rate the sky
 // races at (1 far away, up to 1 + skyRace on the line). Pulse harvesters
 // gather at it (Part VI).
-float LineTimeRateAt(const LineState& s, const LineTuning& t, float x, float z);
+float LineTimeRateAt(const LineState& s, const LineTuning& t, float x, float y, float z);
+// Pulse a diffuser took (it widens the line's band while the feed lasts).
+static inline void FeedLine(LineState& s, int pulses) { s.pendingFeed += pulses; }
 
 // Forget everything (new game).
 void ResetLine(LineState& s);

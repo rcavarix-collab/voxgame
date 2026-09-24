@@ -147,7 +147,7 @@ static void TestBlockTextures() {
     BlockTextureSet t;
     BuildBlockTextures(none, t);
     CHECK(t.warnings.empty());
-    CHECK(t.layerCount == 14 + 51); // 14 procedural (foundation .. crystal) + 51 more names only the generated art provides (magenta without it)
+    CHECK(t.layerCount == 14 + 53); // 14 procedural (foundation .. crystal) + 53 more names only the generated art provides (magenta without it)
 
     // The natural materials' art in the repo loads cleanly and covers
     // every natural block (no magenta fallback), with seamless wrap.
@@ -170,7 +170,7 @@ static void TestBlockTextures() {
                 fclose(fi);
                 size_t before = nat.textures.size();
                 ParseVtex(itext, "industry.vtex", nat);
-                CHECK(nat.errors.empty() && nat.textures.size() == before + 8);
+                CHECK(nat.errors.empty() && nat.textures.size() == before + 10);
             }
             BlockTextureSet nt; BuildBlockTextures(nat, nt);
             CHECK(nt.warnings.empty());
@@ -1245,7 +1245,37 @@ static void TestPulse() {
         printf("    at 5x time: %lld gathered in 10 s\n", p.gathered);
         CHECK(p.gathered >= 98 && p.gathered <= 101 && PulseStored(w, 1, 10, 0) >= 97);
         LineState L; LineTuning lt; L.pivotX = 0; L.pivotZ = 0; L.theta = 0; // along +X through the origin
-        CHECK(LineTimeRateAt(L, lt, 50.0f, 0.5f) > 25.0f && LineTimeRateAt(L, lt, 50.0f, 60.0f) < 1.01f);
+        L.lineY = 13.5f; L.halfHeight = 1.0f;
+        CHECK(LineTimeRateAt(L, lt, 50.0f, 13.5f, 0.5f) > 25.0f && LineTimeRateAt(L, lt, 50.0f, 13.5f, 60.0f) < 1.01f);
+        // Above the band, the boost falls away as if that far off to the side...
+        float high = LineTimeRateAt(L, lt, 50.0f, 13.5f + 1.0f + 24.0f, 0.5f); // four decades out
+        CHECK(high < 1.5f);
+        // ...until diffusers widen the band to take it in.
+        L.halfHeight = 14.0f;
+        CHECK(LineTimeRateAt(L, lt, 50.0f, 13.5f + 13.0f, 0.5f) > 25.0f);
+    }
+
+    // A diffuser takes pulse of any spin, keeps none, and its feed widens
+    // The Line's band (with diminishing returns), which narrows unfed.
+    {
+        World w; PulseSystem p; double beats = 0;
+        place(w, p, 0, 10, 0, BLOCK_PULSE_HARVESTER);
+        place(w, p, 1, 10, 0, BLOCK_PULSE_PIPE_CW, FACE_POS_X);
+        place(w, p, 2, 10, 0, BLOCK_PULSE_DIFFUSER);
+        LineState L; LineTuning lt;
+        float before = 0;
+        for (int i = 0; i < 60 * 30; i++) {
+            beats += dt; p.Tick(w, t, dt);
+            FeedLine(L, p.TakeDiffused());
+            UpdateLine(L, lt, 100.0f, 13.0f, 100.0f, dt);
+            if (i == 0) before = L.halfHeight;
+        }
+        printf("    diffuser: took %lld, band +-%.2f (from %.2f), feed %.2f/s\n", p.Diffused(), L.halfHeight, before, L.feedRate);
+        CHECK(p.Diffused() >= 55 && PulseStored(w, 2, 10, 0) == 0);
+        CHECK(L.feedRate > 1.6f && L.halfHeight > 3.5f && before < 1.2f);
+        w.Set(0, 10, 0, BLOCK_AIR); // the harvester goes
+        for (int i = 0; i < 60 * 120; i++) { p.Tick(w, t, dt); FeedLine(L, p.TakeDiffused()); UpdateLine(L, lt, 100.0f, 13.0f, 100.0f, dt); }
+        CHECK(L.halfHeight < 1.1f); // two minutes unfed: back to its base
     }
 
     // Twisted pipes: a raised thread winds round a run, one turn a block;
@@ -1271,6 +1301,11 @@ static void TestPulse() {
         }
         CHECK(!same);
     }
+
+    // Each block's row matches its place in the list (the table is indexed by ID).
+    CHECK(strcmp(g_blocks[BLOCK_PULSE_HARVESTER].name, "pulse_harvester") == 0 && strcmp(g_blocks[BLOCK_PULSE_PIPE].name, "pulse_pipe") == 0 &&
+          strcmp(g_blocks[BLOCK_PULSE_STORE].name, "pulse_store") == 0 && strcmp(g_blocks[BLOCK_PULSE_PIPE_CW].name, "pulse_pipe_cw") == 0 &&
+          strcmp(g_blocks[BLOCK_PULSE_PIPE_CCW].name, "pulse_pipe_ccw") == 0 && strcmp(g_blocks[BLOCK_PULSE_DIFFUSER].name, "pulse_diffuser") == 0);
 
     // A harvester in a chunk that returns from storage is found again.
     {

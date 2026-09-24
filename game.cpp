@@ -166,7 +166,8 @@ static void PickAndAct(bool breakBlock) {
         WorldSoundBreak(taken, hx, hy, hz);
     } else {
         // Using a block that holds pulse opens it (crouch to place against it instead).
-        if (PulseCapacity(g_world.Get(hx, hy, hz)) > 0 && !g_player.crouching) { OpenStore(hx, hy, hz); return; }
+        BlockID used = g_world.Get(hx, hy, hz);
+        if (PulseCapacity(used) > 0 && used != BLOCK_PULSE_DIFFUSER && !g_player.crouching) { OpenStore(hx, hy, hz); return; }
         // Refuse a placement that would overlap the player's own box --
         // it would only trap them (or, with physics' unstick rule, pop
         // them up on top of it).
@@ -676,7 +677,21 @@ void TickAutosave(float dt) {
     if (g_autosaveTimer >= AUTOSAVE_SECONDS) AutosaveNow(true);
 }
 
+// ---- The first-steps tutorial (a new world only): one short line at a
+// time, each moving on when the player has done it, skippable at once
+// (Enter). Minimal words -- most players would rather not read.
+//   0 move   1 place the harvester   2 pipe it to the chest
+//   3 feed a diffuser   4 where everything else is (fades), then off.
+static int g_tutorialStep = -1;
+static float g_tutorialX = 0, g_tutorialZ = 0, g_tutorialTimer = 0;
+static void StartTutorial() {
+    g_tutorialStep = 0;
+    g_tutorialX = g_player.x; g_tutorialZ = g_player.z;
+    g_tutorialTimer = 0;
+}
+
 static void DoLoad() {
+    g_tutorialStep = -1; // a loaded world has been played before
     bool ok = LoadGame(g_world, g_player, g_currentSlot);
     g_toastMessage = ok ? "GAME LOADED" : "LOAD FAILED (no save?)";
     g_toastTimer = 2.0f;
@@ -792,6 +807,13 @@ static void ResetWorldForNewGame() {
             top = std::max(top, TerrainHeight((int)floorf(g_player.x + ox), (int)floorf(g_player.z + oz)));
     g_player.y = (float)(top + 1);
     g_dayTimeSeconds = 0.0f; // dawn -- first light in a land they've never seen (Section 13)
+    // The first logistics chain to hand (Part VI): harvester, pipe, chest,
+    // diffuser on the first four slots; the rest of the hotbar is left as it was.
+    const BlockID starter[4] = { BLOCK_PULSE_HARVESTER, BLOCK_PULSE_PIPE, BLOCK_CHEST, BLOCK_PULSE_DIFFUSER };
+    for (int i = 0; i < 4; i++) g_hotbar[i] = starter[i];
+    g_player.hotbarIndex = 0;
+    SaveSettings();
+    StartTutorial();
     g_residentColumns.clear();
     g_evictedChunks.clear();
     ClearScheduledUpdates();
@@ -840,6 +862,7 @@ static void HandleSlotPickerClick(int mx, int my) {
         if (g_slotPickerMode == SlotPickerMode::Load) {
             if (!SlotExists(slot)) { g_toastMessage = "EMPTY SLOT"; g_toastTimer = 1.5f; return; }
             g_currentSlot = slot;
+            g_tutorialStep = -1;
             if (!LoadGame(g_world, g_player, slot)) {
                 g_toastMessage = "LOAD FAILED (corrupt save?)";
                 g_toastTimer = 2.0f;
@@ -1179,6 +1202,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         return 0;
     case WM_KEYDOWN:
         if (wParam < 256) g_keyDown[wParam] = true;
+        if (wParam == VK_RETURN && g_tutorialStep >= 0 && g_menuScreen == MenuScreen::None) { g_tutorialStep = -1; return 0; } // skip the tutorial
         if (g_rebindingAction != -1) {
             // Escape cancels a rebind -- except on the Pause Menu row,
             // where Escape is that action's own natural key: treating it
@@ -1803,12 +1827,53 @@ void RenderUIPass() {
         snprintf(buf, sizeof(buf), "SPIN %s  ALIGN %+.2f", L.spin > 0 ? "COUNTERCLOCKWISE" : "CLOCKWISE", L.alignment); lines.push_back(buf);
         snprintf(buf, sizeof(buf), "PIVOT %.0f, %.0f  ANGLE %.0f", L.pivotX, L.pivotZ, L.theta * 57.29578f); lines.push_back(buf);
         snprintf(buf, sizeof(buf), "SKY CLOCK X%.2f  %.0f S AHEAD", L.skyRate, L.skyLead); lines.push_back(buf);
+        snprintf(buf, sizeof(buf), "BAND +-%.1f  FED %.1f/S", L.halfHeight, L.feedRate); lines.push_back(buf);
         const float scale = 0.65f, lineH = UITextHeight(scale);
         float w = 0;
         for (const std::string& l : lines) w = std::max(w, UITextWidth(l, scale));
         float x = g_screenW - w - 12.0f, y = 12.0f;
         UIDrawRect(glyphVerts, x - 6, y - 4, x + w + 6, y + lines.size() * lineH + 4, 0, 0, 0, 0.6f);
         for (const std::string& l : lines) { UIDrawText(glyphVerts, l, x, y, scale, 0.75f, 0.95f, 1.0f, 1.0f); y += lineH; }
+    }
+
+    // The first-steps tutorial: one line, top centre, over play only.
+    if (g_tutorialStep >= 0 && g_gameState == GameState::InGame && g_menuScreen == MenuScreen::None) {
+        auto key = [](GameAction a) { return GetInputDisplayName(g_keyBindings[a]); };
+        switch (g_tutorialStep) { // move on once it's done
+        case 0: if (hypotf(g_player.x - g_tutorialX, g_player.z - g_tutorialZ) > 4.0f) g_tutorialStep = 1; break;
+        case 1: if (g_pulse.Harvesters() > 0) g_tutorialStep = 2; break;
+        case 2: if (g_pulse.delivered > g_pulse.Diffused()) g_tutorialStep = 3; break;
+        case 3: if (g_pulse.Diffused() > 0) g_tutorialStep = 4; break;
+        default: break;
+        }
+        std::string line;
+        switch (g_tutorialStep) {
+        case 0: line = key(ACT_FORWARD) + key(ACT_LEFT) + key(ACT_BACK) + key(ACT_RIGHT) + " TO MOVE - " + key(ACT_JUMP) + " JUMP - " + key(ACT_SPRINT) + " RUN"; break;
+        case 1: line = "1: HARVESTER - " + key(ACT_PLACE) + " TO PLACE IT"; break;
+        case 2: line = "2: PIPE IT TO A 3: CHEST - " + key(ACT_PLACE) + " ON THE CHEST TO LOOK INSIDE"; break;
+        case 3: line = "4: DIFFUSER - FEED IT PULSE TO WIDEN THE LINE"; break;
+        case 4: line = key(ACT_LIBRARY) + ": EVERY BLOCK - " + key(ACT_MAP) + ": MAP - " + key(ACT_MENU) + ": MENU"; break;
+        default: break;
+        }
+        float alpha = 1.0f;
+        static unsigned long long lastMs = 0;
+        unsigned long long nowMs = GetTickCount64();
+        float frameSeconds = lastMs ? std::min(0.25f, (nowMs - lastMs) / 1000.0f) : 0.0f;
+        lastMs = nowMs;
+        if (g_tutorialStep == 4) {
+            g_tutorialTimer += frameSeconds;
+            alpha = std::max(0.0f, std::min(1.0f, (8.0f - g_tutorialTimer) / 2.0f));
+            if (g_tutorialTimer > 8.0f) g_tutorialStep = -1;
+        }
+        if (!line.empty() && alpha > 0.0f) {
+            const float s = 0.85f;
+            float tw = UITextWidth(line, s), th = UITextHeight(s);
+            float x = (g_screenW - tw) / 2.0f, y = 70.0f;
+            UIDrawRect(glyphVerts, x - 14, y - 8, x + tw + 14, y + th + 22, 0.05f, 0.06f, 0.06f, 0.6f * alpha);
+            UIDrawText(glyphVerts, line, x, y, s, 1.0f, 0.97f, 0.9f, alpha);
+            std::string skip = "ENTER: SKIP";
+            UIDrawText(glyphVerts, skip, (g_screenW - UITextWidth(skip, 0.55f)) / 2.0f, y + th + 4, 0.55f, 0.7f, 0.72f, 0.7f, 0.8f * alpha);
+        }
     }
 
     // Transient save/load confirmation -- fades over its last half

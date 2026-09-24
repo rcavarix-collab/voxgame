@@ -170,6 +170,43 @@ def m_store_top():
     return f
 
 
+def m_diffuser_side():
+    # Tall louvres: it breathes pulse out into the line, so it's all vents.
+    base = plate_base(960)
+    def f(u, v):
+        if frame(u, v):
+            return ramp(PEWTER, 0.4), 1, 0.7, 0.75, 0
+        if 2.0 <= u <= 14.0 and 2.5 <= v <= 13.5:
+            slat = (u - 2.0) % 2.0
+            if slat < 1.1:  # the louvre's lit face
+                return ramp(PEWTER, 0.35 + 0.35 * (1 - abs(v - 8) / 5.5)), 1, 0.8, 0.6, 0
+            glow = 0.3 * (1 - abs(v - 8) / 6.0)
+            return ramp(ACCENT[0][:3], 0.1 + glow), 1, 0.1, 0.05, glow
+        return base(u, v)
+    return f
+
+
+def m_diffuser_top():
+    # A perforated dish: rings of small holes, light coming through.
+    base = plate_base(970)
+    def f(u, v):
+        if frame(u, v, 0.8):
+            return ramp(PEWTER, 0.45), 1, 0.7, 0.75, 0
+        r = math.hypot(u - 8.0, v - 8.0)
+        if r < 6.4:
+            ring = round(r / 1.6) * 1.6
+            a = math.atan2(v - 8.0, u - 8.0)
+            holes = max(1, int(round(2 * math.pi * ring / 1.6)))
+            ha = round(a / (2 * math.pi) * holes) / holes * 2 * math.pi
+            hx, hy = 8.0 + ring * math.cos(ha), 8.0 + ring * math.sin(ha)
+            if math.hypot(u - hx, v - hy) < 0.45:
+                g = 0.55 - 0.05 * ring
+                return ramp(ACCENT[0], 0.3 + g), 1, 0.1, 0.1, g
+            return ramp(PEWTER, 0.3 + 0.25 * (1 - r / 6.4)), 1, 0.6 + 0.1 * (1 - r / 6.4), 0.7, 0
+        return base(u, v)
+    return f
+
+
 def m_plate():
     base = plate_base(950)
     def f(u, v):
@@ -187,6 +224,8 @@ TEXTURES = [
     ("pulse_harvester_top", "Harvester, top: a vaned intake round a glowing core", m_harvester_top()),
     ("pulse_store_side", "Pulse store, sides: a banded vessel with a sight glass", m_store_side()),
     ("pulse_store_top", "Pulse store, top: a bolted hatch", m_store_top()),
+    ("pulse_diffuser_side", "Diffuser, sides: tall louvres with warm light between", m_diffuser_side()),
+    ("pulse_diffuser_top", "Diffuser, top: a perforated dish, lit through its holes", m_diffuser_top()),
     ("pulse_plate", "Pulse machinery, underside: a plain riveted plate", m_plate()),
 ]
 

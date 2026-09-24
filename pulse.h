@@ -12,6 +12,9 @@
 // it (which catches it). Pulses aren't really there: they're data, drawn
 // passing through the gap, so they cross each other freely.
 //
+// A diffuser takes pulse of any spin and keeps none: what it takes each
+// second widens The Line's band (theline.h FeedLine) while it lasts.
+//
 // Pipes come in three kinds -- plain, and twisted clockwise or
 // anticlockwise -- and a pulse takes its spin from the last pipe it went
 // through (a plain one leaves it without). Stores count each kind; the
@@ -85,6 +88,9 @@ public:
     void Views(std::vector<PulseView>& out) const;
     int InFlight() const { return (int)m_moving.size(); }
     int Harvesters() const { return (int)m_harvesters.size(); }
+    // Pulse diffusers have spent since the last call (for The Line's band).
+    int TakeDiffused() { int n = (int)(m_spent - m_spentTaken); m_spentTaken = m_spent; return n; }
+    long long Diffused() const { return m_spent; }
     // Totals since the last reset, for the debug readout and tests.
     long long gathered = 0, delivered = 0, lost = 0, caught = 0;
 
@@ -129,6 +135,7 @@ private:
     std::unordered_map<PulseCell, int, PulseCellHash> m_reserved; // pulses on their way to each store
     std::vector<Moving> m_moving;
     uint64_t m_seenEdits = ~0ull;
+    long long m_spent = 0, m_spentTaken = 0; // pulse diffusers have taken
     unsigned m_turn = 0; // which face of a harvester tries first (so every pipe off it gets used)
 };
 

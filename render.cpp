@@ -1820,6 +1820,11 @@ static void DrawLineDebug(const Mat4& viewProj, Vec3 player) {
         v[n++] = { x1, y1, z1, cr, cg, cb, 1 };
     };
     seg(cx - u.x * halfLen, y, cz - u.z * halfLen, cx + u.x * halfLen, y, cz + u.z * halfLen, r, g, b);
+    // The band the line fills (diffusers widen it), dimmer, above and below.
+    for (float side : { -1.0f, 1.0f }) {
+        float by = y + side * L.halfHeight;
+        seg(cx - u.x * halfLen, by, cz - u.z * halfLen, cx + u.x * halfLen, by, cz + u.z * halfLen, r * 0.5f, g * 0.5f, b * 0.5f);
+    }
     // Sweep strokes every 8 blocks: the line moves perpendicular to itself,
     // opposite ways on either side of the pivot.
     for (float t = -halfLen; t <= halfLen; t += 8.0f) {
