@@ -73,6 +73,15 @@ struct ProfReport {
     int64_t countersMax[PCOUNT_COUNT];
 };
 const ProfReport& ProfGetReport();
+
+// Start-up timeline (Part XVI): how long the game took to boot, phase by
+// phase, so a slow start can be pinned on its cause. ProfBootMark ends
+// the phase running since the previous mark (the first phase runs from
+// the moment Windows created the process: loading the exe and its DLLs).
+// Kept in memory; shown on the F3 overlay and in the Ctrl+F3 report.
+void ProfBootMark(const char* phase);
+void ProfBootNote(const std::string& note); // extra detail, e.g. the shader cache's hits
+std::string ProfBootSummary(bool multiLine);
 const char* ProfSectionName(ProfSection s);
 
 // Performance capture (Ctrl+F3, Part XVI): records every frame for

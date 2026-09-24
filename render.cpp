@@ -18,6 +18,9 @@
 #include <d3dcompiler.h>
 #include <cstring>
 #include <algorithm>
+#include <atomic>
+#include <thread>
+#include <unordered_set>
 
 #pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "dxgi.lib")
@@ -1196,21 +1199,175 @@ bool FrustumIntersectsAABB(const Frustum& f, Vec3 minB, Vec3 maxB) {
 // effect would otherwise just quietly not appear).
 static std::string g_shaderErrors;
 
-static ID3DBlob* CompileShader(const char* src, const char* entry, const char* profile,
-                               const D3D_SHADER_MACRO* macros = nullptr, const char* what = "shader") {
+// ---- Compiled-shader cache (Part XVI: start-up) ----
+// Compiling HLSL is the biggest start-up cost on a modest machine, and its
+// result only changes when the shader does. So each compile's bytecode is
+// kept in Documents\My Games\Voxistics\ShaderCache, named by a hash of
+// everything that went into it (source, entry point, profile, define,
+// compiler version): a changed shader simply gets a new name, and files
+// no longer asked for are removed once start-up is done. Whatever isn't
+// cached is compiled on four threads at once (a fixed number -- the
+// machine is never asked what it has) before the device needs it. A file
+// that doesn't check out is ignored and recompiled. Local files only.
+namespace {
+struct ShaderJob {
+    std::string src, entry, profile, define, what;
+    uint64_t key = 0;
+    ID3DBlob* blob = nullptr;
+    std::string errors;
+};
+std::vector<ShaderJob> g_shaderJobs;
+std::unordered_set<uint64_t> g_shaderKeysUsed;
+std::filesystem::path g_shaderCacheDir;
+int g_shadersCached = 0, g_shadersCompiled = 0;
+const uint32_t SHADER_CACHE_MAGIC = 0x43535856; // "VXSC"
+
+uint64_t Fnv64(uint64_t h, const void* data, size_t n) {
+    const uint8_t* p = (const uint8_t*)data;
+    for (size_t i = 0; i < n; i++) { h ^= p[i]; h *= 1099511628211ull; }
+    return h;
+}
+
+uint64_t ShaderKey(const std::string& src, const std::string& entry, const std::string& profile, const std::string& define) {
+    uint64_t h = 14695981039346656037ull;
+    const char zero = 0;
+    for (const std::string* s : { &src, &entry, &profile, &define }) { h = Fnv64(h, s->data(), s->size()); h = Fnv64(h, &zero, 1); }
+    const int version = D3D_COMPILER_VERSION;
+    return Fnv64(h, &version, sizeof version);
+}
+
+std::filesystem::path ShaderCachePath(uint64_t key) {
+    char name[32];
+    snprintf(name, sizeof name, "%016llx.vxs", (unsigned long long)key);
+    return g_shaderCacheDir / name;
+}
+
+ID3DBlob* LoadCachedShader(uint64_t key) {
+    if (g_shaderCacheDir.empty()) return nullptr;
+    std::ifstream f(ShaderCachePath(key), std::ios::binary);
+    if (!f) return nullptr;
+    uint32_t magic = 0, size = 0, sum = 0; uint64_t stored = 0;
+    f.read((char*)&magic, 4); f.read((char*)&stored, 8); f.read((char*)&size, 4);
+    if (!f || magic != SHADER_CACHE_MAGIC || stored != key || size == 0 || size > (16u << 20)) return nullptr;
+    std::vector<char> bytes(size);
+    f.read(bytes.data(), size); f.read((char*)&sum, 4);
+    if (!f || (uint32_t)Fnv64(14695981039346656037ull, bytes.data(), size) != sum) return nullptr;
+    ID3DBlob* blob = nullptr;
+    if (FAILED(D3DCreateBlob(size, &blob)) || !blob) return nullptr;
+    memcpy(blob->GetBufferPointer(), bytes.data(), size);
+    return blob;
+}
+
+void StoreCachedShader(uint64_t key, ID3DBlob* blob) {
+    if (g_shaderCacheDir.empty() || !blob) return;
+    std::ofstream f(ShaderCachePath(key), std::ios::binary | std::ios::trunc);
+    if (!f) return;
+    uint32_t size = (uint32_t)blob->GetBufferSize();
+    uint32_t sum = (uint32_t)Fnv64(14695981039346656037ull, blob->GetBufferPointer(), size);
+    f.write((const char*)&SHADER_CACHE_MAGIC, 4); f.write((const char*)&key, 8); f.write((const char*)&size, 4);
+    f.write((const char*)blob->GetBufferPointer(), size); f.write((const char*)&sum, 4);
+}
+
+ID3DBlob* CompileRaw(const std::string& src, const std::string& entry, const std::string& profile,
+                     const std::string& define, std::string& errors) {
+    const D3D_SHADER_MACRO macros[] = { { define.c_str(), "1" }, { nullptr, nullptr } };
     ID3DBlob* blob = nullptr, * err = nullptr;
-    HRESULT hr = D3DCompile(src, strlen(src), nullptr, macros, nullptr, entry, profile, 0, 0, &blob, &err);
+    HRESULT hr = D3DCompile(src.data(), src.size(), nullptr, define.empty() ? nullptr : macros, nullptr,
+                            entry.c_str(), profile.c_str(), 0, 0, &blob, &err);
     if (FAILED(hr)) {
-        std::string msg = std::string(what) + " (" + entry + ", " + profile + (macros ? ", " + std::string(macros[0].Name) : std::string()) + "):\n";
-        msg += err ? (const char*)err->GetBufferPointer() : "no compiler output\n";
-        g_shaderErrors += msg + "\n";
-        OutputDebugStringA(("Shader compile failed: " + msg).c_str());
-        if (err) err->Release();
-        if (blob) blob->Release();
-        return nullptr;
+        errors = err ? (const char*)err->GetBufferPointer() : "no compiler output\n";
+        if (blob) { blob->Release(); blob = nullptr; }
     }
     if (err) err->Release();
     return blob;
+}
+} // namespace
+
+// Every shader InitD3D will ask for, from the cache or compiled in
+// parallel, ready before it asks.
+static void PrepareShaders() {
+    g_shaderCacheDir = ShaderCacheDirectory();
+    const std::string worldSrc = std::string(g_atmosphereSrc) + g_shaderSrc;
+    const std::string skySrc = std::string(g_atmosphereSrc) + g_skyShaderSrc;
+    struct { const std::string src; const char* entry; const char* profile; const char* what; } list[] = {
+        { worldSrc, "VSMain", "vs_4_0", "world" }, { worldSrc, "PSMain", "ps_4_0", "world" },
+        { g_uiShaderSrc, "VSMain", "vs_4_0", "ui" }, { g_uiShaderSrc, "PSMain", "ps_4_0", "ui" },
+        { skySrc, "VSMain", "vs_4_0", "sky" }, { skySrc, "PSMain", "ps_4_0", "sky" },
+        { g_shadowShaderSrc, "VSMain", "vs_4_0", "shadow map" },
+        { g_postShaderSrc, "VSMain", "vs_4_0", "post" }, { g_postShaderSrc, "PSMain", "ps_4_0", "post" },
+        { g_bloomDownShaderSrc, "PSMain", "ps_4_0", "bloom downsample" }, { g_bloomBlurShaderSrc, "PSMain", "ps_4_0", "bloom blur" },
+        { g_debugShaderSrc, "VSMain", "vs_4_0", "debug lines" }, { g_debugShaderSrc, "PSMain", "ps_4_0", "debug lines" },
+    };
+    std::vector<size_t> todo;
+    for (const auto& l : list) {
+        ShaderJob j;
+        j.src = l.src; j.entry = l.entry; j.profile = l.profile; j.what = l.what;
+        j.key = ShaderKey(j.src, j.entry, j.profile, j.define);
+        j.blob = LoadCachedShader(j.key);
+        if (j.blob) g_shadersCached++; else todo.push_back(g_shaderJobs.size());
+        g_shaderJobs.push_back(std::move(j));
+    }
+    std::atomic<size_t> next{ 0 };
+    auto work = [&]() {
+        for (size_t i; (i = next.fetch_add(1)) < todo.size();) {
+            ShaderJob& j = g_shaderJobs[todo[i]];
+            j.blob = CompileRaw(j.src, j.entry, j.profile, j.define, j.errors);
+        }
+    };
+    std::vector<std::thread> threads;
+    for (int t = 1; t < 4 && t < (int)todo.size(); t++) threads.emplace_back(work);
+    work();
+    for (std::thread& t : threads) t.join();
+    for (size_t i : todo) { StoreCachedShader(g_shaderJobs[i].key, g_shaderJobs[i].blob); g_shadersCompiled++; }
+}
+
+static ID3DBlob* CompileShader(const char* src, const char* entry, const char* profile,
+                               const D3D_SHADER_MACRO* macros = nullptr, const char* what = "shader") {
+    std::string define = macros && macros[0].Name ? macros[0].Name : "";
+    uint64_t key = ShaderKey(src, entry, profile, define);
+    g_shaderKeysUsed.insert(key);
+    ID3DBlob* blob = nullptr;
+    std::string errors;
+    bool found = false;
+    for (ShaderJob& j : g_shaderJobs)
+        if (j.key == key) { found = true; blob = j.blob; if (blob) blob->AddRef(); errors = j.errors; break; }
+    if (!found) { // not prepared (a fallback variant): straight from the cache, or compile it now
+        blob = LoadCachedShader(key);
+        if (blob) g_shadersCached++;
+        else {
+            blob = CompileRaw(src, entry, profile, define, errors);
+            StoreCachedShader(key, blob);
+            g_shadersCompiled++;
+        }
+    }
+    if (!blob) {
+        std::string msg = std::string(what) + " (" + entry + ", " + profile + (define.empty() ? std::string() : ", " + define) + "):\n" + errors;
+        g_shaderErrors += msg + "\n";
+        OutputDebugStringA(("Shader compile failed: " + msg).c_str());
+    }
+    return blob;
+}
+
+// After start-up: let go of the prepared blobs and remove cache files no
+// shader asked for this time (older versions of shaders that changed).
+static void FinishShaders() {
+    for (ShaderJob& j : g_shaderJobs) if (j.blob) j.blob->Release();
+    g_shaderJobs.clear();
+    if (!g_shaderCacheDir.empty()) {
+        std::error_code ec;
+        for (const auto& e : std::filesystem::directory_iterator(g_shaderCacheDir, ec)) {
+            if (e.path().extension() != ".vxs") continue;
+            std::string stem = e.path().stem().string();
+            char* end = nullptr;
+            unsigned long long k = strtoull(stem.c_str(), &end, 16);
+            if (stem.size() == 16 && end && *end == 0 && g_shaderKeysUsed.count((uint64_t)k)) continue;
+            std::error_code rm;
+            std::filesystem::remove(e.path(), rm);
+        }
+    }
+    char note[96];
+    snprintf(note, sizeof note, "shaders: %d from the cache, %d compiled", g_shadersCached, g_shadersCompiled);
+    ProfBootNote(note);
 }
 
 bool ShadowsAvailable() { return g_shadowsAvailable; }
@@ -1332,8 +1489,9 @@ bool InitD3D(HWND hwnd) {
     }
 
     CreateSizeDependentTargets();
+    ProfBootMark("GRAPHICS DEVICE");
+    PrepareShaders();
 
-    ID3DBlob* errBlob = nullptr;
     // The sky and world shaders share the atmosphere block (fog must match
     // the sky exactly), prepended at compile time.
     const std::string worldSrc = std::string(g_atmosphereSrc) + g_shaderSrc;
@@ -1437,17 +1595,11 @@ bool InitD3D(HWND hwnd) {
 
     // --- UI pass pipeline objects (Section 4.6: a second pass, its own
     // shaders, orthographic-in-pixel-space, depth off, alpha blend on) ---
-    ID3DBlob* uiVsBlob = nullptr, * uiPsBlob = nullptr;
-    hr = D3DCompile(g_uiShaderSrc, strlen(g_uiShaderSrc), nullptr, nullptr, nullptr,
-                     "VSMain", "vs_4_0", 0, 0, &uiVsBlob, &errBlob);
-    if (FAILED(hr)) {
-        if (errBlob) OutputDebugStringA((const char*)errBlob->GetBufferPointer());
-        return false;
-    }
-    hr = D3DCompile(g_uiShaderSrc, strlen(g_uiShaderSrc), nullptr, nullptr, nullptr,
-                     "PSMain", "ps_4_0", 0, 0, &uiPsBlob, &errBlob);
-    if (FAILED(hr)) {
-        if (errBlob) OutputDebugStringA((const char*)errBlob->GetBufferPointer());
+    ID3DBlob* uiVsBlob = CompileShader(g_uiShaderSrc, "VSMain", "vs_4_0", nullptr, "ui");
+    ID3DBlob* uiPsBlob = CompileShader(g_uiShaderSrc, "PSMain", "ps_4_0", nullptr, "ui");
+    if (!uiVsBlob || !uiPsBlob) {
+        if (uiVsBlob) uiVsBlob->Release();
+        if (uiPsBlob) uiPsBlob->Release();
         return false;
     }
     g_device->CreateVertexShader(uiVsBlob->GetBufferPointer(), uiVsBlob->GetBufferSize(), nullptr, &g_uiVS);
@@ -1622,6 +1774,9 @@ bool InitD3D(HWND hwnd) {
         if (dv) dv->Release();
         if (dp) dp->Release();
     }
+
+    FinishShaders();
+    ProfBootMark("SHADERS");
 
     // Any effect that failed to compile on this machine is written up
     // beside the working directory (and the menu shows it as unavailable)

@@ -229,3 +229,53 @@ bool ProfTakeCaptureReport(std::string& text) {
     text = g_captureText;
     return true;
 }
+
+// ---- Start-up timeline ----
+namespace {
+struct BootPhase { std::string name; double seconds; };
+std::vector<BootPhase> g_bootPhases;
+std::string g_bootNote;
+int64_t g_bootLast = 0;
+}
+
+void ProfBootMark(const char* phase) {
+    int64_t now = ProfNow();
+    double seconds;
+    if (g_bootLast == 0) {
+        // Before our first line of code ran: from the process's creation.
+        FILETIME created, exited, kernel, user, nowFt;
+        GetProcessTimes(GetCurrentProcess(), &created, &exited, &kernel, &user);
+        GetSystemTimeAsFileTime(&nowFt);
+        ULARGE_INTEGER a, b;
+        a.LowPart = created.dwLowDateTime; a.HighPart = created.dwHighDateTime;
+        b.LowPart = nowFt.dwLowDateTime; b.HighPart = nowFt.dwHighDateTime;
+        seconds = b.QuadPart > a.QuadPart ? (double)(b.QuadPart - a.QuadPart) * 1e-7 : 0.0;
+    } else {
+        LARGE_INTEGER f; QueryPerformanceFrequency(&f);
+        seconds = (double)(now - g_bootLast) / (double)f.QuadPart;
+    }
+    g_bootLast = now;
+    g_bootPhases.push_back({ phase, seconds });
+}
+
+void ProfBootNote(const std::string& note) { g_bootNote = note; }
+
+std::string ProfBootSummary(bool multiLine) {
+    if (g_bootPhases.empty()) return "";
+    double total = 0;
+    for (const BootPhase& p : g_bootPhases) total += p.seconds;
+    char line[128];
+    std::string out;
+    if (multiLine) {
+        snprintf(line, sizeof line, "start-up: %.2f s\n", total); out += line;
+        for (const BootPhase& p : g_bootPhases) { snprintf(line, sizeof line, "  %-18s %6.2f s\n", p.name.c_str(), p.seconds); out += line; }
+        if (!g_bootNote.empty()) out += "  " + g_bootNote + "\n";
+    } else {
+        snprintf(line, sizeof line, "BOOT %.1f S:", total); out += line;
+        for (const BootPhase& p : g_bootPhases) {
+            if (p.seconds < 0.05) continue; // only what's worth a glance
+            snprintf(line, sizeof line, " %s %.1f", p.name.c_str(), p.seconds); out += line;
+        }
+    }
+    return out;
+}

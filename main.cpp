@@ -32,6 +32,7 @@
 #include "essence.h"
 
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
+    ProfBootMark("LAUNCH"); // Windows loading the exe and its DLLs, and static set-up
     // Wide (W-suffixed) throughout, deliberately -- mixing an ANSI-
     // registered window (RegisterClassA/CreateWindowA) with the wide
     // DefWindowProcW that the project's Unicode character-set setting
@@ -64,9 +65,11 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
                             nullptr, nullptr, hInstance, nullptr);
     if (!g_hwnd) return -1;
     ShowWindow(g_hwnd, nCmdShow);
+    ProfBootMark("WINDOW");
 
     LoadSettings(); // before anything reads g_sensitivityMultX/g_loadRadius/g_masterVolume/etc.
     MigrateLegacySingleSaveIfPresent(); // before the title screen's slot picker can show slot 1
+    ProfBootMark("SETTINGS");
 
     // XAudio2Create requires COM initialized on the calling thread.
     // Nothing else in this file has needed that so far (SHGetKnownFolderPath
@@ -79,6 +82,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
     if (g_fullscreen) ApplyFullscreen(true); // saved preference
     std::string textureProblems;
     if (!InitTextures(textureProblems)) return -1;
+    ProfBootMark("TEXTURES");
     // One toast (a second would replace the first).
     std::string startupProblems = textureProblems;
     if (!ShaderErrors().empty())
@@ -86,6 +90,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
     if (!startupProblems.empty()) ShowToast(startupProblems, 8.0f);
     InitAudio(); // a machine with no usable audio device still gets a silent but playable game (Section 10)
     BuildSkyMesh();
+    ProfBootMark("AUDIO");
+    bool firstFrame = true;
 
     // 1 ms timer resolution while running, so the frame cap's Sleep is precise.
     timeBeginPeriod(1);
@@ -250,6 +256,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
         {
             ProfScope prof(PROF_PRESENT);
             g_swapChain->Present(g_vsync ? 1 : 0, 0);
+            if (firstFrame) { firstFrame = false; ProfBootMark("FIRST FRAME"); }
             // The frame-rate cap (Graphics, 30-200): sleep off whatever is
             // left of this frame's share, then a short spin for precision.
             // The simulation runs on a fixed step, so the cap changes only

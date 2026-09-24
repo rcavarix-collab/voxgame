@@ -16,6 +16,11 @@
 #include <string>
 #include <filesystem>
 
+// Where compiled shaders are cached between runs (render.cpp; Part XVI):
+// Documents\My Games\Voxistics\ShaderCache, created if need be. Empty if
+// there's no safe place for it (then nothing is cached).
+std::filesystem::path ShaderCacheDirectory();
+
 // =======================================================================
 // Input bindings + gameplay/UI preferences (settings.cfg)
 // =======================================================================

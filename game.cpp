@@ -654,7 +654,7 @@ static std::string PerfReportHeader() {
              build, g_screenW, g_screenH, g_fullscreen ? " (fullscreen)" : "",
              g_loadRadius, g_shadows ? "on" : "off", g_bloom ? "on" : "off", g_postSSAO ? "on" : "off", g_postEdges ? "on" : "off",
              g_musicIntensity * 100.0f, DayTimeLabel(g_dayTimeSeconds).c_str(), g_player.x, g_player.y, g_player.z);
-    return b;
+    return b + ProfBootSummary(true) + "\n";
 }
 
 void PollPerfCapture() {
@@ -1659,6 +1659,8 @@ void RenderUIPass() {
                      (long long)r.counters[i], (long long)r.countersMax[i]);
             lines.push_back(buf);
         }
+        lines.push_back("");
+        lines.push_back(ProfBootSummary(false)); // how long start-up took, and on what
         // The world sound palette's three axes (docs/SOUND_PALETTE.md 3).
         if (g_gameState == GameState::InGame) {
             SoundAxes ax = WorldSoundAxes();

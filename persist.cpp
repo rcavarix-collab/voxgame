@@ -116,6 +116,12 @@ static std::filesystem::path GetSaveDirectory() {
     return EnsureDirectoryBulletproof(dir, "GetSaveDirectory");
 }
 
+std::filesystem::path ShaderCacheDirectory() {
+    std::filesystem::path base = GetSaveDirectory();
+    if (base.empty()) return base;
+    return EnsureDirectoryBulletproof(base / L"ShaderCache", "ShaderCacheDirectory");
+}
+
 // The multi-slot saves subfolder (Section 7.2.4), inside the same
 // bulletproofed base directory as settings.cfg.
 static std::filesystem::path GetSavesDirectory() {
