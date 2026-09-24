@@ -249,7 +249,7 @@ static void EvictColumnFromWorld(World& w, int cx, int cz) {
         if (!c || !c->modified) continue; // unmodified: destroyed here
         if (c->vb) { c->vb->Release(); c->vb = nullptr; }
         if (c->ib) { c->ib->Release(); c->ib = nullptr; }
-        c->indexCount = 0;
+        c->indexCount = 0; c->opaqueIndexCount = 0;
         c->dirty = true;
         g_evictedChunks[cc] = std::move(c);
     }

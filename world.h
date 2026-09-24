@@ -67,6 +67,7 @@ struct Chunk {
     ID3D11Buffer* vb = nullptr;
     ID3D11Buffer* ib = nullptr;
     unsigned int indexCount = 0; // UINT, spelled out so this header doesn't need <windows.h>
+    unsigned int opaqueIndexCount = 0; // the first indices; the rest are see-through (translucent pass)
 
     ~Chunk(); // defined in world.cpp, where <d3d11.h> (for ->Release()) is actually included
 

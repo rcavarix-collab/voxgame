@@ -15,10 +15,11 @@ struct Rgb { uint8_t r, g, b; };
 
 struct TileCanvas {
     uint8_t* px; int stride; int ox, oy, size; // BGRA8
+    uint8_t alpha = 255; // what Put/Fill write: below 255 only for see-through blocks
     void Put(int x, int y, Rgb c) {
         if ((unsigned)x >= (unsigned)size || (unsigned)y >= (unsigned)size) return;
         uint8_t* p = px + (size_t)(oy + y) * stride + (size_t)(ox + x) * 4;
-        p[0] = c.b; p[1] = c.g; p[2] = c.r; p[3] = 255;
+        p[0] = c.b; p[1] = c.g; p[2] = c.r; p[3] = alpha;
     }
     // 50/50 mix with what's already there (the wood grain's soft half row).
     void Blend(int x, int y, Rgb c) {
@@ -188,6 +189,31 @@ void DrawAttractorTile(TileCanvas& t) {
     for (int i = 6; i < s - 6; i += 8) { t.Fill(i, 6, 2, 2, { 90, 80, 110 }); t.Fill(i, s - 8, 2, 2, { 90, 80, 110 }); }
 }
 
+// Clear glass: a faint blue-green body, a firmer frame, and two soft
+// diagonal glints (even in both directions, so they don't imply a light).
+void DrawGlassTile(TileCanvas& t) {
+    int s = t.size;
+    t.alpha = 40;  t.Fill(0, 0, s, s, { 200, 228, 235 });
+    t.alpha = 95;
+    for (int i = 0; i < s / 3; i++) { t.Fill(s / 5 + i, s / 2 - i, 2, 1, { 245, 252, 255 }); t.Fill(s / 2 + i, s - s / 5 - i, 2, 1, { 245, 252, 255 }); }
+    t.alpha = 215; t.Border(2, { 160, 190, 200 });
+    t.alpha = 255;
+}
+
+// Tinted crystal: violet, cloudier than glass, with pale facet lines.
+void DrawCrystalTile(TileCanvas& t) {
+    int s = t.size;
+    t.alpha = 140; t.Fill(0, 0, s, s, { 140, 80, 210 });
+    t.alpha = 175;
+    for (int i = 0; i < s; i++) {
+        t.Put(i, i / 2 + s / 4, { 205, 165, 250 });
+        t.Put(i, s - 1 - i / 3, { 185, 140, 240 });
+        t.Put(s / 3 + i / 3, i, { 200, 160, 250 });
+    }
+    t.alpha = 225; t.Border(1, { 85, 45, 140 });
+    t.alpha = 255;
+}
+
 using DrawFn = void (*)(TileCanvas&);
 struct Procedural { const char* name; DrawFn draw; };
 // Drawn in this fixed order after srand(1234), so the random speckle is
@@ -205,6 +231,8 @@ const Procedural kProcedural[] = {
     { "music_block", DrawMusicBlockTile },
     { "timestream_block", DrawTimestreamBlockTile },
     { "essence_attractor", DrawAttractorTile },
+    { "glass", DrawGlassTile },
+    { "crystal", DrawCrystalTile },
 };
 
 const size_t LAYER_BYTES = (size_t)BLOCK_TEX_SIZE * BLOCK_TEX_SIZE * 4;
@@ -225,7 +253,7 @@ void Upscale(const VtexTexture& t, uint8_t* px) {
         for (int x = 0; x < BLOCK_TEX_SIZE; x++) {
             uint32_t c = t.rgb[(size_t)(y / k) * t.size + (x / k)];
             uint8_t* p = px + ((size_t)y * BLOCK_TEX_SIZE + x) * 4;
-            p[0] = (uint8_t)c; p[1] = (uint8_t)(c >> 8); p[2] = (uint8_t)(c >> 16); p[3] = 255;
+            p[0] = (uint8_t)c; p[1] = (uint8_t)(c >> 8); p[2] = (uint8_t)(c >> 16); p[3] = (uint8_t)(255 - (c >> 24));
         }
 }
 

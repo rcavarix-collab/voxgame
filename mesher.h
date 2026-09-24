@@ -36,8 +36,12 @@ static inline int VertexGlow(const Vertex& v) { return (v.aoFace >> 5) & 3; }
 extern uint16_t g_blockFaceLayer[BLOCK_COUNT][FACE_COUNT][FACE_COUNT];
 
 // Builds the mesh for chunk `cc` of `w`. Reads the 26 neighbouring
-// chunks once into a padded solidity grid, so no per-face hash lookups.
+// chunks once into a padded occupancy grid, so no per-face hash lookups.
 // 16-bit indices always suffice: the worst case (a 3D checkerboard) is
 // 2048 blocks x 6 faces x 4 = 49152 vertices.
+// Opaque triangles come first in `indices`, then the see-through ones
+// (translucent blocks, 4.11) from `*translucentFirst` on, so one buffer
+// serves both the opaque pass and the later blended pass.
 void BuildChunkMesh(World& w, const ChunkCoord& cc, const Chunk& c,
-                    std::vector<Vertex>& verts, std::vector<uint16_t>& indices);
+                    std::vector<Vertex>& verts, std::vector<uint16_t>& indices,
+                    size_t* translucentFirst = nullptr);

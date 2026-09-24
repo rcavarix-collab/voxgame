@@ -49,6 +49,7 @@ void RenderBlockIcons(BlockTextureSet& set) {
             int y0 = std::max(0, (int)std::min({ Y[0], Y[1], Y[2] })), y1 = std::min(R - 1, (int)std::max({ Y[0], Y[1], Y[2] }) + 1);
             const uint8_t* tex = set.mips[0].data() + (size_t)tv[0]->layer * N * N * 4;
             float light = faceShade[VertexFace(*tv[0])];
+            const bool see = g_blocks[id].translucent;
             for (int py = y0; py <= y1; py++)
                 for (int px = x0; px <= x1; px++) {
                     float fx = px + 0.5f, fy = py + 0.5f;
@@ -65,7 +66,8 @@ void RenderBlockIcons(BlockTextureSet& set) {
                     int tx = (((int)floorf(u * N)) % N + N) % N, ty = (((int)floorf(v * N)) % N + N) % N;
                     const uint8_t* t = tex + ((size_t)ty * N + tx) * 4;
                     float* o = &rgba[((size_t)py * R + px) * 4];
-                    o[0] = t[0] * light; o[1] = t[1] * light; o[2] = t[2] * light; o[3] = 255.0f;
+                    o[0] = t[0] * light; o[1] = t[1] * light; o[2] = t[2] * light;
+                    o[3] = see ? std::max((float)t[3], 90.0f) : 255.0f; // glass: see-through, but never invisible
                 }
         }
         // 2x2 box down into the icon cell (soft silhouette edges).

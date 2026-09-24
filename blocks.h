@@ -29,6 +29,8 @@ enum BlockID : uint8_t {
     BLOCK_MUSIC,
     BLOCK_TIMESTREAM,
     BLOCK_ATTRACTOR,
+    BLOCK_GLASS,
+    BLOCK_CRYSTAL,
     BLOCK_COUNT
 };
 
@@ -91,6 +93,7 @@ struct BlockDef {
     BlockShape shape;
     PlaceRule place;
     BlockGlow glow;
+    bool translucent;     // see-through (glass): drawn after the opaque world, blended; hides only its own kind
     // Texture names (assets/textures/TEXTURE_BRIEF.md). The most specific
     // one set wins: front > side > all for the four sides, top/bottom >
     // all for those faces. nullptr = not set. A texture with no authored
@@ -104,37 +107,44 @@ struct BlockDef {
 };
 
 // Columns: name, solid, foundational, placeable, orientable, hasData,
-// shape, place rule, glow, then textures all / top / bottom / side / front.
+// shape, place rule, glow, translucent, then textures all / top / bottom
+// / side / front.
 #define TEX(all, top, bottom, side, front) all, top, bottom, side, front
 inline const BlockDef g_blocks[BLOCK_COUNT] = {
-    { "air",                false, false, false, false, false, SHAPE_CUBE,         PLACE_PLAIN, GLOW_NONE,        TEX(nullptr, nullptr, nullptr, nullptr, nullptr) },
-    { "foundation",         true,  true,  true,  false, false, SHAPE_CUBE,         PLACE_PLAIN, GLOW_NONE,        TEX("foundation", nullptr, nullptr, nullptr, nullptr) },
-    { "stone",              true,  false, true,  false, false, SHAPE_CUBE,         PLACE_PLAIN, GLOW_NONE,        TEX("stone", nullptr, nullptr, nullptr, nullptr) },
-    { "dirt",               true,  false, true,  false, false, SHAPE_CUBE,         PLACE_PLAIN, GLOW_NONE,        TEX("dirt", nullptr, nullptr, nullptr, nullptr) },
-    { "wood",               true,  false, true,  false, false, SHAPE_CUBE,         PLACE_PLAIN, GLOW_NONE,        TEX("wood", nullptr, nullptr, nullptr, nullptr) },
-    { "chest",              true,  true,  true,  true,  true,  SHAPE_CUBE,         PLACE_FACE_PLAYER, GLOW_NONE,  TEX("chest", nullptr, nullptr, nullptr, "chest_front") },
-    { "machine",            true,  true,  true,  true,  true,  SHAPE_CUBE,         PLACE_FACE_PLAYER, GLOW_NONE,  TEX("machine", nullptr, nullptr, nullptr, "machine_front") },
+    { "air",                false, false, false, false, false, SHAPE_CUBE,         PLACE_PLAIN, GLOW_NONE, false,        TEX(nullptr, nullptr, nullptr, nullptr, nullptr) },
+    { "foundation",         true,  true,  true,  false, false, SHAPE_CUBE,         PLACE_PLAIN, GLOW_NONE, false,        TEX("foundation", nullptr, nullptr, nullptr, nullptr) },
+    { "stone",              true,  false, true,  false, false, SHAPE_CUBE,         PLACE_PLAIN, GLOW_NONE, false,        TEX("stone", nullptr, nullptr, nullptr, nullptr) },
+    { "dirt",               true,  false, true,  false, false, SHAPE_CUBE,         PLACE_PLAIN, GLOW_NONE, false,        TEX("dirt", nullptr, nullptr, nullptr, nullptr) },
+    { "wood",               true,  false, true,  false, false, SHAPE_CUBE,         PLACE_PLAIN, GLOW_NONE, false,        TEX("wood", nullptr, nullptr, nullptr, nullptr) },
+    { "chest",              true,  true,  true,  true,  true,  SHAPE_CUBE,         PLACE_FACE_PLAYER, GLOW_NONE, false,  TEX("chest", nullptr, nullptr, nullptr, "chest_front") },
+    { "machine",            true,  true,  true,  true,  true,  SHAPE_CUBE,         PLACE_FACE_PLAYER, GLOW_NONE, false,  TEX("machine", nullptr, nullptr, nullptr, "machine_front") },
     // Shape test blocks (the Prismative.cpp primitives), foundational for
     // now so a test build doesn't collapse while it's being looked at.
-    { "stone_slab",         true,  true,  true,  false, false, SHAPE_SLAB,         PLACE_SLAB_HALF, GLOW_NONE,    TEX("stone", nullptr, nullptr, nullptr, nullptr) },
-    { "wood_ramp",          true,  true,  true,  false, false, SHAPE_RAMP,         PLACE_AWAY, GLOW_NONE,         TEX("wood", nullptr, nullptr, nullptr, nullptr) },
-    { "tube",               true,  true,  true,  false, false, SHAPE_TUBE,         PLACE_CLICKED_AXIS, GLOW_NONE, TEX("tube", nullptr, nullptr, nullptr, nullptr) },
-    { "stone_pyramid",      true,  true,  true,  false, false, SHAPE_PYRAMID,      PLACE_PLAIN, GLOW_NONE,        TEX("stone", nullptr, nullptr, nullptr, nullptr) },
-    { "stone_pyramid_half", true,  true,  true,  false, false, SHAPE_PYRAMID_HALF, PLACE_PLAIN, GLOW_NONE,        TEX("stone", nullptr, nullptr, nullptr, nullptr) },
-    { "stone_funnel",       true,  true,  true,  false, false, SHAPE_FUNNEL,       PLACE_PLAIN, GLOW_NONE,        TEX("stone", nullptr, nullptr, nullptr, nullptr) },
-    { "stone_funnel_half",  true,  true,  true,  false, false, SHAPE_FUNNEL_HALF,  PLACE_PLAIN, GLOW_NONE,        TEX("stone", nullptr, nullptr, nullptr, nullptr) },
+    { "stone_slab",         true,  true,  true,  false, false, SHAPE_SLAB,         PLACE_SLAB_HALF, GLOW_NONE, false,    TEX("stone", nullptr, nullptr, nullptr, nullptr) },
+    { "wood_ramp",          true,  true,  true,  false, false, SHAPE_RAMP,         PLACE_AWAY, GLOW_NONE, false,         TEX("wood", nullptr, nullptr, nullptr, nullptr) },
+    { "tube",               true,  true,  true,  false, false, SHAPE_TUBE,         PLACE_CLICKED_AXIS, GLOW_NONE, false, TEX("tube", nullptr, nullptr, nullptr, nullptr) },
+    { "stone_pyramid",      true,  true,  true,  false, false, SHAPE_PYRAMID,      PLACE_PLAIN, GLOW_NONE, false,        TEX("stone", nullptr, nullptr, nullptr, nullptr) },
+    { "stone_pyramid_half", true,  true,  true,  false, false, SHAPE_PYRAMID_HALF, PLACE_PLAIN, GLOW_NONE, false,        TEX("stone", nullptr, nullptr, nullptr, nullptr) },
+    { "stone_funnel",       true,  true,  true,  false, false, SHAPE_FUNNEL,       PLACE_PLAIN, GLOW_NONE, false,        TEX("stone", nullptr, nullptr, nullptr, nullptr) },
+    { "stone_funnel_half",  true,  true,  true,  false, false, SHAPE_FUNNEL_HALF,  PLACE_PLAIN, GLOW_NONE, false,        TEX("stone", nullptr, nullptr, nullptr, nullptr) },
     // Reactive blocks: plain cubes that light up on their own.
-    { "music_block",        true,  false, true,  false, false, SHAPE_CUBE,         PLACE_PLAIN, GLOW_MUSIC,       TEX("music_block", nullptr, nullptr, nullptr, nullptr) },
-    { "timestream_block",   true,  false, true,  false, false, SHAPE_CUBE,         PLACE_PLAIN, GLOW_TIMESTREAM,  TEX("timestream_block", nullptr, nullptr, nullptr, nullptr) },
+    { "music_block",        true,  false, true,  false, false, SHAPE_CUBE,         PLACE_PLAIN, GLOW_MUSIC, false,       TEX("music_block", nullptr, nullptr, nullptr, nullptr) },
+    { "timestream_block",   true,  false, true,  false, false, SHAPE_CUBE,         PLACE_PLAIN, GLOW_TIMESTREAM, false,  TEX("timestream_block", nullptr, nullptr, nullptr, nullptr) },
     // PROVISIONAL placeholder for player-built essence attractors (Part XIX):
     // a node on the essence map that draws from convergence zones in reach.
-    { "essence_attractor",  true,  true,  true,  false, false, SHAPE_CUBE,         PLACE_PLAIN, GLOW_NONE,        TEX("essence_attractor", nullptr, nullptr, nullptr, nullptr) },
+    { "essence_attractor",  true,  true,  true,  false, false, SHAPE_CUBE,         PLACE_PLAIN, GLOW_NONE, false,        TEX("essence_attractor", nullptr, nullptr, nullptr, nullptr) },
+    // See-through blocks (DESIGN.md 4.11): clear glass and a tinted crystal.
+    { "glass",              true,  false, true,  false, false, SHAPE_CUBE,         PLACE_PLAIN, GLOW_NONE, true,         TEX("glass", nullptr, nullptr, nullptr, nullptr) },
+    { "crystal",            true,  false, true,  false, false, SHAPE_CUBE,         PLACE_PLAIN, GLOW_NONE, true,         TEX("crystal", nullptr, nullptr, nullptr, nullptr) },
 };
 #undef TEX
 
 static inline bool BlockSolid(BlockID id) { return g_blocks[id].solid; }
-// Solid and a full cube: hides the faces beside it and darkens AO.
+// Solid and a full cube (collision, geometry).
 static inline bool BlockFullCube(BlockID id) { return g_blocks[id].solid && g_blocks[id].shape == SHAPE_CUBE; }
+// A full cube you can't see through: hides the faces beside it and
+// darkens AO. Glass is a full cube but not opaque.
+static inline bool BlockOpaqueCube(BlockID id) { return BlockFullCube(id) && !g_blocks[id].translucent; }
 
 // The placeable blocks in registry order: the hotbar's contents.
 struct PlaceableList {

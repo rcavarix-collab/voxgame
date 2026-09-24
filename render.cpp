@@ -90,6 +90,10 @@ static ID3D11Buffer* g_bloomCB = nullptr;
 static ID3D11SamplerState* g_linearClampSampler = nullptr;
 static bool g_bloomAvailable = false;
 static const float BLOOM_STRENGTH = 2.0f; // screen-blended, so it brightens but never clips
+// See-through blocks (Section 4.11).
+static ID3D11BlendState* g_translucentBlend = nullptr;       // alpha blend; keeps the glow mask in dest alpha
+static ID3D11DepthStencilState* g_depthNoWriteState = nullptr; // depth tested, not written
+static ID3D11RasterizerState* g_cullBackRaster = nullptr;
 // Debug lines.
 struct DebugVertex { float x, y, z, r, g, b, a; };
 static const UINT DEBUG_VB_CAPACITY = 128;
@@ -178,7 +182,7 @@ static const char* g_atmosphereSrc =
 static const char* g_shaderSrc =
     "// uses atmosphere\n"
     "cbuffer CB : register(b0) { row_major matrix mvp; row_major matrix lightViewProj; float4 params; float4 lineA; float4 lineB; };\n"
-    // params: x shadows on, y shadow half-texel.
+    // params: x shadows on, y shadow half-texel, z 1 while drawing see-through blocks (4.11).
     // lineA: The Line's pivot x, height, pivot z, intensity; lineB: its direction x, z, the music level, unused.
     "cbuffer ChunkCB : register(b1) { float4 chunkOrigin; };\n"
     "struct VSIn { uint4 pos:POSITION; uint layer:TEXCOORD0; uint2 uv:TEXCOORD1; };\n"
@@ -208,9 +212,11 @@ static const char* g_shaderSrc =
     "SamplerComparisonState shadowSamp : register(s1);\n"
     "#endif\n"
     "float4 PSMain(PSIn i) : SV_TARGET {\n"
-    "    float3 albedo = tex0.Sample(samp0, i.uvl).rgb;\n"             // sRGB texture view: already linear
+    "    float4 texel = tex0.Sample(samp0, i.uvl);\n"                  // sRGB texture view: already linear
+    "    float3 albedo = texel.rgb;\n"
     "    float3 n = i.glowInfo.yzw;\n"
     "    float ao = i.aoBias.x;\n"
+    "    float shadow = 1.0f;\n"
     "    float sunLit = saturate(dot(n, fSunDir.xyz));\n"
     "#ifndef NO_SHADOWS\n"
     "    if (params.x > 0.5f && sunLit > 0.0f) {\n"
@@ -224,7 +230,8 @@ static const char* g_shaderSrc =
     "                               + shadowMap.SampleCmpLevelZero(shadowSamp, suv + float2( o,  o), lp.z));\n"
     // Fade out toward the map's edge rather than stopping at a line.
     "            float edge = saturate(min(min(suv.x, 1.0f - suv.x), min(suv.y, 1.0f - suv.y)) * 16.0f);\n"
-    "            sunLit *= lerp(1.0f, lit, edge);\n"
+    "            shadow = lerp(1.0f, lit, edge);\n"
+    "            sunLit *= shadow;\n"
     "        }\n"
     "    }\n"
     "#endif\n"
@@ -250,8 +257,23 @@ static const char* g_shaderSrc =
     "    col += glow * (albedo * 1.2f + glowCol * 0.8f);\n"
     "    float3 v = i.wpos - fCamPos.xyz;\n"
     "    float dist = length(v);\n"
-    "    col = lerp(col, SkyColor(v / max(dist, 1e-3f)), FogAmount(dist));\n"
-    "    return float4(ToDisplay(col), saturate(glow));\n"
+    "    float3 view = v / max(dist, 1e-3f);\n"
+    "    float outAlpha = saturate(glow);\n"                            // opaque pass: the bloom mask
+    // See-through blocks (4.11), faked: the tinted body lets the world
+    // behind show through by the texture's alpha; toward grazing angles it
+    // turns into a mirror of the sky (Schlick's Fresnel) and grows more
+    // opaque, and the sun leaves a hard glint unless shadowed. No
+    // refraction, no second scene render.
+    "    if (params.z > 0.5f) {\n"
+    "        float3 r = reflect(view, n);\n"
+    "        float fres = 0.04f + 0.96f * pow(1.0f - saturate(dot(-view, n)), 5.0f);\n"
+    "        float3 refl = SkyColor(r) * lerp(0.35f, 1.0f, saturate(r.y * 2.0f + 0.5f));\n" // the ground reflects darker than the sky
+    "        float3 glint = fSunColor.rgb * shadow * pow(saturate(dot(r, fSunDir.xyz)), 400.0f) * 6.0f;\n"
+    "        col = lerp(col, refl, fres) + glint;\n"
+    "        outAlpha = saturate(lerp(texel.a, 1.0f, fres) + dot(glint, float3(0.3f, 0.5f, 0.2f)));\n"
+    "    }\n"
+    "    col = lerp(col, SkyColor(view), FogAmount(dist));\n"
+    "    return float4(ToDisplay(col), outAlpha);\n"
     "}\n";
 
 // Depth-only pass into the shadow map, from the sun (Section 4.8).
@@ -479,11 +501,12 @@ static const char* g_skyShaderSrc =
 static void RebuildChunkMesh(World& w, const ChunkCoord& cc, Chunk& c) {
     static std::vector<Vertex> verts;     // reused across rebuilds: no per-rebuild allocation once warm
     static std::vector<uint16_t> indices;
-    BuildChunkMesh(w, cc, c, verts, indices);
+    size_t translucentFirst = 0;
+    BuildChunkMesh(w, cc, c, verts, indices, &translucentFirst);
 
     if (c.vb) { c.vb->Release(); c.vb = nullptr; }
     if (c.ib) { c.ib->Release(); c.ib = nullptr; }
-    c.indexCount = 0;
+    c.indexCount = 0; c.opaqueIndexCount = 0;
 
     if (!verts.empty()) {
         D3D11_BUFFER_DESC vbd = {};
@@ -503,6 +526,7 @@ static void RebuildChunkMesh(World& w, const ChunkCoord& cc, Chunk& c) {
         g_device->CreateBuffer(&ibd, &iinit, &c.ib);
 
         c.indexCount = (UINT)indices.size();
+        c.opaqueIndexCount = (UINT)translucentFirst;
     }
 
     c.dirty = false;
@@ -615,11 +639,13 @@ void UpdateCBuffer(const CBData& data) {
 // Every resident chunk whose bounds touch `frustum`, setting the per-draw
 // chunk origin. Shared by the world pass and the shadow pass; whoever
 // calls it has already bound shaders, layout and constant buffers.
+// Opaque parts only (the shadow map uses this too, so glass casts no
+// shadow); see-through parts are DrawTranslucent's.
 static void DrawChunks(World& w, const Frustum& frustum, bool countStats) {
     UINT stride = sizeof(Vertex), offset = 0;
     for (auto& kv : w.chunks) {
         Chunk& c = *kv.second;
-        if (c.indexCount == 0) continue;
+        if (c.opaqueIndexCount == 0) continue;
         const ChunkCoord& cc = kv.first;
         Vec3 minB = { (float)(cc.x * CHUNK_SIZE), (float)(cc.y * CHUNK_SIZE), (float)(cc.z * CHUNK_SIZE) };
         Vec3 maxB = { minB.x + CHUNK_SIZE, minB.y + CHUNK_SIZE, minB.z + CHUNK_SIZE };
@@ -631,12 +657,55 @@ static void DrawChunks(World& w, const Frustum& frustum, bool countStats) {
         g_context->Unmap(g_chunkCBuffer, 0);
         g_context->IASetVertexBuffers(0, 1, &c.vb, &stride, &offset);
         g_context->IASetIndexBuffer(c.ib, DXGI_FORMAT_R16_UINT, 0);
-        g_context->DrawIndexed(c.indexCount, 0, 0);
+        g_context->DrawIndexed(c.opaqueIndexCount, 0, 0);
         if (countStats) {
             ProfAddCounter(PCOUNT_CHUNKS_DRAWN, 1);
-            ProfAddCounter(PCOUNT_TRIANGLES_DRAWN, c.indexCount / 3);
+            ProfAddCounter(PCOUNT_TRIANGLES_DRAWN, c.opaqueIndexCount / 3);
         }
     }
+}
+
+// See-through blocks (Section 4.11), after everything opaque: blended,
+// depth-tested but not depth-writing, and back faces culled so a glass
+// cube shows one layer, not two. Chunks go far to near so nearer glass
+// blends over farther glass; within a chunk faces aren't sorted (same-
+// kind neighbours share no faces, so overlaps are rare and alike). Only
+// chunks that actually hold glass are visited twice.
+static void DrawTranslucent(World& w, const Frustum& frustum, Vec3 eye) {
+    struct Item { float dist2; Chunk* c; float origin[4]; };
+    static std::vector<Item> order; // reused: no per-frame allocation once warm
+    order.clear();
+    for (auto& kv : w.chunks) {
+        Chunk& c = *kv.second;
+        if (c.indexCount <= c.opaqueIndexCount) continue;
+        const ChunkCoord& cc = kv.first;
+        Vec3 minB = { (float)(cc.x * CHUNK_SIZE), (float)(cc.y * CHUNK_SIZE), (float)(cc.z * CHUNK_SIZE) };
+        Vec3 maxB = { minB.x + CHUNK_SIZE, minB.y + CHUNK_SIZE, minB.z + CHUNK_SIZE };
+        if (!FrustumIntersectsAABB(frustum, minB, maxB)) continue;
+        float dx = minB.x + CHUNK_SIZE * 0.5f - eye.x, dy = minB.y + CHUNK_SIZE * 0.5f - eye.y, dz = minB.z + CHUNK_SIZE * 0.5f - eye.z;
+        order.push_back({ dx * dx + dy * dy + dz * dz, &c, { minB.x, minB.y, minB.z, 0.0f } });
+    }
+    if (order.empty()) return;
+    std::sort(order.begin(), order.end(), [](const Item& a, const Item& b) { return a.dist2 > b.dist2; });
+    float blendFactor[4] = { 0, 0, 0, 0 };
+    g_context->OMSetBlendState(g_translucentBlend, blendFactor, 0xFFFFFFFF);
+    g_context->OMSetDepthStencilState(g_depthNoWriteState, 0);
+    g_context->RSSetState(g_cullBackRaster);
+    UINT stride = sizeof(Vertex), offset = 0;
+    for (const Item& e : order) {
+        Chunk& c = *e.c;
+        D3D11_MAPPED_SUBRESOURCE mapped;
+        g_context->Map(g_chunkCBuffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
+        memcpy(mapped.pData, e.origin, sizeof(e.origin));
+        g_context->Unmap(g_chunkCBuffer, 0);
+        g_context->IASetVertexBuffers(0, 1, &c.vb, &stride, &offset);
+        g_context->IASetIndexBuffer(c.ib, DXGI_FORMAT_R16_UINT, 0);
+        g_context->DrawIndexed(c.indexCount - c.opaqueIndexCount, c.opaqueIndexCount, 0);
+        ProfAddCounter(PCOUNT_TRIANGLES_DRAWN, (c.indexCount - c.opaqueIndexCount) / 3);
+    }
+    g_context->OMSetBlendState(nullptr, blendFactor, 0xFFFFFFFF);
+    g_context->OMSetDepthStencilState(g_depthState, 0);
+    g_context->RSSetState(g_rasterState);
 }
 
 // ---- Sun shadow map (Section 4.8) ----
@@ -854,8 +923,20 @@ void RenderScene(World& w, const Mat4& view, const Mat4& proj, Vec3 eye, Vec3 fo
         g_context->PSSetSamplers(0, 2, samplers);
         ID3D11ShaderResourceView* srvs[2] = { g_blockTexSRV, shadows ? g_shadowSRV : nullptr };
         g_context->PSSetShaderResources(0, 2, srvs);
-        DrawChunks(w, ExtractFrustum(viewProj), true);
+        Frustum frustum = ExtractFrustum(viewProj);
+        DrawChunks(w, frustum, true);
         if (g_lineDebug) DrawLineDebug(viewProj, eye);
+        // See-through blocks last: same shader, told by params.z to shade
+        // as glass. Rebind the world pipeline (the debug lines change it).
+        cb.params[2] = 1.0f;
+        UpdateCBuffer(cb);
+        g_context->VSSetShader(g_vs, nullptr, 0);
+        g_context->PSSetShader(g_ps, nullptr, 0);
+        g_context->IASetInputLayout(g_layout);
+        g_context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        g_context->VSSetConstantBuffers(0, 2, cbs);
+        g_context->PSSetConstantBuffers(0, 1, &g_cbuffer);
+        DrawTranslucent(w, frustum, eye);
     }
     ProfAdd(PROF_WORLD, ProfNow() - worldStart);
 
@@ -1123,6 +1204,24 @@ bool InitD3D(HWND hwnd) {
     depthStateDesc.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ALL;
     depthStateDesc.DepthFunc = D3D11_COMPARISON_LESS;
     g_device->CreateDepthStencilState(&depthStateDesc, &g_depthState);
+
+    // See-through blocks (4.11): blended over the opaque world, depth
+    // tested but not written, back faces culled. Destination alpha (the
+    // bloom glow mask) is left as the opaque world wrote it.
+    depthStateDesc.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ZERO;
+    g_device->CreateDepthStencilState(&depthStateDesc, &g_depthNoWriteState);
+    D3D11_BLEND_DESC tb = {};
+    tb.RenderTarget[0].BlendEnable = TRUE;
+    tb.RenderTarget[0].SrcBlend = D3D11_BLEND_SRC_ALPHA;
+    tb.RenderTarget[0].DestBlend = D3D11_BLEND_INV_SRC_ALPHA;
+    tb.RenderTarget[0].BlendOp = D3D11_BLEND_OP_ADD;
+    tb.RenderTarget[0].SrcBlendAlpha = D3D11_BLEND_ZERO;
+    tb.RenderTarget[0].DestBlendAlpha = D3D11_BLEND_ONE;
+    tb.RenderTarget[0].BlendOpAlpha = D3D11_BLEND_OP_ADD;
+    tb.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
+    g_device->CreateBlendState(&tb, &g_translucentBlend);
+    rastDesc.CullMode = D3D11_CULL_BACK; // mesher.cpp winds every cube face clockwise seen from outside (tested)
+    g_device->CreateRasterizerState(&rastDesc, &g_cullBackRaster);
 
     // --- UI pass pipeline objects (Section 4.6: a second pass, its own
     // shaders, orthographic-in-pixel-space, depth off, alpha blend on) ---

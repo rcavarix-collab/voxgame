@@ -15,7 +15,7 @@
 struct VtexTexture {
     std::string name;
     int size = 0;                // pixels per side (8, 16, 32 or 64)
-    std::vector<uint32_t> rgb;   // size*size, 0x00RRGGBB, row 0 = top
+    std::vector<uint32_t> rgb;   // size*size, 0xTTRRGGBB, row 0 = top; TT = 255 - alpha (0 = opaque, so opaque art reads as plain RGB)
     std::string source;          // "file:line" where it was defined
 };
 

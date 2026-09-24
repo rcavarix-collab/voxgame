@@ -86,7 +86,8 @@ void ParseVtex(const std::string& text, const std::string& fileName, VtexSet& ou
         const std::string raw = lines[li];
 
         if (mode == Mode::Palette) {
-            // "k rrggbb" (a leading '#' on the hex is tolerated). The key may
+            // "k rrggbb" or "k rrggbbaa" (alpha, for see-through blocks; a
+            // leading '#' on the hex is tolerated). The key may
             // be any printable non-space character except '#', so comment
             // stripping happens only after the colour.
             std::string t = Trim(raw);
@@ -98,12 +99,14 @@ void ParseVtex(const std::string& text, const std::string& fileName, VtexSet& ou
             while (p < t.size() && (t[p] == ' ' || t[p] == '\t')) p++;
             if (p < t.size() && t[p] == '#') p++;
             uint32_t rgb = 0; bool ok = p + 6 <= t.size() && (unsigned char)key < 128 && key > ' ';
-            for (int k = 0; ok && k < 6; k++) {
+            int digits = ok && p + 8 <= t.size() && HexDigit(t[p + 6]) >= 0 && HexDigit(t[p + 7]) >= 0 ? 8 : 6;
+            for (int k = 0; ok && k < digits; k++) {
                 int d = HexDigit(t[p + k]);
                 if (d < 0) ok = false; else rgb = (rgb << 4) | (uint32_t)d;
             }
-            if (ok && p + 6 < t.size() && t[p + 6] != ' ' && t[p + 6] != '\t' && t[p + 6] != '#' && t[p + 6] != '\r') ok = false;
-            if (!ok) { fail(ln, "bad palette line (expected: key character, then 6 hex digits)"); continue; }
+            if (ok && p + digits < t.size() && t[p + digits] != ' ' && t[p + digits] != '\t' && t[p + digits] != '#' && t[p + digits] != '\r') ok = false;
+            if (!ok) { fail(ln, "bad palette line (expected: key character, then 6 hex digits, or 8 with alpha)"); continue; }
+            if (digits == 8) rgb = (rgb >> 8) | ((255u - (rgb & 0xFFu)) << 24); // RRGGBBAA -> TTRRGGBB
             if (paletteSet[(int)key]) { fail(ln, std::string("palette key '") + key + "' defined twice"); continue; }
             palette[(int)key] = rgb; paletteSet[(int)key] = true;
             continue;

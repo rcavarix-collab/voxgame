@@ -83,6 +83,22 @@ static void TestVtex() {
     CHECK(s.blocks.size() == 1 && s.blocks[0].front == "stone");
     for (auto& e : s.errors) printf("    %s\n", e.c_str());
 
+    // Alpha (see-through blocks): "rrggbbaa", stored as 255 - alpha in the
+    // top byte so plain 6-digit colours are unchanged; a 7-digit colour is
+    // an error.
+    VtexSet al;
+    ParseVtex("texture pane\nsize 8\npalette\n g 80c0ff40\n f #a0b0c0ff # opaque\npixels\n"
+              " gggggggg\n gggggggg\n gggggggg\n gggggggg\n ffffffff\n ffffffff\n ffffffff\n ffffffff\nend\n"
+              "block glass\n all pane\nend\n", "alpha.vtex", al);
+    CHECK(al.errors.empty() && al.textures.size() == 1);
+    if (!al.textures.empty()) CHECK(al.textures[0].rgb[0] == 0xBF80C0FFu && al.textures[0].rgb[63] == 0x00A0B0C0u);
+    BlockTextureSet at; BuildBlockTextures(al, at);
+    const uint8_t* ap = at.mips[0].data() + (size_t)at.faceLayer[BLOCK_GLASS][0][0] * BLOCK_TEX_SIZE * BLOCK_TEX_SIZE * 4;
+    CHECK(ap[0] == 0xFF && ap[1] == 0xC0 && ap[2] == 0x80 && ap[3] == 0x40);            // BGRA, alpha kept
+    CHECK(ap[((size_t)(BLOCK_TEX_SIZE - 1) * BLOCK_TEX_SIZE) * 4 + 3] == 255);           // bottom rows opaque
+    VtexSet al7; ParseVtex("texture q\nsize 8\npalette\n g 80c0ff4\npixels\nend\n", "seven.vtex", al7);
+    CHECK(!al7.errors.empty());
+
     VtexSet bad;
     ParseVtex("texture a\nsize 8\npalette\n x 000000\npixels\n xxxxxxx\nend\n", "short.vtex", bad);  // 7-char row
     ParseVtex("texture b\nsize 8\npalette\n x 000000\npixels\n xxxxxxxy\nend\n", "key.vtex", bad);   // unknown key
@@ -101,7 +117,7 @@ static void TestBlockTextures() {
     BlockTextureSet t;
     BuildBlockTextures(none, t);
     CHECK(t.warnings.empty());
-    CHECK(t.layerCount == 12); // foundation stone dirt wood chest chest_front machine machine_front tube music_block timestream_block essence_attractor
+    CHECK(t.layerCount == 14); // foundation stone dirt wood chest chest_front machine machine_front tube music_block timestream_block essence_attractor glass crystal
     CHECK(t.mipCount == 7);
     CHECK(t.faceLayer[BLOCK_CHEST][FACE_POS_Z][FACE_POS_Z] != t.faceLayer[BLOCK_CHEST][FACE_POS_Z][FACE_POS_X]); // front vs side
     CHECK(t.faceLayer[BLOCK_CHEST][FACE_NEG_X][FACE_NEG_X] == t.faceLayer[BLOCK_CHEST][FACE_POS_Z][FACE_POS_Z]); // front follows facing
@@ -329,6 +345,52 @@ static void TestMesher() {
     for (auto& x : v) { int g = VertexGlow(x); if (g == GLOW_MUSIC) glowMusic++; else if (g == GLOW_TIMESTREAM) glowLine++; else glowNone++; }
     CHECK(glowMusic == 24 && glowLine == 24 && glowNone == 24);
 
+    // Every cube face is wound clockwise seen from outside (the D3D front
+    // face): the see-through pass culls back faces on that basis (4.11).
+    {
+        World wc; wc.Set(2, 2, 2, BLOCK_STONE); wc.Set(2, 3, 2, BLOCK_STONE); wc.Set(3, 2, 3, BLOCK_STONE); // mixed AO: both diagonal splits
+        BuildChunkMesh(wc, { 0, 0, 0 }, *wc.FindChunk({ 0, 0, 0 }), v, idx);
+        static const int nrm[6][3] = { {1,0,0}, {-1,0,0}, {0,1,0}, {0,-1,0}, {0,0,1}, {0,0,-1} };
+        bool wound = true;
+        for (size_t i = 0; i + 2 < idx.size(); i += 3) {
+            const Vertex &a = v[idx[i]], &b = v[idx[i + 1]], &c = v[idx[i + 2]];
+            int e1[3] = { b.x - a.x, b.y - a.y, b.z - a.z }, e2[3] = { c.x - a.x, c.y - a.y, c.z - a.z };
+            int cr[3] = { e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0] };
+            const int* n = nrm[VertexFace(a)];
+            if (cr[0] * n[0] + cr[1] * n[1] + cr[2] * n[2] <= 0) wound = false;
+        }
+        CHECK(wound);
+    }
+
+    // See-through blocks (4.11): glass faces come after every opaque one;
+    // glass beside glass shares no face; stone beside glass keeps its face;
+    // glass beside stone loses its; glass never darkens AO.
+    {
+        World wt; ResetWorldState(wt);
+        wt.Set(4, 4, 4, BLOCK_GLASS); wt.Set(5, 4, 4, BLOCK_GLASS); // a 2-block pane
+        wt.Set(4, 3, 4, BLOCK_STONE);                               // stone under the first pane block
+        wt.Set(8, 4, 4, BLOCK_STONE); wt.Set(9, 4, 4, BLOCK_CRYSTAL); // stone beside crystal
+        size_t first = 0;
+        BuildChunkMesh(wt, { 0, 0, 0 }, *wt.FindChunk({ 0, 0, 0 }), v, idx, &first);
+        int stoneFaces = 0, glassFaces = 0;
+        for (size_t i = 0; i < idx.size(); i += 6) {
+            const Vertex& a = v[idx[i]];
+            bool see = a.layer == t.faceLayer[BLOCK_GLASS][0][0] || a.layer == t.faceLayer[BLOCK_CRYSTAL][0][0];
+            CHECK(see == (i >= first));
+            if (see) glassFaces++; else stoneFaces++;
+        }
+        // Stone: 6 + 6 (both keep every face: glass and crystal hide nothing).
+        // Glass pane: 2 blocks x 6 - 2 shared - 1 on the stone = 9; crystal: 6 - 1 on the stone = 5.
+        CHECK(stoneFaces == 12 && glassFaces == 9 + 5);
+        bool glassDarkens = false;
+        for (auto& x : v) if (x.y == 5 * 8 && VertexFace(x) == FACE_POS_Y && x.x >= 8 * 8 && x.x <= 9 * 8 && VertexAO(x) < 3 && x.layer == t.faceLayer[BLOCK_STONE][0][0]) glassDarkens = true;
+        CHECK(!glassDarkens); // the stone's top beside the crystal stays open
+        size_t firstNone = 12345;
+        World ws; ws.Set(1, 1, 1, BLOCK_STONE);
+        BuildChunkMesh(ws, { 0, 0, 0 }, *ws.FindChunk({ 0, 0, 0 }), v, idx, &firstNone);
+        CHECK(firstNone == idx.size()); // no glass: everything is opaque
+    }
+
     // Worst case fits 16-bit indices.
     World w3;
     for (int y = 0; y < 16; y++) for (int z = 0; z < 16; z++) for (int x = 0; x < 16; x++)
@@ -455,9 +517,10 @@ static void TestIcons() {
     for (int id = 1; id < BLOCK_COUNT; id++) {
         auto alpha = [&](int x, int y) { return t.icons[((size_t)y * t.iconsW + (size_t)id * BLOCK_TEX_SIZE + x) * 4 + 3]; };
         CHECK(alpha(0, 0) == 0 && alpha(BLOCK_TEX_SIZE - 1, 0) == 0); // transparent corners
-        int opaque = 0;
-        for (int y = 0; y < BLOCK_TEX_SIZE; y++) for (int x = 0; x < BLOCK_TEX_SIZE; x++) if (alpha(x, y) == 255) opaque++;
-        CHECK(opaque > 40); // something drawn (the thin tube is the smallest)
+        int opaque = 0, drawn = 0;
+        for (int y = 0; y < BLOCK_TEX_SIZE; y++) for (int x = 0; x < BLOCK_TEX_SIZE; x++) { if (alpha(x, y) == 255) opaque++; if (alpha(x, y) >= 90) drawn++; }
+        if (g_blocks[id].translucent) CHECK(drawn > 1000 && opaque < drawn); // see-through, but visible
+        else CHECK(opaque > 40); // something drawn (the thin tube is the smallest)
     }
 }
 

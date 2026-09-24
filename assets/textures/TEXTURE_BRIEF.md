@@ -26,6 +26,7 @@ texture stone                 # name: lowercase a-z, 0-9, _
 size 16                       # square, 16 or 32 pixels per side
 palette
   a 7c7c82                    # one key character, then 6-digit hex RGB
+                              # (or 8 digits, RGB + alpha, for see-through blocks)
   b 6a6a70
   c 8f8f95
 pixels                        # exactly `size` rows of exactly `size` keys
@@ -56,7 +57,11 @@ Rules:
   texture's palette. Please re-check row counts and lengths before sending.
 - Keep all textures in one set the same size. 16 is recommended; if you use
   32, use it everywhere.
-- Opaque only for now: no transparency.
+- Transparency is only for see-through blocks (`glass`, `crystal`): give
+  those palette entries 8 hex digits, `rrggbbaa`, where `aa` is how solid
+  the pixel is (`00` invisible, `ff` solid). Glass reads best mostly clear
+  (`aa` around `20`–`40`) with a firmer frame; everything else stays opaque
+  (6 digits), and alpha on an opaque block is ignored.
 
 ## Art guidance for this engine
 
@@ -88,6 +93,12 @@ Rules:
 | `wood`       | building material (planks or log, your call) | `all`, or `side` + `top` for a log's end grain |
 | `chest`      | storage container                            | `side`, `top`, `front` (latch or lock) |
 | `machine`    | generic machine placeholder                  | `side`, `top`, `front` (control panel) |
+| `tube`       | a thin bar block (pipes, rails, posts)       | `all`                      |
+| `music_block` | glows in time with the music playing        | `all` (it lights up on its own; mid tones glow best) |
+| `timestream_block` | lights up while the time line passes through it | `all` (pale, calm) |
+| `essence_attractor` | draws essence from the land around it  | `all` (a core in a frame)  |
+| `glass`      | clear, see-through glass                     | `all` (mostly transparent, see alpha above) |
+| `crystal`    | tinted, cloudier see-through crystal         | `all` (semi-transparent colour) |
 
 Feel free to propose additional blocks that suit my art, using the same
 format with a new name plus a one-line description of what each is. The

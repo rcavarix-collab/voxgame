@@ -34,15 +34,23 @@ const int kCornerV[4] = { 1, 0, 0, 1 };
 } // namespace
 
 void BuildChunkMesh(World& w, const ChunkCoord& cc, const Chunk& c,
-                    std::vector<Vertex>& verts, std::vector<uint16_t>& indices) {
+                    std::vector<Vertex>& verts, std::vector<uint16_t>& indices,
+                    size_t* translucentFirst) {
     verts.clear();
     indices.clear();
+    static thread_local std::vector<uint16_t> clear; // see-through triangles, appended after the opaque ones
+    clear.clear();
 
-    // Which cells are full cubes -- the chunk plus a one-cell shell of its
-    // 26 neighbours (absent neighbours read as air). Only a full cube
-    // hides a face or darkens AO; shaped blocks let light and sight past. Built once; every culling and AO
-    // test below is then a plain array read.
-    static thread_local uint8_t solid[P * P * P];
+    // What occupies each cell -- the chunk plus a one-cell shell of its 26
+    // neighbours (absent neighbours read as air): OPAQUE for a full cube
+    // you can't see through, which hides any face and darkens AO; a
+    // translucent cube's block ID, which hides only faces of its own kind
+    // (no walls inside a pane of glass) and never darkens AO; 0 for
+    // anything else (air, shaped blocks: light and sight pass). Built
+    // once; every culling and AO test below is then a plain array read.
+    const uint8_t OPAQUE = 255;
+    static_assert(BLOCK_COUNT < 255, "cell codes need a spare value for OPAQUE");
+    static thread_local uint8_t cell[P * P * P];
     const Chunk* around[3][3][3];
     for (int dy = -1; dy <= 1; dy++)
         for (int dz = -1; dz <= 1; dz++)
@@ -55,7 +63,8 @@ void BuildChunkMesh(World& w, const ChunkCoord& cc, const Chunk& c,
             for (int px = 0; px < P; px++) {
                 int lx = px - 1, ox = lx < 0 ? 0 : (lx >= CHUNK_SIZE ? 2 : 1), sx = lx - (ox - 1) * CHUNK_SIZE;
                 const Chunk* n = around[oy][oz][ox];
-                solid[PIndex(px, py, pz)] = n ? (uint8_t)BlockFullCube((BlockID)n->blocks[Chunk::LocalIndex(sx, sy, sz)]) : 0;
+                BlockID b = n ? (BlockID)n->blocks[Chunk::LocalIndex(sx, sy, sz)] : BLOCK_AIR;
+                cell[PIndex(px, py, pz)] = BlockOpaqueCube(b) ? OPAQUE : (BlockFullCube(b) ? (uint8_t)b : 0);
             }
         }
     }
@@ -79,7 +88,7 @@ void BuildChunkMesh(World& w, const ChunkCoord& cc, const Chunk& c,
                         const ShapePoly& sp = polys[i];
                         if (sp.boundary >= 0) {
                             const FaceDef& bd = kFaces[sp.boundary];
-                            if (solid[PIndex(px + bd.nx, py + bd.ny, pz + bd.nz)]) continue;
+                            if (cell[PIndex(px + bd.nx, py + bd.ny, pz + bd.nz)] == OPAQUE) continue;
                         }
                         uint16_t layer = g_blockFaceLayer[id][facing][sp.texFace];
                         uint16_t base = (uint16_t)verts.size();
@@ -99,10 +108,13 @@ void BuildChunkMesh(World& w, const ChunkCoord& cc, const Chunk& c,
                     continue;
                 }
 
+                const bool see = g_blocks[id].translucent;
+                std::vector<uint16_t>& out = see ? clear : indices;
                 for (int f = 0; f < FACE_COUNT; f++) {
                     const FaceDef& fd = kFaces[f];
                     int nx = px + fd.nx, ny = py + fd.ny, nz = pz + fd.nz; // the cell this face looks into
-                    if (solid[PIndex(nx, ny, nz)]) continue;               // hidden
+                    uint8_t beside = cell[PIndex(nx, ny, nz)];
+                    if (beside == OPAQUE || (see && beside == id)) continue; // hidden
 
                     // Ambient occlusion per corner (the classic voxel AO):
                     // look at the two edge-neighbours and the diagonal of
@@ -122,9 +134,9 @@ void BuildChunkMesh(World& w, const ChunkCoord& cc, const Chunk& c,
                             if (filled == 0) t1[a] = s[a]; else t2[a] = s[a];
                             filled++;
                         }
-                        int side1 = solid[PIndex(nx + t1[0], ny + t1[1], nz + t1[2])];
-                        int side2 = solid[PIndex(nx + t2[0], ny + t2[1], nz + t2[2])];
-                        int corner = solid[PIndex(nx + t1[0] + t2[0], ny + t1[1] + t2[1], nz + t1[2] + t2[2])];
+                        int side1 = cell[PIndex(nx + t1[0], ny + t1[1], nz + t1[2])] == OPAQUE;
+                        int side2 = cell[PIndex(nx + t2[0], ny + t2[1], nz + t2[2])] == OPAQUE;
+                        int corner = cell[PIndex(nx + t1[0] + t2[0], ny + t1[1] + t2[1], nz + t1[2] + t2[2])] == OPAQUE;
                         ao[k] = (side1 && side2) ? 0 : 3 - (side1 + side2 + corner);
                     }
 
@@ -146,11 +158,13 @@ void BuildChunkMesh(World& w, const ChunkCoord& cc, const Chunk& c,
                     // seam into both triangles (the well-known AO anisotropy).
                     if (ao[1] + ao[3] > ao[0] + ao[2]) {
                         const uint16_t q[6] = { 1, 2, 3, 1, 3, 0 };
-                        for (uint16_t i : q) indices.push_back((uint16_t)(base + i));
+                        for (uint16_t i : q) out.push_back((uint16_t)(base + i));
                     } else {
                         const uint16_t q[6] = { 0, 1, 2, 0, 2, 3 };
-                        for (uint16_t i : q) indices.push_back((uint16_t)(base + i));
+                        for (uint16_t i : q) out.push_back((uint16_t)(base + i));
                     }
                 }
             }
+    if (translucentFirst) *translucentFirst = indices.size();
+    indices.insert(indices.end(), clear.begin(), clear.end());
 }
