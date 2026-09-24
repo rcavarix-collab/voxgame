@@ -581,3 +581,14 @@ A top-down, pannable, zoomable view of the player's own discovered essence netwo
 - **Camera:** it opens centred on The Line's pivot (the place the player spends the most time), marked with a faint ring (The Line itself stays unseen) — with the player shown as an arrow. The wheel zooms about the cursor, and dragging pans.
 
 It extends the existing 2D UI pass rather than adding a renderer: the view emits coloured triangles and label requests, which game.cpp batches through the same white-texel quads and crisp text the menus use. The routines that echo older prototypes (`ScaleRadius`, `DrawDottedBezier`, belt rendering and top-N ranking from totality.cpp, solarsystem.cpp and themer.cpp) were rewritten here because those files weren't available; each is isolated in one function so the originals can replace them.
+
+---
+
+## Part XX — Of Interest: the Development Pile
+Wanted, not scheduled. Each entry notes what it would build on so it can be picked up cold.
+
+- **Fluids** (low priority; heavy). Water, lava and the like that flow and settle. Would build on the scheduled-update queue (Part V) as a budgeted per-tick spread rule, LG2.cpp's seawater/fresh-water spreading as the reference behaviour (Part VIII), the see-through pass (4.11) for rendering, and the per-block state byte for fill level. Today's shallow water and glacier ice are solid see-through placeholders.
+- **Vapours and gases** (low priority; heavy). Steam, mist, spores, smoke drifting and dispersing through open space. Could share the fluid machinery with a lighter-than-air rule, and render cheaply as billboarded cards (4.14) or a fog tint sampled from a small grid like the glow light (4.12), so cost scales with what's near the player.
+- **Soft texture filtering, colour bleed and large-scale variation** (4.3/4.13): a crisp/smooth texture mix, neighbour-colour bleed between blocks from a small colour grid, and a gentle world-space tint that breaks up tiling. Designed and agreed; to be judged from a side-by-side render before building.
+- **Plants that drop off** when the block under them is removed (cards currently stay floating).
+- **Hand-authored decorative set** from the first art batch (porcelain, rune shrine, stained glass as a see-through block) — parked.
