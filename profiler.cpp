@@ -95,6 +95,7 @@ void ProfBeginFrame() {
 }
 
 void ProfAdd(ProfSection s, int64_t ticks) { g_current[s] += ticks; }
+void ProfAddMs(ProfSection s, double ms) { g_current[s] += (int64_t)(ms / MsPerTick()); }
 void ProfSetCounter(ProfCounter c, int64_t value) { g_counters[c] = value; }
 void ProfAddCounter(ProfCounter c, int64_t value) { g_counters[c] += value; }
 
@@ -124,6 +125,7 @@ const ProfReport& ProfGetReport() { return g_report; }
 const char* ProfSectionName(ProfSection s) {
     static const char* names[PROF_COUNT] = {
         "TERRAIN", "EVICT", "PHYSICS", "UPDATES", "PULSE", "MUSIC", "WORLD SOUND", "MESH", "SHADOW MAP", "WORLD DRAW", "POST", "UI", "PRESENT",
+        "GPU SHADOW", "GPU WORLD", "GPU POST", "GPU UI",
     };
     return names[s];
 }

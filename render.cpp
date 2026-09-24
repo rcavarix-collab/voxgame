@@ -991,17 +991,71 @@ static void UpdateGlowLight(World& w, Vec3 eye) {
         g_context->UpdateSubresource(g_glowTex, 0, nullptr, g_glowGrid.texels.data(), GLOW_GRID * 4, GLOW_GRID * GLOW_GRID * 4);
 }
 
+// ---- GPU timing: a ring of three frames of timestamp queries (a disjoint
+// query for the clock rate, then one stamp at the frame's start and after
+// each pass). A frame's results are read three frames later, when the GPU
+// has long finished it, with DONOTFLUSH, so asking never waits; not ready
+// (or disjoint -- the clock changed mid-frame) just means no sample.
+enum { GPU_T_BEGIN, GPU_T_SHADOW, GPU_T_WORLD, GPU_T_POST, GPU_T_UI, GPU_T_COUNT };
+struct GpuFrameQueries { ID3D11Query* disjoint = nullptr; ID3D11Query* stamp[GPU_T_COUNT] = {}; bool issued = false; };
+static GpuFrameQueries g_gpuQ[3];
+static int g_gpuFrame = 0;
+static bool g_gpuTiming = false;
+static void GpuStamp(int which) {
+    if (!g_gpuTiming) return;
+    g_context->End(g_gpuQ[g_gpuFrame].stamp[which]);
+}
+static void InitGpuTiming() {
+    D3D11_QUERY_DESC dq = { D3D11_QUERY_TIMESTAMP_DISJOINT, 0 }, tq = { D3D11_QUERY_TIMESTAMP, 0 };
+    bool ok = true;
+    for (GpuFrameQueries& f : g_gpuQ) {
+        ok = ok && SUCCEEDED(g_device->CreateQuery(&dq, &f.disjoint));
+        for (ID3D11Query*& q : f.stamp) ok = ok && SUCCEEDED(g_device->CreateQuery(&tq, &q));
+    }
+    g_gpuTiming = ok; // without it, the GPU rows just read zero
+}
+void GpuFrameBegin() {
+    if (!g_gpuTiming) return;
+    GpuFrameQueries& f = g_gpuQ[g_gpuFrame];
+    if (f.issued) { // this slot's last use, three frames ago: read it back if it's done
+        D3D11_QUERY_DATA_TIMESTAMP_DISJOINT dj;
+        UINT64 t[GPU_T_COUNT];
+        bool ready = g_context->GetData(f.disjoint, &dj, sizeof(dj), D3D11_ASYNC_GETDATA_DONOTFLUSH) == S_OK && !dj.Disjoint && dj.Frequency > 0;
+        for (int i = 0; ready && i < GPU_T_COUNT; i++)
+            ready = g_context->GetData(f.stamp[i], &t[i], sizeof(UINT64), D3D11_ASYNC_GETDATA_DONOTFLUSH) == S_OK;
+        if (ready) {
+            auto ms = [&](int a, int b) { return t[b] > t[a] ? (double)(t[b] - t[a]) * 1000.0 / (double)dj.Frequency : 0.0; };
+            ProfAddMs(PROF_GPU_SHADOW, ms(GPU_T_BEGIN, GPU_T_SHADOW));
+            ProfAddMs(PROF_GPU_WORLD, ms(GPU_T_SHADOW, GPU_T_WORLD));
+            ProfAddMs(PROF_GPU_POST, ms(GPU_T_WORLD, GPU_T_POST));
+            ProfAddMs(PROF_GPU_UI, ms(GPU_T_POST, GPU_T_UI));
+        }
+    }
+    g_context->Begin(f.disjoint);
+    GpuStamp(GPU_T_BEGIN);
+}
+void GpuMarkUIDone() { GpuStamp(GPU_T_UI); }
+void GpuFrameEnd() {
+    if (!g_gpuTiming) return;
+    GpuFrameQueries& f = g_gpuQ[g_gpuFrame];
+    g_context->End(f.disjoint);
+    f.issued = true;
+    g_gpuFrame = (g_gpuFrame + 1) % 3;
+}
+
 void RenderEmptyScene() {
     float black[4] = { 0, 0, 0, 1 };
     g_context->OMSetRenderTargets(1, &g_rtv, g_dsv);
     g_context->ClearRenderTargetView(g_rtv, black);
     g_context->ClearDepthStencilView(g_dsv, D3D11_CLEAR_DEPTH, 1.0f, 0);
+    GpuStamp(GPU_T_SHADOW); GpuStamp(GPU_T_WORLD); GpuStamp(GPU_T_POST); // no world drawn: every pass took nothing
 }
 
 void RenderScene(World& w, const Mat4& view, const Mat4& proj, Vec3 eye, Vec3 forward, Vec3 up, float dayTime) {
     SkyState sky = ComputeSky(dayTime);
     bool shadows = g_shadows && g_shadowsAvailable && sky.sunLight > 0.001f;
     if (shadows) { ProfScope prof(PROF_SHADOW); UpdateShadowMap(w, eye, sky.sunDir); }
+    GpuStamp(GPU_T_SHADOW);
     if (!g_shadows) g_shadowValid = false; // re-render on re-enable
 
     // The frame's atmosphere, shared by sky and world (b2).
@@ -1141,6 +1195,7 @@ void RenderScene(World& w, const Mat4& view, const Mat4& proj, Vec3 eye, Vec3 fo
         DrawTranslucent(w, frustum, eye);
     }
     ProfAdd(PROF_WORLD, ProfNow() - worldStart);
+    GpuStamp(GPU_T_WORLD);
 
     // Post pass: scene + depth in, backbuffer out.
     if (post) {
@@ -1170,6 +1225,7 @@ void RenderScene(World& w, const Mat4& view, const Mat4& proj, Vec3 eye, Vec3 fo
         g_context->PSSetShaderResources(0, 3, nulls3);
         g_context->OMSetDepthStencilState(g_depthState, 0);
     }
+    GpuStamp(GPU_T_POST);
 }
 
 // =======================================================================
@@ -1512,6 +1568,7 @@ bool InitD3D(HWND hwnd) {
     CreateSizeDependentTargets();
     ProfBootMark("GRAPHICS DEVICE");
     PrepareShaders();
+    InitGpuTiming();
 
     // The sky and world shaders share the atmosphere block (fog must match
     // the sky exactly), prepended at compile time.

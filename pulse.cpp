@@ -3,6 +3,7 @@
 #include "pulse.h"
 #include "shapes.h"
 #include <cmath>
+#include <algorithm>
 #include <deque>
 
 PulseSystem g_pulse;
@@ -126,15 +127,16 @@ void PulseSystem::OnChunkArrived(const ChunkCoord& cc, const Chunk& c) {
 int PulseSystem::NetworkAt(World& w, const PulseTuning& t, const PulseCell& pipe) {
     if (w.edits != m_seenEdits) { m_pipeNet.clear(); m_nets.clear(); m_seenEdits = w.edits; }
     auto it = m_pipeNet.find(pipe);
-    if (it != m_pipeNet.end()) return it->second;
+    if (it != m_pipeNet.end()) return it->second.net;
     if (!BlockIsPulsePipe(w.Get(pipe.x, pipe.y, pipe.z))) return -1;
     int id = (int)m_nets.size();
     m_nets.emplace_back();
     Network& net = m_nets.back();
     std::deque<PulseCell> open{ pipe };
-    m_pipeNet[pipe] = id;
+    m_pipeNet[pipe] = { id, 0 };
     while (!open.empty()) {
         PulseCell c = open.front(); open.pop_front();
+        m_pipeNet[c].index = (int)net.pipes.size();
         net.pipes.push_back(c);
         BlockID nb[FACE_COUNT];
         for (int f = 0; f < FACE_COUNT; f++) {
@@ -142,7 +144,7 @@ int PulseSystem::NetworkAt(World& w, const PulseTuning& t, const PulseCell& pipe
             nb[f] = w.Get(n.x, n.y, n.z);
             if (BlockIsPulsePipe(nb[f])) {
                 if (m_pipeNet.count(n) || (int)(net.pipes.size() + open.size()) >= t.maxNetworkCells) continue;
-                m_pipeNet[n] = id;
+                m_pipeNet[n] = { id, -1 };
                 open.push_back(n);
             } else if (IsStore(nb[f])) {
                 net.outlets.push_back({ c, n, f, false });
@@ -152,6 +154,7 @@ int PulseSystem::NetworkAt(World& w, const PulseTuning& t, const PulseCell& pipe
         for (int f = 0; f < FACE_COUNT; f++)
             if ((mouths & (1u << f)) && !BlockSolid(nb[f])) net.outlets.push_back({ c, Step(c, f), f, true });
     }
+    net.toward.resize(net.outlets.size());
     return id;
 }
 
@@ -178,24 +181,39 @@ bool PulseSystem::Route(World& w, const PulseTuning& t, const PulseCell& from, c
     }
     if (!pick) return false;
 
-    // The way there, through this network's pipes.
-    std::unordered_map<PulseCell, PulseCell, PulseCellHash> came;
-    std::deque<PulseCell> open{ from };
-    came[from] = from;
-    while (!open.empty() && !came.count(pick->pipe)) {
-        PulseCell c = open.front(); open.pop_front();
-        for (int f = 0; f < FACE_COUNT; f++) {
-            PulseCell nx = Step(c, f);
-            if (came.count(nx)) continue;
-            auto m = m_pipeNet.find(nx);
-            if (m == m_pipeNet.end() || m->second != id) continue;
-            came[nx] = c;
-            open.push_back(nx);
+    // The way there, through this network's pipes: follow the outlet's
+    // step table (a breadth-first sweep out from the outlet, made once).
+    size_t k = (size_t)(pick - net.outlets.data());
+    std::vector<int8_t>& toward = net.toward[k];
+    if (toward.empty()) {
+        toward.assign(net.pipes.size(), -1);
+        std::deque<int> open;
+        int start = m_pipeNet.find(pick->pipe)->second.index; // the outlet's pipe is in this network by construction
+        toward[start] = FACE_COUNT; // here
+        open.push_back(start);
+        while (!open.empty()) {
+            const PulseCell c = net.pipes[open.front()]; open.pop_front();
+            for (int f = 0; f < FACE_COUNT; f++) {
+                auto m = m_pipeNet.find(Step(c, f));
+                if (m == m_pipeNet.end() || m->second.net != id || m->second.index < 0 || toward[m->second.index] != -1) continue;
+                toward[m->second.index] = (int8_t)(f ^ 1); // from there, step back this way
+                open.push_back(m->second.index);
+            }
         }
     }
-    if (!came.count(pick->pipe)) return false;
     std::vector<PulseCell> pipes;
-    for (PulseCell c = pick->pipe;; c = came[c]) { pipes.push_back(c); if (c == from) break; }
+    PulseCell c = from;
+    for (int guard = 0; guard <= (int)net.pipes.size(); guard++) {
+        pipes.push_back(c);
+        auto at = m_pipeNet.find(c);
+        int ci = (at != m_pipeNet.end() && at->second.net == id) ? at->second.index : -1;
+        int step = ci >= 0 ? toward[ci] : -1;
+        if (step == FACE_COUNT) break;         // arrived
+        if (step < 0) return false;            // not reachable (a network cut short by its size limit)
+        c = Step(c, step);
+    }
+    if (!(pipes.back() == pick->pipe)) return false;
+    std::reverse(pipes.begin(), pipes.end());   // the builder below expects outlet-first
 
     out = Moving();
     if (source) out.path.push_back(*source);

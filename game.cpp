@@ -1312,7 +1312,8 @@ static void UIDrawBatch(const UIVertex* verts, size_t count, ID3D11ShaderResourc
 // frame (so g_context's shader/IA state gets fully re-set here rather
 // than assumed).
 void RenderUIPass() {
-    std::vector<UIVertex> glyphVerts; // font atlas + white cell (panels, borders, text, crosshair)
+    static std::vector<UIVertex> glyphVerts; // font atlas + white cell (panels, borders, text, crosshair); reused every frame
+    glyphVerts.clear();
 
     bool menuIsOpen = g_menuScreen != MenuScreen::None;
 
@@ -1327,7 +1328,8 @@ void RenderUIPass() {
     // the HUD and menu glyph runs -- see the end of this function).
     // The hotbar: ten slots the player fills from the block library (E).
     if (g_player.hotbarIndex < 0 || g_player.hotbarIndex >= HOTBAR_SLOTS) g_player.hotbarIndex = 0; // an older save's index
-    std::vector<UIVertex> iconVerts;
+    static std::vector<UIVertex> iconVerts;
+    iconVerts.clear();
     for (int i = 0; i < HOTBAR_SLOTS; i++) {
         UiRect sr = HotbarSlotRect(g_screenW, g_screenH, i);
         float x0 = sr.x0, x1 = sr.x1, y0 = sr.y0, y1 = sr.y1;
@@ -1480,7 +1482,8 @@ void RenderUIPass() {
     // stays bright as the drop target. Its icons and the one being dragged
     // go in their own batches after the menu glyphs, so the panel can't
     // cover them.
-    std::vector<UIVertex> libIconVerts, dragIconVerts;
+    static std::vector<UIVertex> libIconVerts, dragIconVerts;
+    libIconVerts.clear(); dragIconVerts.clear();
     if (g_menuScreen == MenuScreen::Library) {
         const int count = g_placeableList.count;
         LibraryLayout L = ComputeLibraryLayout(g_screenW, g_screenH, count);

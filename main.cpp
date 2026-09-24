@@ -173,7 +173,14 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
         if (g_menuScreen != MenuScreen::None) {
             accumulator = 0.0f;
         } else {
-            while (accumulator >= FIXED_DT) {
+            // At most five ticks a frame: after a stall (a window drag, a
+            // slow disk), running every missed tick at once makes the next
+            // frame slow too, and that one the next -- a hitch that feeds
+            // itself. Past five, the backlog is let go (the world runs a
+            // touch behind real time for that moment instead).
+            const int MAX_TICKS_PER_FRAME = 5;
+            int ticks = 0;
+            while (accumulator >= FIXED_DT && ticks++ < MAX_TICKS_PER_FRAME) {
                 // Day clock (Section 13): advances only here, gated
                 // identically to every other simulation system -- the
                 // single authoritative source of "what time is it,"
@@ -220,6 +227,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
 
                 accumulator -= FIXED_DT;
             }
+            if (accumulator >= FIXED_DT) accumulator = fmodf(accumulator, FIXED_DT);
         }
 
         // Once per frame, not per tick: after a stall the tick loop runs
@@ -254,6 +262,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
         Mat4 proj = MatPerspectiveFovLH(fovRadians, (float)g_screenW / g_screenH, 0.1f, 500.0f);
         // The essence map covers the whole screen: skip the world (and its
         // post effects) entirely while it's open rather than draw it unseen.
+        GpuFrameBegin();
         if (g_menuScreen == MenuScreen::Map) RenderEmptyScene();
         else RenderScene(g_world, view, proj, eye, f, u, g_dayTimeSeconds);
 
@@ -261,6 +270,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
             ProfScope prof(PROF_UI);
             RenderUIPass();
         }
+        GpuMarkUIDone();
+        GpuFrameEnd();
 
         {
             ProfScope prof(PROF_PRESENT);

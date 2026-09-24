@@ -27,6 +27,13 @@ enum ProfSection {
     PROF_POST,      // post pass (outlines, SSAO, bloom)
     PROF_UI,        // UI build + draw submission
     PROF_PRESENT,   // Present(): mostly vsync wait, not work
+    // GPU time, from timestamp queries read back two frames late (so it
+    // never stalls): what the graphics card spent on each pass. Measures only
+    // our own drawing; nothing about the machine is read.
+    PROF_GPU_SHADOW,
+    PROF_GPU_WORLD,
+    PROF_GPU_POST,
+    PROF_GPU_UI,
     PROF_COUNT
 };
 
@@ -46,6 +53,7 @@ extern bool g_showProfiler; // overlay visibility (settings.cfg, Display setting
 
 void ProfBeginFrame();
 void ProfAdd(ProfSection s, int64_t ticks);
+void ProfAddMs(ProfSection s, double ms); // for times measured elsewhere (the GPU's)
 void ProfSetCounter(ProfCounter c, int64_t value);
 void ProfAddCounter(ProfCounter c, int64_t value);
 // Closes the frame: `frameSeconds` is the full frame-to-frame time.

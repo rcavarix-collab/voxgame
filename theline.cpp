@@ -222,7 +222,11 @@ LineSaveData SnapshotLine(const LineState& s) {
     d.cells.reserve(s.dwell.size());
     for (const auto& kv : s.dwell) {
         const DwellCell& c = kv.second;
-        if (!(c.t > 0)) continue;
+        // Places faded below a second of time don't count toward anything any
+        // more; leaving them out keeps the saved history (and, after a load,
+        // the live one) the size of where the player actually spends time,
+        // not of everywhere they've ever walked.
+        if (!(c.t / s.dwellScale >= 1.0)) continue;
         d.cells.push_back({ (float)(c.x / c.t), (float)(c.z / c.t), (float)(c.t / s.dwellScale) });
     }
     d.angMom = s.player.angMom;

@@ -141,6 +141,11 @@ void RenderEmptyScene();
 // render.cpp for the full reasoning; this is the single entry point
 // the game loop calls once per frame.
 void RebuildDirtyChunks(World& w, int camCx, int camCy, int camCz);
+// GPU timing (profiler.h PROF_GPU_*): bracket the frame's passes with
+// timestamp queries; results two frames old are added to the profiler.
+void GpuFrameBegin();
+void GpuMarkUIDone(); // after the UI pass
+void GpuFrameEnd();   // before Present
 
 // ---- View-frustum culling (Section 4.2-perf) ----
 //

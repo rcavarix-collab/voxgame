@@ -105,7 +105,13 @@ private:
         std::vector<PulseCell> pipes;
         std::vector<Outlet> outlets;
         size_t next = 0;  // outlets take turns
+        // For each outlet (built the first time it's needed): the face to
+        // step through from each pipe (by its index in `pipes`) to get one
+        // pipe nearer that outlet, -1 unreached. Routes then just follow it:
+        // no search, and nothing allocated, per pulse.
+        std::vector<std::vector<int8_t>> toward;
     };
+    struct PipeRef { int net = -1; int index = -1; };
     struct Moving {
         std::vector<PulseCell> path; // cell centres to pass through
         float along = 0;             // cells travelled along the path
@@ -130,7 +136,7 @@ private:
     bool StepPiped(World& w, const PulseTuning& t, Moving& m, float dt);
 
     std::unordered_map<PulseCell, float, PulseCellHash> m_harvesters; // each one's progress toward its next pulse
-    std::unordered_map<PulseCell, int, PulseCellHash> m_pipeNet;
+    std::unordered_map<PulseCell, PipeRef, PulseCellHash> m_pipeNet;
     std::vector<Network> m_nets;
     std::unordered_map<PulseCell, int, PulseCellHash> m_reserved; // pulses on their way to each store
     std::vector<Moving> m_moving;

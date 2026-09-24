@@ -29,6 +29,12 @@
 #include "musiclevel.h"
 #include <cstdint>
 #include <cmath>
+#include <cstring>
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <mutex>
+#include <thread>
 
 #pragma comment(lib, "xaudio2.lib")
 
@@ -46,11 +52,20 @@ static double g_nextChunkStartTime = -1.0; // -1 = inactive (title screen / paus
 // queue runs dry.
 static const int MUSIC_CHUNK_SAMPLES = MUSIC_SAMPLE_RATE / 4;
 static const int MUSIC_LOOKAHEAD_CHUNKS = 16;
-// Chunks generated synchronously when playback (re)starts (~1.3 ms each):
-// a full second of audio, so the heavy first frames after a New Game or
-// Load (column generation, a burst of mesh rebuilds) can't drain the voice
-// before the one-chunk-per-frame refill catches up.
-static const int MUSIC_PRIME_CHUNKS = 4;
+
+// The music is synthesized on its own thread (Part XIV): the frame never
+// pays for it, however busy the section. The worker keeps the lookahead
+// full, generating each chunk *outside* the lock (from copies of the
+// synth state, colour and intensity) and publishing it -- levels, start
+// time, submission -- in a brief locked step. Starting or stopping
+// playback bumps g_musicEpoch under the lock, so a chunk begun for the old
+// position is simply thrown away. The main thread's readers (audible time,
+// the music level) take the lock only for a few reads.
+static std::mutex g_musicLock;
+static std::condition_variable g_musicWake;
+static std::thread g_musicThread;
+static std::atomic<bool> g_musicQuit{ false };
+static uint32_t g_musicEpoch = 0;
 
 // Fixed pool of PCM buffers, reused cyclically instead of new/delete per
 // chunk. XAudio2 reads a submitted buffer from its own thread until it
@@ -123,31 +138,38 @@ static void WaitForMusicDrain() {
     g_musicNeedsDrain = false;
 }
 
-// Samples already generated into the next pool slot (RefillMusicQueueIfNeeded
-// fills it a slice per frame; a chunk is submitted once it's full).
-static int g_musicFill = 0;
-// A slice per frame: ~46 ms of audio, so no single frame carries a whole
-// quarter-second of synthesis (the busiest section, Midday, used to show
-// as a hitch four times a second on a modest machine). At 60 fps this still
-// generates ~2.8x faster than it plays, so the 4 s lookahead stays full.
-static const int MUSIC_SLICE_SAMPLES = 2048;
-
-// Generates (the rest of) the next chunk and submits it.
-static void SubmitOneMusicChunk() {
-    int16_t* chunk = g_musicPool[g_musicPoolNext];
-    if (g_musicFill < MUSIC_CHUNK_SAMPLES)
-        GenerateMusicChunk(g_nextChunkStartTime + (double)g_musicFill / MUSIC_SAMPLE_RATE, MUSIC_CHUNK_SAMPLES - g_musicFill,
-                           (double)g_musicIntensity, &g_musicState, chunk + g_musicFill, &g_musicColour);
-    g_musicFill = 0;
-    g_musicPoolNext = (g_musicPoolNext + 1) % MUSIC_POOL_SIZE;
-    int slot = (int)(chunk - g_musicPool[0]) / MUSIC_CHUNK_SAMPLES;
-    g_chunkStartTime[slot] = g_nextChunkStartTime;
-    MeasureMusicLevels(g_levelMeter, chunk, MUSIC_CHUNK_SAMPLES, LEVEL_STEPS, MUSIC_SAMPLE_RATE, g_chunkLevels[slot]);
-    g_nextChunkStartTime += (double)MUSIC_CHUNK_SAMPLES / MUSIC_SAMPLE_RATE;
-    XAUDIO2_BUFFER buf = {};
-    buf.AudioBytes = MUSIC_CHUNK_SAMPLES * sizeof(int16_t);
-    buf.pAudioData = (const BYTE*)chunk;
-    g_musicVoice->SubmitSourceBuffer(&buf);
+static void MusicWorker() {
+    std::unique_lock<std::mutex> lk(g_musicLock);
+    while (!g_musicQuit) {
+        bool due = g_musicVoice && g_musicPool && g_nextChunkStartTime >= 0.0 && !g_musicNeedsDrain
+                   && QueuedMusicBuffers() < (UINT32)MUSIC_LOOKAHEAD_CHUNKS;
+        if (!due) { g_musicWake.wait_for(lk, std::chrono::milliseconds(20)); continue; }
+        // Take the job: which slot, from when, with what -- then let go.
+        uint32_t epoch = g_musicEpoch;
+        int slot = g_musicPoolNext;
+        int16_t* chunk = g_musicPool[slot];
+        double start = g_nextChunkStartTime;
+        double intensity = (double)g_musicIntensity;
+        MusicColour colour = g_musicColour;
+        MusicState state = g_musicState;
+        MusicLevelMeter meter = g_levelMeter;
+        lk.unlock();
+        float levels[LEVEL_STEPS];
+        GenerateMusicChunk(start, MUSIC_CHUNK_SAMPLES, intensity, &state, chunk, &colour);
+        MeasureMusicLevels(meter, chunk, MUSIC_CHUNK_SAMPLES, LEVEL_STEPS, MUSIC_SAMPLE_RATE, levels);
+        lk.lock();
+        if (epoch != g_musicEpoch || g_musicQuit) continue; // playback restarted or stopped meanwhile: stale
+        g_musicState = state;
+        g_levelMeter = meter;
+        memcpy(g_chunkLevels[slot], levels, sizeof(levels));
+        g_chunkStartTime[slot] = start;
+        g_musicPoolNext = (slot + 1) % MUSIC_POOL_SIZE;
+        g_nextChunkStartTime = start + (double)MUSIC_CHUNK_SAMPLES / MUSIC_SAMPLE_RATE;
+        XAUDIO2_BUFFER buf = {};
+        buf.AudioBytes = MUSIC_CHUNK_SAMPLES * sizeof(int16_t);
+        buf.pAudioData = (const BYTE*)chunk;
+        g_musicVoice->SubmitSourceBuffer(&buf);
+    }
 }
 
 // Called on New Game, Load Game, Resume from Pause, and Quick Load --
@@ -158,16 +180,21 @@ static void SubmitOneMusicChunk() {
 // never a stale, independently-advancing audio position to reconcile.
 void StartMusicPlayback() {
     if (!g_musicVoice) return;
-    g_musicVoice->Stop();
-    g_musicVoice->FlushSourceBuffers();
-    g_musicNeedsDrain = true;
-    WaitForMusicDrain();
-    ResetMusicState(&g_musicState);
-    g_musicFill = 0; // any half-made chunk belonged to the old position
-    g_levelMeter = MusicLevelMeter();
-    g_nextChunkStartTime = g_dayTimeSeconds;
-    for (int i = 0; i < MUSIC_PRIME_CHUNKS; i++) SubmitOneMusicChunk();
-    g_musicVoice->Start();
+    {
+        std::lock_guard<std::mutex> lk(g_musicLock);
+        g_musicVoice->Stop();
+        g_musicVoice->FlushSourceBuffers();
+        g_musicNeedsDrain = true;
+        WaitForMusicDrain();
+        ResetMusicState(&g_musicState);
+        g_levelMeter = MusicLevelMeter();
+        g_nextChunkStartTime = g_dayTimeSeconds;
+        g_musicEpoch++; // anything the worker had begun belongs to the old position
+        // Playing an empty queue is silence; the worker's first chunk (a
+        // millisecond or two) starts the sound.
+        g_musicVoice->Start();
+    }
+    g_musicWake.notify_one();
 }
 
 // Called whenever any menu opens during play (pause is silence, by
@@ -177,29 +204,18 @@ void StartMusicPlayback() {
 // by which point it has almost always already happened.
 void StopMusicPlayback() {
     if (!g_musicVoice) return;
+    std::lock_guard<std::mutex> lk(g_musicLock);
     g_musicVoice->Stop();
     g_musicVoice->FlushSourceBuffers();
     g_musicNeedsDrain = true;
     g_nextChunkStartTime = -1.0;
-    g_musicFill = 0;
+    g_musicEpoch++;
 }
 
-// Tops up the lookahead queue by at most one chunk per call, so music
-// generation never costs more than one chunk in any single frame. A
-// natural no-op at the title screen and while paused, since both stop
-// playback (g_nextChunkStartTime < 0).
+// The worker keeps the queue topped up by itself; a nudge each frame just
+// means a freshly drained queue is noticed without waiting out its timeout.
 void RefillMusicQueueIfNeeded() {
-    if (!g_musicVoice || g_nextChunkStartTime < 0.0) return;
-    UINT32 queued = QueuedMusicBuffers();
-    if (queued >= (UINT32)MUSIC_LOOKAHEAD_CHUNKS) return;
-    // Running low (a long stall): finish the chunk now rather than starve.
-    if (queued < 2) { SubmitOneMusicChunk(); return; }
-    int n = MUSIC_CHUNK_SAMPLES - g_musicFill;
-    if (n > MUSIC_SLICE_SAMPLES) n = MUSIC_SLICE_SAMPLES;
-    GenerateMusicChunk(g_nextChunkStartTime + (double)g_musicFill / MUSIC_SAMPLE_RATE, n, (double)g_musicIntensity,
-                       &g_musicState, g_musicPool[g_musicPoolNext] + g_musicFill, &g_musicColour);
-    g_musicFill += n;
-    if (g_musicFill >= MUSIC_CHUNK_SAMPLES) SubmitOneMusicChunk();
+    if (g_musicVoice) g_musicWake.notify_one();
 }
 
 static double NowSeconds() {
@@ -218,6 +234,7 @@ static int PlayingSlot(double now, UINT32 queued) {
 }
 
 double AudibleMusicTime() {
+    std::lock_guard<std::mutex> lk(g_musicLock);
     if (!g_musicVoice || g_nextChunkStartTime < 0.0 || !g_musicPool) return g_dayTimeSeconds;
     double now = NowSeconds();
     int slot = PlayingSlot(now, QueuedMusicBuffers());
@@ -228,6 +245,7 @@ double AudibleMusicTime() {
 }
 
 float CurrentMusicLevel() {
+    std::lock_guard<std::mutex> lk(g_musicLock);
     // Silent (title, menus, paused): the glow resets; it swells back in
     // from dark when the music starts again.
     if (!g_musicVoice || g_nextChunkStartTime < 0.0 || !g_musicPool) {
@@ -282,12 +300,19 @@ bool InitAudio() {
         g_worldVoice = nullptr;
     }
     ApplyAudioVolumes();
+    g_musicQuit = false;
+    g_musicThread = std::thread(MusicWorker); // idles until playback starts
     // Deliberately not started here -- the title screen is silent by
     // design (Section 13); playback only begins via StartMusicPlayback().
     return true;
 }
 
 void ShutdownAudio() {
+    if (g_musicThread.joinable()) { // the worker first: it submits to the music voice
+        g_musicQuit = true;
+        g_musicWake.notify_one();
+        g_musicThread.join();
+    }
     if (g_worldVoice) { g_worldVoice->Stop(); g_worldVoice->DestroyVoice(); g_worldVoice = nullptr; }
     delete[] g_worldPool; g_worldPool = nullptr;
     delete g_palette; g_palette = nullptr;
@@ -323,7 +348,8 @@ static void PumpWorldSound() {
         g_worldQueue = want < WORLD_QUEUE_MIN ? WORLD_QUEUE_MIN : want > WORLD_QUEUE_MAX ? WORLD_QUEUE_MAX : want;
     }
     if (g_worldIdle && g_palette->Silent()) return; // nothing to say: render nothing
-    bool running = g_nextChunkStartTime >= 0.0;
+    bool running;
+    { std::lock_guard<std::mutex> lk(g_musicLock); running = g_nextChunkStartTime >= 0.0; }
     double t = AudibleMusicTime() + (double)queued * WORLD_BUFFER_SAMPLES / MUSIC_SAMPLE_RATE;
     float buf[WORLD_BUFFER_SAMPLES * 2];
     while (queued < (UINT32)g_worldQueue) {
@@ -355,16 +381,21 @@ void SetWorldGait(int gait, SoundMaterial ground) { if (g_palette) g_palette->Se
 void FadeWorldSounds(float seconds) { if (g_palette) { g_palette->FadeOut(seconds); g_palette->SetAmbientEnabled(false); } }
 
 void UpdateWorldSound(const SoundAxes& axes, const AmbientScene& scene, bool playing, const float listener[4]) {
-    g_musicColour.positive = axes.positive;
-    g_musicColour.activity = axes.activity;
-    g_musicColour.mechanical = axes.mechanical;
+    bool musicRunning;
+    {
+        std::lock_guard<std::mutex> lk(g_musicLock);
+        g_musicColour.positive = axes.positive;
+        g_musicColour.activity = axes.activity;
+        g_musicColour.mechanical = axes.mechanical;
+        musicRunning = g_nextChunkStartTime >= 0.0;
+    }
     if (!g_palette) return;
     g_palette->SetAxes(axes);
     g_palette->SetScene(scene);
     g_palette->SetIntensity(g_musicIntensity);
     g_palette->SetListener(listener[0], listener[1], listener[2], listener[3]);
     g_palette->SetMono(g_monoAudio);
-    bool live = playing && g_nextChunkStartTime >= 0.0;
+    bool live = playing && musicRunning;
     g_palette->SetAmbientEnabled(live);
     if (live) g_worldIdle = false; // the scheduler may place something this bar
     PumpWorldSound();
