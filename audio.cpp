@@ -82,7 +82,7 @@ static SoundPalette* g_palette = nullptr;
 static const int WORLD_BUFFER_SAMPLES = 512;   // 11.6 ms
 static const int WORLD_QUEUE = 3;              // ~35 ms ahead: latency + slack for a slow frame
 static const int WORLD_POOL = WORLD_QUEUE + 2;
-static int16_t (*g_worldPool)[WORLD_BUFFER_SAMPLES] = nullptr;
+static int16_t (*g_worldPool)[WORLD_BUFFER_SAMPLES * 2] = nullptr; // stereo, interleaved
 static int g_worldPoolNext = 0;
 static bool g_worldIdle = true;                 // nothing sounding: no buffers rendered
 
@@ -239,8 +239,13 @@ bool InitAudio() {
     if (FAILED(g_xaudio2->CreateSourceVoice(&g_musicVoice, &wfx))) return false;
     g_musicPool = new int16_t[MUSIC_POOL_SIZE][MUSIC_CHUNK_SAMPLES];
     // The palette's voice is optional: without it the game just has music.
-    if (SUCCEEDED(g_xaudio2->CreateSourceVoice(&g_worldVoice, &wfx))) {
-        g_worldPool = new int16_t[WORLD_POOL][WORLD_BUFFER_SAMPLES];
+    // Stereo (the music stays mono): world sounds sit where they happen.
+    WAVEFORMATEX wfx2 = wfx;
+    wfx2.nChannels = 2;
+    wfx2.nBlockAlign = (WORD)(2 * wfx.wBitsPerSample / 8);
+    wfx2.nAvgBytesPerSec = wfx2.nSamplesPerSec * wfx2.nBlockAlign;
+    if (SUCCEEDED(g_xaudio2->CreateSourceVoice(&g_worldVoice, &wfx2))) {
+        g_worldPool = new int16_t[WORLD_POOL][WORLD_BUFFER_SAMPLES * 2];
         g_palette = new SoundPalette();
         g_worldVoice->Start();
     } else {
@@ -283,17 +288,17 @@ static void PumpWorldSound() {
     if (g_worldIdle && g_palette->Silent()) return; // nothing to say: render nothing
     bool running = g_nextChunkStartTime >= 0.0;
     double t = AudibleMusicTime() + (double)queued * WORLD_BUFFER_SAMPLES / MUSIC_SAMPLE_RATE;
-    float buf[WORLD_BUFFER_SAMPLES];
+    float buf[WORLD_BUFFER_SAMPLES * 2];
     while (queued < (UINT32)WORLD_QUEUE) {
-        g_palette->Render(buf, WORLD_BUFFER_SAMPLES, t, running);
+        g_palette->RenderStereo(buf, WORLD_BUFFER_SAMPLES, t, running);
         int16_t* out = g_worldPool[g_worldPoolNext];
         g_worldPoolNext = (g_worldPoolNext + 1) % WORLD_POOL;
-        for (int i = 0; i < WORLD_BUFFER_SAMPLES; i++) {
+        for (int i = 0; i < WORLD_BUFFER_SAMPLES * 2; i++) {
             float v = buf[i] > 1.0f ? 1.0f : buf[i] < -1.0f ? -1.0f : buf[i];
             out[i] = (int16_t)(v * 32767.0f);
         }
         XAUDIO2_BUFFER xb = {};
-        xb.AudioBytes = WORLD_BUFFER_SAMPLES * sizeof(int16_t);
+        xb.AudioBytes = WORLD_BUFFER_SAMPLES * 2 * sizeof(int16_t);
         xb.pAudioData = (const BYTE*)out;
         g_worldVoice->SubmitSourceBuffer(&xb);
         queued++;
@@ -309,9 +314,10 @@ void PlayWorldSound(const SoundCue& cue) {
     PumpWorldSound(); // start it now, not next frame
 }
 void ReleaseWorldSound(SoundId id) { if (g_palette) g_palette->Release(id); }
+void SetWorldGait(int gait, SoundMaterial ground) { if (g_palette) g_palette->SetGait(gait, ground); }
 void FadeWorldSounds(float seconds) { if (g_palette) { g_palette->FadeOut(seconds); g_palette->SetAmbientEnabled(false); } }
 
-void UpdateWorldSound(const SoundAxes& axes, const AmbientScene& scene, bool playing) {
+void UpdateWorldSound(const SoundAxes& axes, const AmbientScene& scene, bool playing, const float listener[4]) {
     g_musicColour.positive = axes.positive;
     g_musicColour.activity = axes.activity;
     g_musicColour.mechanical = axes.mechanical;
@@ -319,6 +325,8 @@ void UpdateWorldSound(const SoundAxes& axes, const AmbientScene& scene, bool pla
     g_palette->SetAxes(axes);
     g_palette->SetScene(scene);
     g_palette->SetIntensity(g_musicIntensity);
+    g_palette->SetListener(listener[0], listener[1], listener[2], listener[3]);
+    g_palette->SetMono(g_monoAudio);
     bool live = playing && g_nextChunkStartTime >= 0.0;
     g_palette->SetAmbientEnabled(live);
     if (live) g_worldIdle = false; // the scheduler may place something this bar

@@ -15,8 +15,6 @@ static bool g_wasOnGround = true, g_wasSliding = false, g_wasSprinting = false;
 static float g_prevVelY = 0.0f;
 static float g_lastX = 0.0f, g_lastZ = 0.0f;
 static bool g_haveLast = false;
-static float g_stride = 0.0f;
-static uint32_t g_steps = 0;
 static float g_speed = 0.0f;           // smoothed horizontal speed
 static bool g_lineNear = false;
 static float g_lineCooldown = 0.0f;
@@ -30,7 +28,7 @@ static SoundMaterial MaterialUnderFeet() {
 void WorldSoundReset() {
     g_soundscape.Reset();
     g_wasOnGround = true; g_wasSliding = g_wasSprinting = false;
-    g_prevVelY = 0; g_haveLast = false; g_stride = 0; g_speed = 0;
+    g_prevVelY = 0; g_haveLast = false; g_speed = 0;
     g_lineNear = false; g_lineCooldown = 0;
 }
 
@@ -49,7 +47,6 @@ void WorldSoundTick(float dt) {
         SoundCue c; c.id = SND_LAND; c.material = MaterialUnderFeet();
         c.strength = fminf(1.0f, (-g_prevVelY - 4.0f) / 16.0f);
         PlayWorldSound(c);
-        g_stride = 0;
     }
     if (sliding && !g_wasSliding) {
         SoundCue c; c.id = SND_SLIDE; PlayWorldSound(c);
@@ -58,16 +55,12 @@ void WorldSoundTick(float dt) {
     if (!sliding && g_wasSliding) ReleaseWorldSound(SND_SLIDE);
     bool sprinting = p.sprinting && g_speed > 5.0f;
     if (sprinting && !g_wasSprinting) { SoundCue h; h.id = SND_HEY; PlayWorldSound(h); }
-    // Footfalls: one per stride on the ground (not while sliding).
-    if (p.onGround && !sliding && moved > 0) {
-        float stride = p.crouching ? 1.2f : p.sprinting ? 2.6f : 2.2f;
-        g_stride += moved;
-        if (g_stride >= stride) {
-            g_stride -= stride;
-            SoundCue c; c.id = SND_FOOTFALL; c.material = MaterialUnderFeet(); c.key = g_steps++;
-            PlayWorldSound(c);
-        }
-    }
+    // Footsteps on the beat (the palette keeps time): the gait while moving
+    // on the ground -- nothing while still, airborne or sliding.
+    int gait = SoundPalette::GAIT_NONE;
+    if (p.onGround && !sliding && g_speed > 0.8f)
+        gait = p.crouching ? SoundPalette::GAIT_CROUCH : (p.sprinting && g_speed > 5.0f) ? SoundPalette::GAIT_SPRINT : SoundPalette::GAIT_WALK;
+    SetWorldGait(gait, MaterialUnderFeet());
     // The Line passing through the player's cell (Timeslip).
     g_lineCooldown -= dt;
     bool near = g_line.distance < 0.8f && fabsf(p.y + 0.5f - g_line.lineY) < 2.5f;
@@ -101,20 +94,23 @@ void WorldSoundFrame(float dt, bool playing) {
         int n = g_soundscape.TakeDiscoveries(found, 8);
         for (int i = 0; i < n; i++) { SoundCue c; c.id = found[i]; PlayWorldSound(c); }
     }
-    UpdateWorldSound(g_soundscape.Axes(), g_soundscape.Scene(), playing);
+    const float listener[4] = { p.x, p.y + p.eyeHeight, p.z, p.yaw };
+    UpdateWorldSound(g_soundscape.Axes(), g_soundscape.Scene(), playing, listener);
 }
 
-void WorldSoundPlace(BlockID id) {
+void WorldSoundPlace(BlockID id, int x, int y, int z) {
     g_soundscape.NoteInteraction();
     SoundCue c; c.id = SND_SET; c.material = BlockSoundMaterial(id);
+    c.placed = true; c.x = x + 0.5f; c.y = y + 0.5f; c.z = z + 0.5f;
     PlayWorldSound(c);
     // The placeholder machine stands in for a machine starting up (5.6 P4).
-    if (id == BLOCK_MACHINE) { SoundCue o; o.id = SND_ONLINE; PlayWorldSound(o); }
+    if (id == BLOCK_MACHINE) { SoundCue o = c; o.id = SND_ONLINE; PlayWorldSound(o); }
 }
 
-void WorldSoundBreak(BlockID id) {
+void WorldSoundBreak(BlockID id, int x, int y, int z) {
     g_soundscape.NoteInteraction();
     SoundCue c; c.id = SND_TAKE; c.material = BlockSoundMaterial(id);
+    c.placed = true; c.x = x + 0.5f; c.y = y + 0.5f; c.z = z + 0.5f;
     PlayWorldSound(c);
 }
 

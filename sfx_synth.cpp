@@ -174,6 +174,8 @@ struct Voice {
     float fade = 1; int64_t fadeStart = -1, fadeLen = 1;
     float boost = 1;
     bool merged = false;
+    float pan = 0;             // -1 left .. +1 right
+    bool panSet = false;       // set by the recipe itself (else the sound's placement)
 };
 
 double NoiseNorm(double bw) {
@@ -250,22 +252,31 @@ struct SoundPalette::Impl {
     // Recent tonal onsets (the interval rule, and the tests)
     NoteLog log[64]; int logN = 0, logHead = 0;
     // Bus
-    std::vector<float> echo = std::vector<float>(kEchoLen, 0.0f);
-    int echoW = 0; double echoDelay = 0.369 * kSR; double e1 = 0, e2 = 0;
+    // A ping-pong echo: each repeat crosses to the other side.
+    std::vector<float> echo = std::vector<float>(kEchoLen, 0.0f), echoB = std::vector<float>(kEchoLen, 0.0f);
+    int echoW = 0; double echoDelay = 0.369 * kSR; double e1 = 0, e2 = 0, f1 = 0, f2 = 0;
+    // Listener (stereo placement).
+    float lx = 0, ly = 0, lz = 0, lyaw = 0;
+    bool mono = false;
     float busFade = 1; int64_t busFadeStart = -1, busFadeLen = 1;
-    Biquad busLp = Lowpass(4200.0, 0.7071); // the brightness ceiling (spec 1.6), two stages
-    double bz[2][2] = {};
+    Biquad busLp = Lowpass(4200.0, 0.7071); // the brightness ceiling (spec 1.6), two stages per side
+    double bz[4][2] = {};
     double lastEnergy = 0;           // for Silent()
     int64_t quietSince = 0;
     float capBoost = 1; int64_t capBoostUntil = 0; // Rift closed: the lowpass opens for 2 bars
     bool pendingCadence = false;     // a Set streak reached its octave
+    // Footsteps on the beat.
+    int gait = 0; SoundMaterial gaitGround = MAT_NONE;
+    double nextStepBeat = -1; uint32_t steps = 0;
+    int played[SND_COUNT] = {};
     int mendStep = 0;                // Mending walks the main motif
 
     Impl() { ResetAll(); }
     void ResetAll() {
         for (auto& x : v) x = Voice();
         std::fill(echo.begin(), echo.end(), 0.0f);
-        e1 = e2 = 0; echoW = 0;
+        std::fill(echoB.begin(), echoB.end(), 0.0f);
+        e1 = e2 = f1 = f2 = 0; echoW = 0;
         std::memset(bz, 0, sizeof(bz));
         for (int i = 0; i < SND_COUNT; i++) { lastOnset[i] = -1000000000; lastGroup[i] = 0; repeat[i] = 0; cooldownUntil[i] = 0; accentUntilBar[i] = INT64_MIN; }
         gIdx = 0; gLast = -1000000000; gOpen = false;
@@ -366,6 +377,7 @@ struct SoundPalette::Impl {
     // Builder state for the sound being made.
     struct Build {
         SoundId id; uint8_t tier; uint32_t group; uint64_t ev; double levelAdj; int64_t at;
+        float pan, dist; // where the sound sits: stereo position, distance gain
     } b = {};
 
     Voice* New(uint8_t wave, double hz, double delaySec, double levelDb, int note = 0) {
@@ -421,7 +433,8 @@ struct SoundPalette::Impl {
         for (auto& x : v) {
             if (!x.on || x.group != b.group) continue;
             x.end = x.start + Samples(EnvLength(x)) + 64;
-            x.gain *= x.boost;
+            x.gain *= x.boost * b.dist;
+            if (!x.panSet) x.pan = b.pan;
             if (x.wave == W_BELL) x.gain /= (float)(1.0 + x.p2 + x.p3 + x.px); // level = peak
         }
         // The ceiling is per sound, not per voice (spec 1.7): voices of this
@@ -445,6 +458,7 @@ struct SoundPalette::Impl {
             for (auto& x : v) if (x.on && x.group == b.group) x.gain *= (float)(ceiling / worst);
         lastOnset[b.id] = b.at;
         lastGroup[b.id] = b.group;
+        played[b.id]++;
         if (b.tier == TIER_EVENT) {
             int64_t endMax = b.at;
             for (auto& x : v) if (x.on && x.group == b.group) endMax = std::max(endMax, x.end);
@@ -540,9 +554,23 @@ struct SoundPalette::Impl {
     void Begin(SoundId id, double levelAdj = 0.0) {
         b.id = id; b.tier = SoundTierOf(id); b.group = groupCounter++; b.ev = ++eventCounter;
         b.at = now; b.levelAdj = levelAdj;
-        if (b.tier >= TIER_ACCENT) b.levelAdj += 20.0 * std::log10(std::max(0.001f, intensity));
+        b.dist = 1.0f;
+        // Unplaced ambience spreads gently across the field; the rest sits centre.
+        b.pan = b.tier >= TIER_ACCENT ? (float)((Hash01(b.ev, 77) - 0.5) * 1.0) : 0.0f;
+        // Music Intensity scales the ambience -- not footsteps, which are the player's own.
+        if (b.tier >= TIER_ACCENT && id != SND_FOOTFALL) b.levelAdj += 20.0 * std::log10(std::max(0.001f, intensity));
     }
     void PlayCue(const SoundCue& c);
+    // Stereo placement of the sound being built: pan by the source's side
+    // of the listener, gain by distance (gentle: a nearby sound barely drops).
+    void Place(float x, float y, float z) {
+        float dx = x - lx, dy = y - ly, dz = z - lz;
+        float d = std::sqrt(dx * dx + dy * dy + dz * dz);
+        float h = std::sqrt(dx * dx + dz * dz);
+        float rx = std::cos(lyaw), rz = -std::sin(lyaw); // the listener's right, on the ground
+        b.pan = h > 0.01f ? (dx * rx + dz * rz) / h : 0.0f;
+        b.dist = (float)(1.0 / (1.0 + std::max(0.0, d - 3.0) / 8.0));
+    }
     void Ambient(double delay, SoundId id);
     void OnBar(int64_t bar);
     void OnPhrase(int64_t phrase);
@@ -955,22 +983,58 @@ void SoundPalette::Impl::Omen() {
 // 5.4 Rhythmic world accents
 // =====================================================================
 
+// How hard a surface is, 0 (yielding) .. 1 (ringing): footsteps and
+// landings darken, soften and lengthen toward 0, sharpen toward 1.
+static double Hardness(SoundMaterial m) {
+    switch (m) {
+    case MAT_FLESH: return 0.05;
+    case MAT_PLANT: return 0.1;
+    case MAT_EARTH: return 0.2;
+    case MAT_GENESIS: return 0.25;
+    case MAT_WOOD: return 0.6;
+    case MAT_STONE: return 0.85;
+    case MAT_GLASS: return 0.95;
+    case MAT_METAL: return 1.0;
+    default: return 0.5;
+    }
+}
+
+// One footstep (5.4 R1), placed on the beat by the gait scheduler (OnBlock)
+// or, played directly, locked to an 8th when one is just ahead. `key` is
+// the step count: steps alternate a little left and right, every other one
+// a touch softer (a walk's natural lilt). `strength` scales it (a crouch).
 void SoundPalette::Impl::Footfall(const SoundCue& c) {
     const float P = axes.positive, M = axes.mechanical;
     double delay = 0;
-    if (h.pulsed) { // phase-lock to the nearest 8th if it's just ahead
+    if (h.pulsed && c.height == 0) { // played directly: phase-lock to an 8th just ahead
         double toGrid = UntilGrid(0.5, 0.0);
         if (toGrid <= 0.04) delay = toGrid;
     }
-    bool hard = c.material == MAT_STONE || c.material == MAT_METAL || c.material == MAT_GLASS;
-    double lvl = (hard ? -33 : -36) - ((c.key & 1) && axes.activity > 0.7f ? 3 : 0);
-    double lp = (hard ? 1600 : 900) * (P < 0 ? 0.7 : 1.0) * (1 + 0.4 * M);
-    Grain(delay, lvl, lp, M > 0.6f ? 0.006 : 0.01);
-    Voice* s = New(W_SINE, BassHz(), delay, lvl - 16);
+    const double hard = Hardness(c.material);
+    double lvl = -37 + 3 * hard - ((c.key & 1) ? 2 : 0) + 20 * std::log10(std::max(0.2f, c.strength));
+    // The scuff: soft ground dull, low and long; hard ground crisp and short.
+    double lp = (700 + 1700 * hard) * (P < 0 ? 0.8 : 1.0) * (1 + 0.3 * M);
+    double tau = 0.028 - 0.020 * hard;
+    Voice* g = Grain(delay, lvl, lp, tau);
+    if (g) { g->pan = (c.key & 1) ? 0.12f : -0.12f; g->panSet = true; }
+    if (hard < 0.3) { // snow, sand, moss: a second grain just after, the crunch
+        Voice* g2 = Grain(delay + 0.012, lvl - 5, lp * 0.8, tau * 0.8);
+        if (g2) { g2->pan = g ? g->pan : 0; g2->panSet = true; }
+    }
+    // The weight: a sub on the bass note, heavier on soft ground.
+    Voice* s = New(W_SINE, BassHz(), delay, lvl - 12 - 8 * hard);
     if (s) { s->env = ENV_AD; s->atk = 0.008f; s->tau = 0.04f; s->raw = true; s->duck = 0; }
-    if (M > 0.6f) {
-        Voice* m = New(W_SINE, BassHz() * 16, delay, lvl - 18);
-        if (m) { m->env = ENV_AD; m->atk = 0.002f; m->tau = 0.01f; m->metal = (float)Db(-6); m->raw = true; }
+    // Hard ground knocks, very quietly, on the chord's root or 5th in turn:
+    // walking on stone taps along with the harmony.
+    if (hard >= 0.5) {
+        double hz = RoleHz((c.key & 1) ? R_FIFTH : R_ROOT, 62);
+        Voice* k = New(hard >= 0.95 ? W_SINE : W_STRI, hz, delay, lvl - 9);
+        if (k) {
+            k->env = ENV_AD; k->atk = 0.006f; k->tau = (float)(0.010 + 0.010 * hard);
+            k->lp0 = k->lp1 = (float)(900 + 1400 * (hard - 0.5));
+            k->metal = hard >= 0.99 || M > 0.6f ? (float)Db(-8) : 0.0f; k->breath = 0; k->echo = 0;
+            k->pan = g ? g->pan : 0; k->panSet = true;
+        }
     }
 }
 
@@ -1047,6 +1111,11 @@ void SoundPalette::Impl::Clave(double barDelay) {
             if (P < 0 && s == last) continue;
             Voice* x = M < 0.4f ? New(W_STRI, hz, barDelay + s * e8, -32, s) : Bell(hz, barDelay + s * e8, -32, 0.045, s);
             if (!x) continue;
+            { // each music block plays from where it stands
+                float dx = scene.musicBlockX[p] - lx, dz = scene.musicBlockZ[p] - lz, hh = std::sqrt(dx * dx + dz * dz);
+                x->pan = hh > 0.01f ? (dx * std::cos(lyaw) - dz * std::sin(lyaw)) / hh : 0.0f;
+                x->panSet = true;
+            }
             x->env = ENV_AD; x->atk = 0.002f; x->tau = 0.045f;
             x->lp0 = x->lp1 = M < 0.4f ? 900.0f : 1200.0f;
             x->p3 = 0; x->p2 = 0.3f;
@@ -1401,6 +1470,7 @@ void SoundPalette::Impl::PlayCue(const SoundCue& c) {
     // Repeat softening.
     repeat[c.id] = since < Samples(0.15) ? std::min(3, repeat[c.id] + 1) : 0;
     Begin(c.id, -3.0 * repeat[c.id]);
+    if (c.placed) Place(c.x, c.y, c.z);
     // The hierarchy: an event sound owns the moment (spec 4).
     if (b.tier >= TIER_ACCENT && now < tier2Until && c.id != SND_FOOTFALL) return;
     pendingCadence = false;
@@ -1531,6 +1601,24 @@ void SoundPalette::Impl::OnBlock() {
         }
     }
     prevMusicTime = musicTime;
+    // Footsteps on the beat: crouch every other beat, walk every beat,
+    // sprint on 8ths -- whatever the section, the grid always exists.
+    if (gait != GAIT_NONE) {
+        double grid = gait == GAIT_CROUCH ? 2.0 : gait == GAIT_SPRINT ? 0.5 : 1.0;
+        if (nextStepBeat < 0) nextStepBeat = std::ceil(h.beat / grid - 1e-9) * grid;
+        double blockEnd = h.beat + kBlock * Bps() / kSR;
+        if (nextStepBeat < blockEnd) {
+            SoundCue c; c.id = SND_FOOTFALL; c.material = gaitGround; c.key = steps++;
+            c.strength = gait == GAIT_CROUCH ? 0.6f : 1.0f;
+            c.height = 1; // placed by the grid, not locked again
+            Begin(SND_FOOTFALL);
+            b.pan = 0; // steps sit under the listener, alternating a little
+            b.at = now + Samples(std::max(0.0, (nextStepBeat - h.beat) / Bps()));
+            Footfall(c);
+            Finish();
+            nextStepBeat += grid;
+        }
+    } else nextStepBeat = -1;
     int64_t bar = (int64_t)std::floor(h.beat / 4.0);
     if (bar != lastBar) { if (lastBar != INT64_MIN) OnBar(bar); lastBar = bar; }
     if (h.section == MUSIC_AFTERNOON) {
@@ -1548,15 +1636,16 @@ void SoundPalette::Impl::OnBlock() {
 // Rendering
 // =====================================================================
 
-void SoundPalette::Impl::RenderBlock(float* out, int len) {
+void SoundPalette::Impl::RenderBlock(float* outLR, int len) {
     const float P = axes.positive, A = axes.activity, M = axes.mechanical;
     double capBase = Clamp(1.4 * h.cutoffHz * std::pow(2.0, 0.5 * P) * (0.85 + 0.3 * M), 500, 4200);
     if (now < capBoostUntil) capBase = std::min(4200.0, capBase * capBoost);
     if (scene.enclosed) capBase = std::max(500.0, capBase * 0.7);
     double bps = running ? Bps() : 0.0;
     double beat0 = h.beat;
-    float dry[kBlock], send[kBlock];
-    std::memset(dry, 0, sizeof(dry));
+    float dryL[kBlock], dryR[kBlock], send[kBlock];
+    std::memset(dryL, 0, sizeof(dryL));
+    std::memset(dryR, 0, sizeof(dryR));
     std::memset(send, 0, sizeof(send));
 
     for (auto& x : v) {
@@ -1623,6 +1712,11 @@ void SoundPalette::Impl::RenderBlock(float* out, int len) {
         double relT = x.relAt >= 0 ? (double)(now - x.relAt) / kSR : 0.0;
         double metalOk = hz * 5.4 < 4200 ? 1.0 : hz * 2.76 < 4200 ? 0.5 : 0.0;
         double twin = x.twinCents > 0 ? Cents(x.twinCents) : 1.0;
+        // Equal-power pan, kept within +-60 % (nothing hard in one ear) and
+        // scaled so the centre is exactly the mono level.
+        double pn = mono ? 0.0 : Clamp(x.pan, -1.0, 1.0) * 0.6;
+        double th = (pn + 1.0) * (kPi / 4.0);
+        float gl = (float)(std::cos(th) * 1.41421356), gr = (float)(std::sin(th) * 1.41421356);
         double inv = 1.0 / len;
         (void)inv;
         // ---- sample rate ---------------------------------------------
@@ -1695,7 +1789,8 @@ void SoundPalette::Impl::RenderBlock(float* out, int len) {
                 double d = bf < 0.03 ? Ramp(bf / 0.03) : bf < 0.5 ? 1.0 - Ramp((bf - 0.03) / 0.47) : 0.0;
                 y *= 1.0 - x.duck * h.duckDepth * intensity * d;
             }
-            dry[j] += (float)y;
+            dryL[j] += (float)y * gl;
+            dryR[j] += (float)y * gr;
             send[j] += (float)(y * x.echo);
         }
         for (int k = 0; k < 4; k++) { FlushDenormal(x.z[k][0]); FlushDenormal(x.z[k][1]); }
@@ -1714,30 +1809,38 @@ void SoundPalette::Impl::RenderBlock(float* out, int len) {
         double rp = echoW - echoDelay;
         while (rp < 0) rp += kEchoLen;
         int i0 = (int)rp; double fr = rp - i0;
-        double y = echo[i0 & (kEchoLen - 1)] * (1.0 - fr) + echo[(i0 + 1) & (kEchoLen - 1)] * fr;
-        e1 += aLp * (y - e1);
-        e2 += aHp * (e1 - e2);
-        double wet = e1 - e2;
-        echo[echoW] = (float)(send[j] + fb * wet);
+        int ia = i0 & (kEchoLen - 1), ib = (i0 + 1) & (kEchoLen - 1);
+        double ya = echo[ia] * (1.0 - fr) + echo[ib] * fr;
+        double yb = echoB[ia] * (1.0 - fr) + echoB[ib] * fr;
+        e1 += aLp * (ya - e1); e2 += aHp * (e1 - e2);
+        f1 += aLp * (yb - f1); f2 += aHp * (f1 - f2);
+        double wetL = e1 - e2, wetR = f1 - f2;
+        // Ping-pong: the left repeat feeds the right line and back.
+        echo[echoW] = (float)(send[j] + fb * wetR);
+        echoB[echoW] = (float)(fb * wetL);
         echoW = (echoW + 1) & (kEchoLen - 1);
-        double o = RunBiquad(busLp, dry[j] + wet, bz[0][0], bz[0][1]);
-        o = RunBiquad(busLp, o, bz[1][0], bz[1][1]) * master;
+        double l = dryL[j] + wetL, r = dryR[j] + wetR;
+        if (mono) { double m = 0.5 * (l + r); l = r = m; }
+        l = RunBiquad(busLp, RunBiquad(busLp, l, bz[0][0], bz[0][1]), bz[1][0], bz[1][1]) * master;
+        r = RunBiquad(busLp, RunBiquad(busLp, r, bz[2][0], bz[2][1]), bz[3][0], bz[3][1]) * master;
         if (busFadeStart >= 0) {
             double fu = (double)(now + j - busFadeStart) / (double)busFadeLen;
-            o *= 1.0 - Ramp(fu);
+            double g = 1.0 - Ramp(fu);
+            l *= g; r *= g;
         }
-        energy = std::max(energy, std::fabs(dry[j] + wet));
-        out[j] = (float)o;
+        energy = std::max(energy, std::max(std::fabs(dryL[j] + wetL), std::fabs(dryR[j] + wetR)));
+        outLR[2 * j] = (float)l;
+        outLR[2 * j + 1] = (float)r;
     }
     if (busFadeStart >= 0 && now + len - busFadeStart >= busFadeLen) {
         for (auto& x : v) x.on = false;
         std::fill(echo.begin(), echo.end(), 0.0f);
-        e1 = e2 = 0;
+        std::fill(echoB.begin(), echoB.end(), 0.0f);
+        e1 = e2 = f1 = f2 = 0;
         busFadeStart = -1;
     }
     for (auto& zz : bz) { FlushDenormal(zz[0]); FlushDenormal(zz[1]); }
-    if (std::fabs(e1) < 1e-15) e1 = 0;
-    if (std::fabs(e2) < 1e-15) e2 = 0;
+    FlushDenormal(e1); FlushDenormal(e2); FlushDenormal(f1); FlushDenormal(f2);
     lastEnergy = energy;
     if (energy > 1e-4) quietSince = now + len;
     now += len;
@@ -1771,19 +1874,36 @@ void SoundPalette::FadeOut(float seconds) {
     m->busFadeStart = m->now;
     m->busFadeLen = std::max<int64_t>(1, m->Samples(seconds));
 }
-void SoundPalette::Render(float* out, int n, double musicTime, bool running) {
+void SoundPalette::RenderStereo(float* outLR, int frames, double musicTime, bool running) {
     m->running = running;
     m->musicTime = musicTime;
     int done = 0;
-    while (done < n) {
-        int len = std::min(kBlock, n - done);
+    while (done < frames) {
+        int len = std::min(kBlock, frames - done);
         MusicHarmonyAt(m->musicTime, &m->h);
         m->haveH = true;
         m->OnBlock();
-        m->RenderBlock(out + done, len);
+        m->RenderBlock(outLR + 2 * done, len);
         done += len;
     }
 }
+void SoundPalette::Render(float* out, int n, double musicTime, bool running) {
+    float lr[2 * kBlock];
+    int done = 0;
+    while (done < n) {
+        int len = std::min(kBlock, n - done);
+        RenderStereo(lr, len, musicTime + (running ? done / kSR : 0.0), running);
+        for (int j = 0; j < len; j++) out[done + j] = 0.5f * (lr[2 * j] + lr[2 * j + 1]);
+        done += len;
+    }
+}
+void SoundPalette::SetListener(float x, float y, float z, float yaw) { m->lx = x; m->ly = y; m->lz = z; m->lyaw = yaw; }
+void SoundPalette::SetMono(bool mono) { m->mono = mono; }
+void SoundPalette::SetGait(int gait, SoundMaterial ground) {
+    if (gait != m->gait) m->nextStepBeat = -1; // a new gait starts on its own next grid line
+    m->gait = gait; m->gaitGround = ground;
+}
+int SoundPalette::PlayedCount(SoundId id) const { return id < SND_COUNT ? m->played[id] : 0; }
 bool SoundPalette::Silent() const {
     for (auto& x : m->v) if (x.on) return false;
     return m->now - m->quietSince > m->Samples(2.0);

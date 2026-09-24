@@ -10,6 +10,7 @@ The owner keeps scope with MoSCoW (Must / Should / Could / Won't) against a stat
 
 ## Standing priorities
 - **Target machine: an outdated, modest Windows PC** (the owner's own). Design every feature to run well there; never read or report the player's hardware (no GPU/CPU/spec queries) — assume the modest machine instead.
+- **Privacy.** No telemetry, analytics, crash reporting, update checks or any network use; nothing about the player or their machine is collected or leaves it. Quality comes from testing before release. Debug aids (F3, the Ctrl+F3 report) only ever act when pressed and only write local files.
 - **Lagless efficiency.** Cost scales with what's on screen or what changed, never with world size. Budget per-tick work; rebuild only on change; measure with the F3 profiler.
 - **Fake it convincingly, cheaply.** Visual effects are per-pixel tricks driven by small per-frame constants, not extra passes or per-block data (DESIGN.md 4.8–4.12).
 - **Photosensitivity.** Nothing flashes faster than 3 times a second (musiclevel.h shows how).

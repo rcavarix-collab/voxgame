@@ -49,6 +49,7 @@ float g_worldVolume = 1.0f;
 float g_fov = 45.0f;
 bool g_toggleMovement = false;
 bool g_highContrastUI = false;
+bool g_monoAudio = false;
 bool g_moveToggleLatch[ACT_COUNT] = {};
 float g_musicIntensity = 1.0f;
 
@@ -193,6 +194,7 @@ bool SaveSettings() {
     ss << "fov=" << g_fov << "\n";
     ss << "toggleMovement=" << (g_toggleMovement ? 1 : 0) << "\n";
     ss << "highContrastUI=" << (g_highContrastUI ? 1 : 0) << "\n";
+    ss << "monoAudio=" << (g_monoAudio ? 1 : 0) << "\n";
     ss << "musicIntensity=" << g_musicIntensity << "\n";
     ss << "hotbar=";
     for (int i = 0; i < HOTBAR_SLOTS; i++) ss << (i ? "," : "") << g_blocks[g_hotbar[i]].name;
@@ -273,6 +275,7 @@ void LoadSettings() {
     g_fov = getF("fov", g_fov);
     g_toggleMovement = getB("toggleMovement", g_toggleMovement);
     g_highContrastUI = getB("highContrastUI", g_highContrastUI);
+    g_monoAudio = getB("monoAudio", g_monoAudio);
     g_musicIntensity = getF("musicIntensity", g_musicIntensity);
     // Hotbar by block name; an unknown or no-longer-placeable name keeps
     // that slot's default.

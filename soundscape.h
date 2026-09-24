@@ -59,7 +59,7 @@ private:
     Counts cur = {}, last = {};
     int slab = 0, sweeps = 0;
     int ox = 0, oy = 0, oz = 0;           // this sweep's box origin (min corner)
-    int musicN = 0; uint32_t musicKey[3] = {}; int musicY[3] = {}; int musicD2[3] = {};
+    int musicN = 0; uint32_t musicKey[3] = {}; int musicY[3] = {}; int musicD2[3] = {}; float musicX[3] = {}, musicZ[3] = {};
     bool seenBlock[BLOCK_COUNT] = {};     // this session
     bool seenThisSweep[BLOCK_COUNT] = {};
     bool glinted[BLOCK_COUNT] = {};

@@ -154,7 +154,7 @@ static void PickAndAct(bool breakBlock) {
         BlockID taken = g_world.Get(hx, hy, hz);
         if (taken == BLOCK_ATTRACTOR) g_essence.RemoveAttractor(hx, hy, hz);
         LiveEdit(g_world, hx, hy, hz, BLOCK_AIR);
-        WorldSoundBreak(taken);
+        WorldSoundBreak(taken, hx, hy, hz);
     } else {
         // Refuse a placement that would overlap the player's own box --
         // it would only trap them (or, with physics' unstick rule, pop
@@ -193,7 +193,7 @@ static void PickAndAct(bool breakBlock) {
         }
         LiveEdit(g_world, px, py, pz, toPlace, state);
         if (toPlace == BLOCK_ATTRACTOR) g_essence.AddAttractor(px, py, pz);
-        WorldSoundPlace(toPlace);
+        WorldSoundPlace(toPlace, px, py, pz);
     }
 }
 
@@ -306,8 +306,8 @@ enum AudioRow { AROW_MASTER_VOLUME = 0, AROW_MUSIC_VOLUME = 1, AROW_WORLD_VOLUME
 // alone yet (nothing to remap); and a UI scale slider, which (unlike
 // the above) is real future work, just architecturally bigger -- every
 // hit-rect, not only the visuals, would need to move in lockstep.
-static const SubmenuLayout ACCESSIBILITY_LAYOUT = { 400.0f, 56.0f, 12.0f, 70.0f, 20.0f, 6 };
-enum AccessibilityRow { ARROW_FOV = 0, ARROW_TOGGLE_MOVE = 1, ARROW_HIGH_CONTRAST = 2, ARROW_MUSIC_INTENSITY = 3, ARROW_RESET = 4, ARROW_BACK = 5 };
+static const SubmenuLayout ACCESSIBILITY_LAYOUT = { 400.0f, 56.0f, 12.0f, 70.0f, 20.0f, 7 };
+enum AccessibilityRow { ARROW_FOV = 0, ARROW_TOGGLE_MOVE = 1, ARROW_HIGH_CONTRAST = 2, ARROW_MUSIC_INTENSITY = 3, ARROW_MONO = 4, ARROW_RESET = 5, ARROW_BACK = 6 };
 
 // Keybindings: every action bindable to any keyboard key or the left/
 // right/middle mouse button (GameAction/g_actionNames/g_keyBindings/
@@ -414,6 +414,7 @@ static void ResetAccessibilitySettings() {
     g_fov = 45.0f;
     g_toggleMovement = false;
     g_highContrastUI = false;
+    g_monoAudio = false;
     g_musicIntensity = 1.0f;
     memset(g_moveToggleLatch, 0, sizeof(g_moveToggleLatch));
 }
@@ -734,6 +735,7 @@ static void HandleAccessibilityClick(int mx, int my) {
         return;
     }
     if (PointInRect(mx, my, SubmenuRowRect(ACCESSIBILITY_LAYOUT, ARROW_HIGH_CONTRAST))) { g_highContrastUI = !g_highContrastUI; SaveSettings(); return; }
+    if (PointInRect(mx, my, SubmenuRowRect(ACCESSIBILITY_LAYOUT, ARROW_MONO))) { g_monoAudio = !g_monoAudio; SaveSettings(); return; }
     if (PointInRect(mx, my, GetSliderHitRect(SubmenuRowRect(ACCESSIBILITY_LAYOUT, ARROW_MUSIC_INTENSITY)))) { BeginSliderDrag(SLIDER_MUSIC_INTENSITY, mx); return; }
     if (PointInRect(mx, my, SubmenuRowRect(ACCESSIBILITY_LAYOUT, ARROW_RESET))) { ResetAccessibilitySettings(); SaveSettings(); return; }
     if (PointInRect(mx, my, SubmenuRowRect(ACCESSIBILITY_LAYOUT, ARROW_BACK))) { g_menuScreen = MenuScreen::OptionsHub; return; }
@@ -1517,6 +1519,7 @@ void RenderUIPass() {
         drawRowButton(SubmenuRowRect(ACCESSIBILITY_LAYOUT, ARROW_TOGGLE_MOVE), g_toggleMovement ? "TOGGLE-TO-MOVE: ON" : "TOGGLE-TO-MOVE: OFF");
         drawRowButton(SubmenuRowRect(ACCESSIBILITY_LAYOUT, ARROW_HIGH_CONTRAST), g_highContrastUI ? "HIGH-CONTRAST UI: ON" : "HIGH-CONTRAST UI: OFF");
         drawSliderRow(SubmenuRowRect(ACCESSIBILITY_LAYOUT, ARROW_MUSIC_INTENSITY), SLIDER_MUSIC_INTENSITY);
+        drawRowButton(SubmenuRowRect(ACCESSIBILITY_LAYOUT, ARROW_MONO), g_monoAudio ? "MONO AUDIO: ON" : "MONO AUDIO: OFF");
         drawRowButton(SubmenuRowRect(ACCESSIBILITY_LAYOUT, ARROW_RESET), "RESET TO DEFAULT");
         drawRowButton(SubmenuRowRect(ACCESSIBILITY_LAYOUT, ARROW_BACK), "BACK");
     } else if (g_menuScreen == MenuScreen::Keybindings) {

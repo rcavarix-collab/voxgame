@@ -1289,6 +1289,46 @@ static void TestSoundPalette() {
         CHECK(counts[0] >= 8 && counts[0] <= 66 / 4 + 4);
         CHECK(counts[1] > counts[0] * 3);
     }
+    // Stereo placement: a block set to the listener's right sounds louder
+    // on the right; Mono centres everything; an unplaced sound sits centre.
+    {
+        auto energy = [&](bool placeRight, bool mono, float& l, float& r) {
+            SoundPalette p;
+            p.SetListener(0, 0, 0, 0); // facing +Z: right is +X
+            p.SetMono(mono);
+            std::vector<float> lr(1024);
+            p.RenderStereo(lr.data(), 512, chordT[0], true);
+            SoundCue c; c.id = SND_SET; c.material = MAT_STONE;
+            if (placeRight) { c.placed = true; c.x = 4; c.y = 0; c.z = 0; }
+            p.Play(c);
+            lr.assign(2 * 44100, 0.0f);
+            for (int i = 0; i < 44100; i += 512) p.RenderStereo(lr.data() + 2 * i, std::min(512, 44100 - i), chordT[0] + i / 44100.0, true);
+            l = r = 0;
+            for (int i = 0; i < 44100; i++) { l += lr[2 * i] * lr[2 * i]; r += lr[2 * i + 1] * lr[2 * i + 1]; }
+        };
+        float l, r;
+        energy(true, false, l, r);  CHECK(r > l * 2.0f);
+        energy(true, true, l, r);   CHECK(fabsf(l - r) <= 1e-6f * (l + r) + 1e-12f);
+        energy(false, false, l, r); CHECK(fabsf(l - r) <= 0.3f * (l + r)); // centred; only the ping-pong echo leans
+    }
+    // Footsteps keep the beat: walking steps land one per beat, sprinting
+    // one per 8th, crouching every other beat; stopping stops them.
+    {
+        int counts[4] = {};
+        for (int gait = 1; gait <= 3; gait++) {
+            SoundPalette p;
+            p.SetAmbientEnabled(true);
+            p.SetGait(gait, gait == 3 ? MAT_STONE : MAT_EARTH);
+            RenderPalette(p, 1500, 8.0);   // 8 s at 124 BPM = 16.5 beats
+            counts[gait] = p.PlayedCount(SND_FOOTFALL);
+            p.SetGait(SoundPalette::GAIT_NONE, MAT_EARTH);
+            RenderPalette(p, 1508, 2.0);
+            CHECK(p.PlayedCount(SND_FOOTFALL) == counts[gait]);
+        }
+        CHECK(counts[2] >= 15 && counts[2] <= 18);
+        CHECK(counts[3] >= 31 && counts[3] <= 35);
+        CHECK(counts[1] >= 7 && counts[1] <= 9);
+    }
     // Pausing fades everything to silence.
     {
         SoundPalette p;

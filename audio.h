@@ -40,10 +40,13 @@ float CurrentMusicLevel();
 // sfx_synth.h's palette in time and in key with what the music is playing.
 void PlayWorldSound(const SoundCue& cue);
 void ReleaseWorldSound(SoundId id);
+// Footsteps on the beat (SoundPalette::SetGait).
+void SetWorldGait(int gait, SoundMaterial ground);
 // Pausing: every palette tail fades away over `seconds` (silence = time stopped).
 void FadeWorldSounds(float seconds);
 // Once per frame: the soundscape's axes and scene, whether play is live
 // (the ambient scheduler runs only then), and a queue top-up.
-void UpdateWorldSound(const SoundAxes& axes, const AmbientScene& scene, bool playing);
+// `listener`: x, y, z and view yaw, for stereo placement.
+void UpdateWorldSound(const SoundAxes& axes, const AmbientScene& scene, bool playing, const float listener[4]);
 // The music time now audible (the chunk playing, not the audio queued ahead).
 double AudibleMusicTime();

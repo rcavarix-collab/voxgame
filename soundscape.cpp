@@ -140,7 +140,7 @@ void Soundscape::CensusStep(World& w, int px, int py, int pz) {
                     // Keep the nearest three.
                     int slot = musicN < 3 ? musicN++ : -1;
                     if (slot < 0) { int far = 0; for (int k = 1; k < 3; k++) if (musicD2[k] > musicD2[far]) far = k; if (musicD2[far] > d2) slot = far; }
-                    if (slot >= 0) { musicKey[slot] = key; musicY[slot] = y; musicD2[slot] = d2; }
+                    if (slot >= 0) { musicKey[slot] = key; musicY[slot] = y; musicD2[slot] = d2; musicX[slot] = wx + 0.5f; musicZ[slot] = wz + 0.5f; }
                 }
             }
     }
@@ -151,7 +151,7 @@ void Soundscape::EndSweep() {
     last = cur;
     sweeps++;
     scene.musicBlockCount = musicN;
-    for (int k = 0; k < 3; k++) { scene.musicBlockKey[k] = musicKey[k]; scene.musicBlockY[k] = musicY[k]; }
+    for (int k = 0; k < 3; k++) { scene.musicBlockKey[k] = musicKey[k]; scene.musicBlockY[k] = musicY[k]; scene.musicBlockX[k] = musicX[k]; scene.musicBlockZ[k] = musicZ[k]; }
     // Discoveries, one per sweep at most, most important first.
     bool grace = sessionSeconds < 20.0f; // the first look around is not "new"
     if (last.dark > 0) { if (sinceDark > 600.0f) Discover(SND_OMEN); sinceDark = 0; }

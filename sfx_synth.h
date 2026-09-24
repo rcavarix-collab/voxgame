@@ -62,6 +62,10 @@ struct SoundCue {
     int slot = 0;          // hotbar slot 0..9 (Slot, Drop)
     uint32_t key = 0;      // identity of the source (a music block's position hash, a step's parity)
     int height = 0;        // a source's y (Clave's pitch)
+    // Where it happens, if anywhere in particular: placed sounds pan toward
+    // their source and soften with distance (SetListener).
+    bool placed = false;
+    float x = 0, y = 0, z = 0;
 };
 
 // What the ground around the player offers the ambient scheduler
@@ -71,6 +75,7 @@ struct AmbientScene {
     int musicBlockCount = 0;         // nearest music blocks (up to 3)
     uint32_t musicBlockKey[3] = {};
     int musicBlockY[3] = {};
+    float musicBlockX[3] = {}, musicBlockZ[3] = {}; // centres, for stereo placement
     bool enclosed = false;           // roofed / in a cave
     bool deep = false;               // well underground
     bool lookingUp = false;          // gazing at the sky
@@ -90,6 +95,14 @@ public:
     void SetScene(const AmbientScene& scene);
     void SetIntensity(float intensity);    // the Music Intensity setting: scales tiers 3-5
     void SetAmbientEnabled(bool on);       // the scheduler runs only during play
+    // The listener, for stereo placement: position and view yaw (radians,
+    // as world.h's Player: forward = (sin yaw, cos yaw) on the ground).
+    void SetListener(float x, float y, float z, float yaw);
+    void SetMono(bool mono);               // Accessibility: everything centred
+    // Footsteps on the beat (5.4 R1): 0 still / airborne / sliding, 1 crouch
+    // (every other beat), 2 walk (every beat), 3 sprint (8ths), on `ground`.
+    enum Gait { GAIT_NONE, GAIT_CROUCH, GAIT_WALK, GAIT_SPRINT };
+    void SetGait(int gait, SoundMaterial ground);
 
     // Starts a sound (and whatever gesture it belongs to) at the current
     // render position, harmonised with the music at that moment.
@@ -100,7 +113,8 @@ public:
     // Renders `n` mono samples (roughly -1..1, the music's scale) at 44.1
     // kHz. `musicTime` = the day time the first sample will be heard at;
     // `running` = the day clock (and so the music) is advancing.
-    void Render(float* out, int n, double musicTime, bool running);
+    void Render(float* out, int n, double musicTime, bool running);   // mono downmix
+    void RenderStereo(float* outLR, int frames, double musicTime, bool running); // interleaved L, R
     bool Silent() const;                   // nothing sounding, echo tail gone
 
     // Inspection, for the F3 overlay and the tests.
@@ -111,6 +125,7 @@ public:
     SoundAxes Axes() const;
     int ScheduledAmbientEvents() const;    // total the scheduler has placed
     int GestureIndex() const;              // the current ladder index (0 = D5)
+    int PlayedCount(SoundId id) const;     // sounds of this kind started so far
 
     struct Impl;
 private:

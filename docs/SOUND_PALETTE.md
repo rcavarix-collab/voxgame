@@ -120,6 +120,9 @@ Axis values change continuously, but anything that would be a *discrete* change 
 
 ---
 
+## 4b. Stereo placement
+Placed sounds (Set, Take, Online, and each music block's clave) pan toward their source relative to the listener's view and soften with distance (gain 1 / (1 + max(0, d − 3) / 8): a block at arm's length barely drops). Unplaced ambience (tiers 3–5) is spread by a hash of the event across ±50 % of the field; everything else sits centre. Pan is equal-power, capped at ±60 %, centre-compensated so a centred sound is exactly its mono level. The echo is a ping-pong: repeats alternate sides. The **Mono audio** accessibility setting sums both sides before the output filter.
+
 ## 5. The palette
 
 ### 5.1 Vocal-style ad-libs and hype punctuation
@@ -267,10 +270,11 @@ Tier 2: quantised to the next beat (next half-bar when calm), never more than on
 ### 5.4 Subtle rhythmic world accents
 Tier 3, spent from the ambient budget, always on the grid. These make the world *play along*.
 
-**R1 · Footfall**
-- Synthesis: NOISE→lp(material) 3/exp 10 ms, and a sub SINE at the bass note, 8/exp 40 ms at −16 dB. Level −36 (organic ground), −33 (hard ground). Walking cadence (~2 steps/s) is close to the beat (2.03/s at 122 BPM), so steps phase-lock: a footfall sound is delayed up to 40 ms to land on the nearest 8th, never advanced; outside the window it plays as is, just softer.
-- Axes default: P 0 · A 0.4 · M 0.3. Axis response: M → cleaner tick with a metallic edge (walking on foundation/lattice). A → sprint steps hit 8ths with every other step −3 dB (a shuffle). P < 0 → darker (lp ×0.7).
-- Why it sits: steps land on the grid as the quietest hi-hat in the mix.
+**R1 · Footfall** — *on the beat*
+- Timing: the palette keeps time for the feet. While the player moves on the ground, steps land on the grid: **crouch** every other beat (quiet), **walk** every beat (the beat is close to a natural walking cadence: 2.03/s at 122 BPM), **sprint** on 8ths. Nothing while still, airborne or sliding (the slide and landing have their own sounds). A new gait starts on its own next grid line. Steps alternate ±12 % left/right, every other one 2 dB softer (a walk's lilt). Exempt from the ambient budget and from Music Intensity: they're the player's own.
+- Material, by **hardness** (0 yielding … 1 ringing: flesh 0.05, plants 0.1, earth/sand/snow 0.2, genesis 0.25, wood 0.6, stone 0.85, glass 0.95, metal 1): a noise scuff lowpassed at 700 + 1,700·hardness Hz, decaying over 28 → 8 ms (soft is dull and long, hard crisp and short); soft ground adds a second grain 12 ms later (the crunch of sand, snow, moss); a sub on the bass note, heavier on soft ground; hard ground (≥ 0.5) adds a very quiet knock on the current chord's root, then its 5th, alternating (soft triangle, sine for glass and metal, metallic partials on metal), so walking on stone taps along with the harmony. Level about −37 (soft) to −34 (hard) dB, −4 dB crouching.
+- Axes: M → brighter scuff and metal edges; P < 0 → darker (lowpass ×0.8).
+- Why it sits: steps are the quietest hi-hat in the mix, and on hard ground a whispered bass note — always on the grid, always in the chord.
 
 **R2 · The works (machine ticks)**
 - Synthesis: each running machine type contributes one Euclidean pattern slot — E(3, 8), E(5, 16), E(2, 5) (on 16ths) — and nearby machines of a type share one pattern (more machines = +1 dB, not more hits). Tick: NOISE→bp(2.8 kHz × 2^(0.5P), Q 1.2) 3/exp 8 ms + metallic partial pair at the chord's root ×4, −18 dB. Level −34.

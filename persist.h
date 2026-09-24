@@ -44,6 +44,7 @@ extern float g_fov; // degrees, vertical
 // Accessibility (Section 11): press-to-toggle instead of hold-to-move for WASD.
 extern bool g_toggleMovement;
 extern bool g_highContrastUI; // higher-luminance-contrast menu palette
+extern bool g_monoAudio;      // world sounds centred: no stereo placement (Part XI)
 extern bool g_moveToggleLatch[ACT_COUNT]; // only ACT_FORWARD/BACK/LEFT/RIGHT indices are ever used
 // Music Intensity (Accessibility, Section 11): 0 = ambient bed only, no
 // arp/pulse layer at all; 1 = the full designed arc -- a ceiling, not a
