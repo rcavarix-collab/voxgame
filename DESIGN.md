@@ -338,6 +338,8 @@ Per-region multi-chunk files (grouping a 16×16 column of chunks behind one smal
 
 ## Part VIII — Reference Material and How Each Was Used
 
+**Standing rule: consult these first.** The seed files in the repo root (Prismative.cpp, drillder.cpp, LG2.cpp, cc_2_2_2.cpp) — and totality.cpp, solarsystem.cpp and themer.cpp when they're pasted in — were each tested by hand and hold worked-out ideas. Before designing a new feature, texture, block behaviour or view, check whether one of them already solved it, and take the idea (never the code: see the licensing note at the top). The "Still to mine" notes below are the open leads.
+
 ### 8.1 Prismative.cpp (D3D11, closest in spirit to the target)
 **Kept (as concept):** manager-class decomposition (ResourceManager/InputManager/EntityManager/GameStateManager/Camera/Game); the multi-shape block idea (cube/tube/ramp/slab/pyramid/funnel, each its own vertex buffer) — directly informed the cube/straight/corner/junction shape system; player AABB collision at multiple height samples; raycasting for block picking (approach superseded by exact DDA, per 4.5).
 **Discarded:** the render loop's per-solid-cell draw call (the ~26,000-draw-call/frame problem, fixed by chunk meshing); fixed-step raycast marching (0.1 units/step, replaced by DDA); per-frame (not per-second) physics constants.
@@ -345,14 +347,23 @@ Per-region multi-chunk files (grouping a 16×16 column of chunks behind one smal
 ### 8.2 drillder.cpp (GDI+ orthogonal slice viewer)
 **Kept (as concept):** integer axis-aligned player facing (`dirX,dirY,dirZ`) with 90°-rotation via integer swizzle instead of float yaw/pitch for block-facing purposes — directly informs how pipe/machine orientation should be represented, though not yet implemented in the prototype since no oriented blocks exist yet; durability-on-voxel (`Voxel{type, isObstacle, durability}`) as the germ of mining/machine-progress mechanics; the fixed-tick movement accumulator pattern (`moveTimerAccumMs`/`MOVE_DELAY_MS`), generalized into the main tick loop.
 **Discarded:** world wrapping (rejected per 1.2); the three-orthogonal-slice rendering itself is not part of the game, though it was flagged as worth keeping as an optional debug overlay (not yet built).
+**Since used:** oriented blocks now exist (chests, machines, ramps, tubes) and store their facing in the block's state byte (3.2).
+**Still to mine:** per-voxel durability for mining and machine progress; the three-slice view as a debug overlay (looking inside terrain, testing crawlspaces).
 
 ### 8.3 LG2.cpp ("Lawn Gone," 2D cellular automaton)
 **Kept (as concept):** budgeted-work-per-tick (`MAX_SPREAD_PER_CYCLE`) as the direct ancestor of `MAX_FALLS`; deferred mutation (collect into a side buffer, apply after the iteration completes) as the direct ancestor of the falling-block queue's structure; cheap subsystem presence guards (skip a whole update pass when nothing needs it) as a principle, though its actual implementation (`any_of` scans over the full block vector every tick) was identified as the wrong way to implement that principle — a maintained running count per type is the correct version.
 **Discarded/warned about:** the quadtree-over-uniform-grid mismatch (a uniform grid wants O(1) index lookup, not a spatial tree); the dangling-pointer bug from mixing a pointer-based spatial index with a mutating vector; positional-enum save corruption (Part VII).
+**Still to mine:** its block *behaviours* — grass spreading, tree growth and rings, fire spreading and burning trees to charred ones, seawater and fresh water spreading, desert creep, TNT, lifespans — each maps directly onto the scheduled block-update queue (Part V) as a budgeted per-tick rule, and would give the natural materials (4.3) something to *do*.
 
 ### 8.4 cc_2_2_2.cpp (2D GDI+ sandbox, 145 texture generators)
 **Kept (as concept only, not code):** GDI+ procedural texture generation baked once at load time into GPU-resident textures — directly informs `textures.cpp`'s role and structure, though every generator function in `textures.cpp` is newly written.
 **Discarded:** the ~700-line copy-pasted `if(shift)/else if(ctrl)/else` key-handling block (noted as a pattern to actively avoid when hotbar/keybinding code is written — a small `{key,modifier}→action` table is the correct shape); holding 145 live `Bitmap*` objects at once rather than baking into a shared atlas.
+**Still to mine — the texture technique library.** Its 145 generators, which the player selected and tested, are the go-to source of *techniques* whenever a new procedural texture is made (the way `tools/natural_textures.py` made the natural set): not a list to port wholesale, but proven ways to draw a look. Roughly, by family:
+- *Natural ground and growth:* grass (tufts, chevrons, wavy patches, tall/short), sand dunes and sandy ripples, desert mirage, snow drifts and patches, frost meadow, frozen tundra cracks, ice fracture, mossy stone and craggy mossy cliff, wet mud, riverbed pebbles and pebbled streambed, boulder fields and rocky outcrops, volcanic ash, craters and lava flow, bark and bark patches, leaf veins, leaf litter, leaf decay, fern fronds, canopy leaves, forest undergrowth, swamp mist, lily pads, algae, seawater and fresh water.
+- *Weaves and tilings:* chevron, diamond, herringbone (offset, zigzag, diagonal, chevron mix), plaid, V-stripes, fish scale, interlocking circles, Truchet arcs, maze, stone mosaic, brick path, pixel camouflage.
+- *Geometry and ornament:* golden-ratio and other spirals, Sierpinski triangle, cellular automaton, Mandelbrot fragment, flower of life, vesica piscis, Merkaba, triskele, tetractys, seal of Solomon, tree of life, mandalas and sigils, runic fields.
+- *Tech and industrial:* circuit boards, LED matrices, hexagonal circuit grids, neon grids, clockwork, solar panels, nanotech grids, factory silhouettes — candidates for machine and pipe faces.
+When porting a technique, apply the texture brief's rules (16×16, lines wrap, no regular dither, details scattered, no brands) and never its `rand()` seeding — several of its generators seed from the clock, which makes them different every run.
 
 ### 8.5 Open-source/academic material reviewed for concepts (nothing copied)
 - **fogleman/Craft** (MIT-licensed) — read for chunk/mesh/persistence architecture as a size-appropriate reference; not used as a source of copied code.
