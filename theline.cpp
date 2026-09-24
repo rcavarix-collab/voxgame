@@ -1,6 +1,7 @@
 // theline.cpp -- see theline.h.
 
 #include "theline.h"
+#include "world.h" // DAY_LENGTH_SECONDS
 #include <cmath>
 
 LineState g_line;
@@ -174,16 +175,27 @@ void UpdateLine(LineState& s, const LineTuning& t, float x, float y, float z, fl
     s.wobblePhase += s.spin * (t.wobbleRate + t.wobbleRateGain * s.intensity) * dt;
     s.wobblePhase = fmodf(s.wobblePhase, TWO_PI);
 
-    // 6. The sky clock: near the line the visible sky runs ahead, faster
+    // 6. The sky clock. Near the line the visible sky races ahead, faster
     // the closer the player is (the square root lets the race build over
-    // the approach rather than only at the last step), easing off as the
-    // lead nears its limit; away from it the sky runs slow, by as much as
-    // it is ahead, until it has fallen back into step with the day.
+    // the approach rather than only at the last step). Away from it, the
+    // sky heads back into step by the shorter way: a little ahead, it runs
+    // slow until the day catches up; more than half a day ahead, it runs on
+    // round to the next day, slowing as it gets there. The sky repeats
+    // daily, so the lead wraps; the speed itself eases, never jumps.
     float nearness = sqrtf(s.intensity > 0 ? s.intensity : 0.0f);
-    float fill = s.skyLead / t.skyLeadMax;
-    s.skyRate = 1.0f + t.skyRace * nearness * (1.0f - fill) - t.skyLag * (1.0f - nearness) * fill;
+    const float DAY = DAY_LENGTH_SECONDS;
+    float settle;
+    if (s.skyLead <= 0.5f * DAY) settle = 1.0f - t.skyLag * Smooth01(0.0f, 60.0f, s.skyLead);
+    else {
+        float extra = (DAY - s.skyLead) / t.skyCoast;
+        settle = 1.0f + (extra < 1.0f ? 1.0f : (extra > t.skyRace ? t.skyRace : extra));
+    }
+    float want = nearness * (1.0f + t.skyRace * nearness) + (1.0f - nearness) * settle;
+    s.skyRate += (want - s.skyRate) * (1.0f - expf(-dt / t.skyEase));
     s.skyLead += (s.skyRate - 1.0f) * dt;
-    s.skyLead = s.skyLead < 0 ? 0 : (s.skyLead > t.skyLeadMax ? t.skyLeadMax : s.skyLead);
+    s.cloudLead += (s.skyRate - 1.0f) * dt;
+    if (s.skyLead >= DAY) s.skyLead -= DAY;
+    if (s.skyLead < 0) s.skyLead = 0;
 }
 
 void LineSkyWobble(const LineState& s, const LineTuning& t, float amount, float out[3][3]) {

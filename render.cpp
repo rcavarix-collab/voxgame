@@ -538,7 +538,7 @@ static const char* g_skyShaderSrc =
     "// uses atmosphere\n"
     "cbuffer SkyCB : register(b0) {\n"
     "    row_major matrix viewProj;\n"
-    "    float4 params;    // x stars visible, y direct-sun amount (disc brightness), z seconds the sky's clock is ahead (The Line)\n"
+    "    float4 params;    // x stars visible, y direct-sun amount (disc brightness), z seconds the clouds' clock is ahead (The Line)\n"
     "    float4 moon;      // xyz toward the moon, w visibility\n"
     "    float4 ghostMoon; // xyz toward The Line's ghost moon, w strength\n"
     "    float4 starRow0; float4 starRow1; float4 starRow2; // sky direction -> star-field direction\n"
@@ -1051,7 +1051,7 @@ void RenderScene(World& w, const Mat4& view, const Mat4& proj, Vec3 eye, Vec3 fo
         float moonVis = SkySmooth(-0.03f, 0.05f, md.y) * (1.0f - 0.75f * day);
         struct { Mat4 viewProj; float params[4]; float moon[4]; float ghost[4]; float rows[3][4]; } cb = {
             skyViewProj,
-            { sky.starsVisible, sky.sunLight, g_line.skyLead, 0 },
+            { sky.starsVisible, sky.sunLight, g_line.cloudLead, 0 },
             { md.x, md.y, md.z, moonVis },
             { ghost.x, ghost.y, ghost.z, 0.22f * g_line.intensity * moonVis }, // always fainter than the moon
             { { M[0][0], M[0][1], M[0][2], 0 }, { M[1][0], M[1][1], M[1][2], 0 }, { M[2][0], M[2][1], M[2][2], 0 } },

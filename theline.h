@@ -43,14 +43,16 @@ struct LineTuning {
     float stepSharpness = 0.25f;     // width of each staircase riser, fraction of a decade (1 = smooth)
     float smoothing = 0.5f;          // seconds; intensity low-pass
     // Sky expression: the sky clock (stars, moon, clouds) races ahead near
-    // the line and lags once the player leaves, until it's back in step.
-    float skyRace = 11.0f;           // extra sky seconds per second at full intensity (12x on the line)
-    float skyLeadMax = 900.0f;       // how far ahead the sky can get (a quarter of the day); the race eases as it nears this
-    float skyLag = 0.8f;             // how much slower than the clock the sky runs when it's furthest ahead and the player has left
-    float starWobble = 0.03f;        // radians of star precession at full intensity (faint: time is the expression)
+    // the line; once the player leaves, the rush dies down and the sky
+    // finds its way back into step with the day by the shorter way.
+    float skyRace = 29.0f;           // extra sky seconds per second at full intensity (30x on the line: a night in 20 s)
+    float skyLag = 0.9f;             // a little ahead: the sky runs this much slower than the clock (down to 0.1x) until back in step
+    float skyCoast = 90.0f;          // well ahead: it runs on round to the next day, slowing as it nears it (seconds of lead per 1x extra)
+    float skyEase = 2.0f;            // seconds for the sky's speed to settle on a new rate
+    float starWobble = 0.015f;       // radians of star precession at full intensity (faint: time is the expression)
     float moonGhostScale = 0.25f;    // ghost moon amplitude relative to the stars (always < 1)
-    float wobbleRate = 0.15f;        // rad/s of precession at zero intensity...
-    float wobbleRateGain = 0.6f;     // ...plus this much more at full intensity
+    float wobbleRate = 0.05f;        // rad/s of precession at zero intensity...
+    float wobbleRateGain = 0.2f;     // ...plus this much more at full intensity
 };
 
 // A pull on the pivot. Today only the player's own dwelling feeds one;
@@ -90,8 +92,9 @@ struct LineState {
     float blocksPerDecade = 6;
     float intensity = 0;      // smoothed 0..1
     float wobblePhase = 0;
-    float skyLead = 0;        // seconds the visible sky is ahead of the day clock (0..skyLeadMax)
-    float skyRate = 1;        // how fast the visible sky is running this tick (1 = with the clock)
+    float skyLead = 0;        // seconds the visible sky is ahead of the day clock, 0..one day (the sky repeats daily)
+    float cloudLead = 0;      // the same lead, never wrapped: clouds don't repeat, so they mustn't jump
+    float skyRate = 1;        // how fast the visible sky is running (1 = with the clock)
     float lastX = 0, lastZ = 0;
     bool hasLast = false;
 };

@@ -43,10 +43,12 @@ static inline SkyState ComputeSky(float dayTime) {
     // rises due east, passes straight overhead and sets due west, its whole
     // path in one vertical plane. Noon shadows fall straight down.
     s.sunDir = Normalize(kEast * cosf(a) + kUp * sinf(a));
-    // The moon trails the sun by ~140 degrees: up through the night and
-    // into the morning, the way a waning moon lingers after dawn. Its path
-    // leans a few degrees off the sun's, as a real moon's does.
-    float m = a - 2.45f;
+    // The moon runs ~140 degrees ahead of the sun along the same path:
+    // rising late in Dusk, up through the night and still up in the west
+    // for the first minutes of the morning, the way a waning moon lingers
+    // after dawn (so a new world's first sunrise has it). Its path leans a
+    // few degrees off the sun's, as a real moon's does.
+    float m = a + 2.45f;
     s.moonDir = Normalize(kEast * cosf(m) + kUp * sinf(m) + kNorth * (0.09f * sinf(m)));
     float up = SkySmooth(-0.12f, 0.25f, s.sunDir.y);
     s.daylight = NIGHT_LIGHT + (1.0f - NIGHT_LIGHT) * up;

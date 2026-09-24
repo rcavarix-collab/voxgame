@@ -965,6 +965,10 @@ static void TestSky() {
     }
     CHECK(fabsf(dusk.sunDir.y) < 1e-3f && dusk.sunDir.x < -0.99f);    // sets in the west
     CHECK(night.sunDir.y < -0.8f && night.moonDir.y > 0.3f);          // moon up at night
+    {   // ...and still up in the west at dawn (a new world's first sunrise), setting early in the morning
+        SkyState d0 = ComputeSky(0.0f), d15 = ComputeSky(900.0f), late = ComputeSky(2700.0f);
+        CHECK(d0.moonDir.y > 0.3f && d0.moonDir.x < 0 && d15.moonDir.y < 0 && late.moonDir.y < 0);
+    }
     CHECK(noon.daylight == 1.0f && fabsf(night.daylight - NIGHT_LIGHT) < 1e-5f);
     CHECK(night.starsVisible == 1.0f && noon.starsVisible == 0.0f);
     CHECK(night.sunLight == 0.0f && noon.sunLight == 1.0f);
@@ -1146,24 +1150,47 @@ static void TestTheLine() {
     LineState r; RestoreLine(r, t, d);
     CHECK(fabsf(r.pivotX - s.pivotX) < 1e-2f && fabsf(r.pivotZ - s.pivotZ) < 1e-2f && r.spin == s.spin && r.theta == s.theta);
 
-    // The sky clock. Standing on the line, the sky races ahead -- faster
-    // the closer -- and eases off only as its lead nears the limit; walking
-    // away, it runs slow until it's back in step; far off, it keeps time.
+    // The sky clock. On the line the sky races (faster the closer); off
+    // it, the sky finds its way back into step by the shorter way: a little
+    // ahead, it runs slow; more than half a day ahead, it runs on round to
+    // the next day, slowing as it gets there. Far off, it keeps time.
     {
         auto rateAt = [&](float dist) { LineState a = settle(dist); return a.skyRate; };
         float r0 = rateAt(0.0f), r6 = rateAt(6.3f), r12 = rateAt(12.3f), r30 = rateAt(30.0f);
         printf("    sky rate at 0/6.3/12.3/30 blocks: %.2f %.2f %.2f %.2f\n", r0, r6, r12, r30);
-        CHECK(r0 > 10.0f && r0 > r6 && r6 > r12 && r12 > r30 && r30 > 1.0f && r30 < 1.1f);
-        LineState on2; on2.hasPivot = true; on2.theta = 0;
+        CHECK(r0 > 25.0f && r0 > r6 && r6 > r12 && r12 > r30 && r30 > 0.99f && r30 < 1.05f);
         t.turnSeconds = 1e9f; t.pivotMaxSpeed = 0;
-        for (int i = 0; i < 60 * 60; i++) UpdateLine(on2, t, 5.0f, 13.0f, 0.0f, dt); // a minute on the line
-        float lead = on2.skyLead;
-        CHECK(lead > 400.0f && lead < t.skyLeadMax && on2.skyRate > 1.0f);
-        for (int i = 0; i < 60 * 30; i++) UpdateLine(on2, t, 5.0f, 13.0f, 200.0f, dt); // then walk well away
-        printf("    after a minute on the line: %.0f s ahead; 30 s away: rate %.2f, %.0f s ahead\n", lead, on2.skyRate, on2.skyLead);
-        CHECK(on2.skyRate < 0.6f && on2.skyLead < lead);
-        for (int i = 0; i < 3 * 3600; i++) UpdateLine(on2, t, 5.0f, 13.0f, 200.0f, 1.0f);
-        CHECK(on2.skyLead < 5.0f && on2.skyRate > 0.99f && on2.skyRate <= 1.0f);
+        auto onLine = [&](float seconds) {
+            LineState a; a.hasPivot = true; a.theta = 0;
+            for (int i = 0; i < (int)(seconds * 60); i++) UpdateLine(a, t, 5.0f, 13.0f, 0.0f, dt);
+            return a;
+        };
+        // A little ahead: the sky runs slow once the player walks off.
+        LineState a = onLine(20.0f);
+        float lead = a.skyLead;
+        for (int i = 0; i < 60 * 10; i++) UpdateLine(a, t, 5.0f, 13.0f, 200.0f, dt); // the rush dies down (the speed eases)
+        float lead10 = a.skyLead;
+        for (int i = 0; i < 60 * 10; i++) UpdateLine(a, t, 5.0f, 13.0f, 200.0f, dt);
+        printf("    20 s on the line: %.0f s ahead; 10/20 s away: %.0f / %.0f s ahead, rate %.2f\n", lead, lead10, a.skyLead, a.skyRate);
+        CHECK(lead > 400.0f && lead < 0.5f * DAY_LENGTH_SECONDS);
+        CHECK(a.skyRate < 0.2f && a.skyLead < lead10 - 8.0f);
+        for (int i = 0; i < 3600; i++) UpdateLine(a, t, 5.0f, 13.0f, 200.0f, 1.0f);
+        CHECK(a.skyLead < 1.0f && fabsf(a.skyRate - 1.0f) < 0.02f);
+        // Well ahead: it runs on to the next day, slowing, then keeps time.
+        LineState b = onLine(90.0f);
+        float leadB = b.skyLead;
+        for (int i = 0; i < 60 * 10; i++) UpdateLine(b, t, 5.0f, 13.0f, 200.0f, dt);
+        float coast = b.skyRate;
+        bool slowing = true; float prev = b.skyRate; int steps = 0;
+        while (b.skyLead > 0.5f * DAY_LENGTH_SECONDS && steps < 60 * 3600) {
+            UpdateLine(b, t, 5.0f, 13.0f, 200.0f, dt); steps++;
+            if (b.skyRate > prev + 1e-3f) slowing = false;
+            prev = b.skyRate;
+        }
+        printf("    90 s on the line: %.0f s ahead; coasting at %.1fx, back in step after %.0f s more\n", leadB, coast, steps * dt);
+        CHECK(leadB > 0.5f * DAY_LENGTH_SECONDS && coast > 1.5f && slowing && steps < 60 * 600);
+        for (int i = 0; i < 600; i++) UpdateLine(b, t, 5.0f, 13.0f, 200.0f, 1.0f);
+        CHECK(b.skyLead < 1.0f && fabsf(b.skyRate - 1.0f) < 0.02f);
         t.turnSeconds = 3600.0f; t.pivotMaxSpeed = LineTuning().pivotMaxSpeed;
     }
 }
