@@ -1,6 +1,7 @@
 // blocktex.cpp -- see blocktex.h.
 
 #include "blocktex.h"
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <map>
@@ -305,7 +306,25 @@ void BuildBlockTextures(const VtexSet& authored, BlockTextureSet& out) {
         if (!layerOf.count(kv.first)) out.warnings.push_back(kv.second->source + ": texture '" + kv.first + "' isn't used by any block");
 
     // Mip chain, 2x2 box filter down to 1x1. Mips are what keep distant
-    // blocks from shimmering under point sampling.
+    // blocks from shimmering under point sampling. The texels are sRGB
+    // (the GPU reads them as _SRGB), so colour is averaged in linear light
+    // -- a gamma-space average darkens every contrasty texture with
+    // distance. Alpha is already linear.
+    float toLinear[256];
+    for (int i = 0; i < 256; i++) {
+        float c = i / 255.0f;
+        toLinear[i] = c <= 0.04045f ? c / 12.92f : std::pow((c + 0.055f) / 1.055f, 2.4f);
+    }
+    auto toSrgb = [&](float lin) {
+        // Nearest byte: the first code whose linear value passes the
+        // midpoint to the next one (256 entries, binary search).
+        int lo = 0, hi = 255;
+        while (lo < hi) {
+            int mid = (lo + hi) / 2;
+            if (lin > 0.5f * (toLinear[mid] + toLinear[mid + 1])) lo = mid + 1; else hi = mid;
+        }
+        return (uint8_t)lo;
+    };
     out.layerCount = (int)layers.size();
     int mips = 1; for (int s = BLOCK_TEX_SIZE; s > 1; s >>= 1) mips++;
     out.mipCount = mips;
@@ -321,9 +340,11 @@ void BuildBlockTextures(const VtexSet& authored, BlockTextureSet& out) {
             for (int y = 0; y < dst; y++)
                 for (int x = 0; x < dst; x++)
                     for (int c = 0; c < 4; c++) {
-                        int sum = s[((2 * y) * src + 2 * x) * 4 + c] + s[((2 * y) * src + 2 * x + 1) * 4 + c]
-                                + s[((2 * y + 1) * src + 2 * x) * 4 + c] + s[((2 * y + 1) * src + 2 * x + 1) * 4 + c];
-                        d[(y * dst + x) * 4 + c] = (uint8_t)((sum + 2) / 4);
+                        const uint8_t a = s[((2 * y) * src + 2 * x) * 4 + c], b = s[((2 * y) * src + 2 * x + 1) * 4 + c],
+                                      e = s[((2 * y + 1) * src + 2 * x) * 4 + c], f = s[((2 * y + 1) * src + 2 * x + 1) * 4 + c];
+                        d[(y * dst + x) * 4 + c] = c == 3
+                            ? (uint8_t)((a + b + e + f + 2) / 4)
+                            : toSrgb(0.25f * (toLinear[a] + toLinear[b] + toLinear[e] + toLinear[f]));
                     }
         }
     }

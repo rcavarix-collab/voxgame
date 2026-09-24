@@ -50,6 +50,15 @@ ID3D11SamplerState* g_sampler = nullptr;
 ID3D11RasterizerState* g_rasterState = nullptr;
 ID3D11DepthStencilState* g_depthState = nullptr;
 ID3D11Buffer* g_chunkCBuffer = nullptr;
+// The frame's atmosphere (sky.h ComputeAtmosphere): FrameCB, register b2,
+// shared by the sky and world shaders.
+static ID3D11Buffer* g_frameCB = nullptr;
+struct FrameCBData {
+    float sunDir[4], sunColor[4], moonDir[4], moonColor[4];
+    float zenith[4], horizon[4], twilight[4], ambientUp[4], ambientDown[4];
+    float camPos[4], fog[4];
+};
+static const float CLOUD_COVER = 0.52f; // noise threshold: higher = clearer skies
 
 // Off-screen scene target + a readable depth buffer, for the post pass.
 static ID3D11RenderTargetView* g_sceneRTV = nullptr;
@@ -104,38 +113,80 @@ ID3D11Buffer* g_skyVB = nullptr;
 ID3D11Buffer* g_skyIB = nullptr;
 UINT g_skyIndexCount = 0;
 
-// World pass shader (Section 4.2). Vertices arrive packed (mesher.h):
-// chunk-local position plus a per-draw chunk origin, a texture-array
-// layer, and bits for u/v, ambient occlusion and shade class. Lighting is
-// a fixed brightness per face direction times an AO darkening (both
-// decided at mesh time), times the day/night level, times -- when
-// shadows are on -- a shadow-map test toward the sun. Compiled once
-// as-is and, should that fail on some driver, again with NO_SHADOWS
-// (the pre-shadow shader), so a shadow problem can never cost the world.
+// Shared by the sky and world shaders (prepended to both): the frame's
+// light and sky colours (sky.h ComputeAtmosphere, linear RGB), the clear-
+// sky colour in any direction, distance fog and the final tonemap. The
+// fog fades distant terrain into exactly the sky colour behind it, so the
+// edge of the loaded world disappears into the horizon.
+static const char* g_atmosphereSrc =
+    "cbuffer FrameCB : register(b2) {\n"
+    "    float4 fSunDir;      // xyz toward the sun\n"
+    "    float4 fSunColor;    // direct sunlight (0 at night)\n"
+    "    float4 fMoonDir;     // xyz toward the moon\n"
+    "    float4 fMoonColor;   // direct moonlight\n"
+    "    float4 fZenith;      // clear sky straight up; w = sunrise/sunset band strength\n"
+    "    float4 fHorizon;     // clear sky at the horizon\n"
+    "    float4 fTwilight;    // colour of the band around a low sun\n"
+    "    float4 fAmbientUp;   // sky light onto up-facing surfaces\n"
+    "    float4 fAmbientDown; // bounce light onto down-facing surfaces\n"
+    "    float4 fCamPos;      // xyz eye; w = time in seconds (clouds)\n"
+    "    float4 fFog;         // x fog start, y fog end (blocks), z exposure, w cloud cover\n"
+    "};\n"
+    "float3 SkyColor(float3 d) {\n"
+    "    float h = saturate(d.y);\n"
+    "    float3 col = lerp(fHorizon.rgb, fZenith.rgb, pow(h, 0.5f));\n"
+    "    col *= 1.0f - 0.25f * saturate(-d.y * 4.0f);\n"
+    "    float mu = dot(d, fSunDir.xyz);\n"
+    "    float toward = saturate(mu * 0.5f + 0.5f);\n"
+    "    float band = fZenith.w * pow(saturate(1.0f - abs(d.y) * 2.0f), 2.5f) * (0.25f + 0.75f * toward * toward * toward);\n"
+    "    col = lerp(col, fTwilight.rgb, saturate(band * 1.3f));\n"
+    "    float s = saturate(mu);\n"
+    "    col += fSunColor.rgb * (0.10f * pow(s, 8.0f) + 0.25f * pow(s, 64.0f));\n"
+    "    return col;\n"
+    "}\n"
+    "float FogAmount(float dist) {\n"
+    "    float f = saturate((dist - fFog.x) / max(fFog.y - fFog.x, 1.0f));\n"
+    "    return f * f * (3.0f - 2.0f * f);\n"
+    "}\n"
+    "float3 ToDisplay(float3 x) {\n"
+    "    x *= fFog.z;\n"
+    "    x = saturate((x * (2.51f * x + 0.03f)) / (x * (2.43f * x + 0.59f) + 0.14f));\n" // ACES fit (Narkowicz)
+    "    return pow(x, 1.0f / 2.2f);\n"
+    "}\n";
+
+// World pass shader (Section 4.2 / 4.8). Vertices arrive packed
+// (mesher.h): chunk-local position plus a per-draw chunk origin, a
+// texture-array layer, and bits for u/v, ambient occlusion and shade
+// class. Lighting runs in linear light: hemisphere ambient (sky above,
+// bounce below) darkened by AO, plus sun and moon by the face's facing,
+// the sun shadowed when shadows are on; then distance fog into the sky
+// colour and a filmic tonemap. The output alpha marks what glows (the
+// bloom pass reads it). Compiled once as-is and, should that fail on some
+// driver, again with NO_SHADOWS, so a shadow problem can never cost the
+// world.
 static const char* g_shaderSrc =
-    "cbuffer CB : register(b0) { row_major matrix mvp; row_major matrix lightViewProj; float4 sun; float4 params; float4 lineA; float4 lineB; };\n"
-    // sun.xyz: toward the sun. params: x shadows on, y daylight, z sun strength, w shadow half-texel.
+    "// uses atmosphere\n"
+    "cbuffer CB : register(b0) { row_major matrix mvp; row_major matrix lightViewProj; float4 params; float4 lineA; float4 lineB; };\n"
+    // params: x shadows on, y shadow half-texel.
     // lineA: The Line's pivot x, height, pivot z, intensity; lineB: its direction x, z, the music level, unused.
     "cbuffer ChunkCB : register(b1) { float4 chunkOrigin; };\n"
     "struct VSIn { uint4 pos:POSITION; uint layer:TEXCOORD0; uint2 uv:TEXCOORD1; };\n"
-    "struct PSIn { float4 pos:SV_POSITION; float3 uvl:TEXCOORD0; float light:TEXCOORD1; float3 wpos:TEXCOORD2; float sunFacing:TEXCOORD3; float4 glowInfo:TEXCOORD4; };\n"
-    // +X -X +Y -Y +Z -Z: top brightest, bottom darkest, X and Z sides
-    // distinct so edges between two side faces still read; then slopes
-    // facing up (ramps, pyramids) and down (funnels).
-    "static const float faceShade[8] = { 0.80f, 0.80f, 1.00f, 0.55f, 0.68f, 0.68f, 0.90f, 0.62f };\n"
+    "struct PSIn { float4 pos:SV_POSITION; float3 uvl:TEXCOORD0; float2 aoBias:TEXCOORD1; float3 wpos:TEXCOORD2; float4 glowInfo:TEXCOORD3; };\n"
+    // A light touch of the old fixed per-direction shading keeps two faces
+    // at the same angle to the sun from reading as one flat surface.
+    "static const float faceBias[8] = { 0.94f, 0.94f, 1.00f, 0.90f, 0.88f, 0.88f, 1.00f, 0.92f };\n"
     "static const float3 faceNormal[8] = { float3(1,0,0), float3(-1,0,0), float3(0,1,0), float3(0,-1,0),\n"
-    "                                      float3(0,0,1), float3(0,0,-1), float3(0,1,0), float3(0,-1,0) };\n"
-    "static const float aoCurve[4] = { 0.50f, 0.66f, 0.83f, 1.00f };\n"
+    "                                      float3(0,0,1), float3(0,0,-1), float3(0,0.8f,0.6f), float3(0,-0.8f,0.6f) };\n"
+    "static const float aoCurve[4] = { 0.42f, 0.62f, 0.82f, 1.00f };\n"
     "PSIn VSMain(VSIn i) {\n"
     "    PSIn o;\n"
     "    float3 p = float3(i.pos.xyz) * 0.125f + chunkOrigin.xyz;\n"   // 1/8-block fixed point
     "    o.pos = mul(float4(p, 1.0f), mvp);\n"
     "    o.uvl = float3(float2(i.uv) * 0.125f, (float)i.layer);\n"
     "    uint face = (i.pos.w >> 2) & 7u;\n"
-    "    o.light = faceShade[face] * aoCurve[i.pos.w & 3u];\n"
-    "    float3 n = faceNormal[face];\n"
+    "    o.aoBias = float2(aoCurve[i.pos.w & 3u], faceBias[face]);\n"
+    "    float3 n = normalize(faceNormal[face]);\n"
     "    o.wpos = p + n * 0.08f;\n"                                   // normal offset (> 1 shadow texel): no acne
-    "    o.sunFacing = saturate(dot(n, sun.xyz) * 4.0f);\n"
     "    o.glowInfo = float4((float)((i.pos.w >> 5) & 3u), n);\n"   // glow kind, face normal
     "    return o;\n"
     "}\n"
@@ -146,40 +197,50 @@ static const char* g_shaderSrc =
     "SamplerComparisonState shadowSamp : register(s1);\n"
     "#endif\n"
     "float4 PSMain(PSIn i) : SV_TARGET {\n"
-    "    float4 c = tex0.Sample(samp0, i.uvl);\n"
-    "    float light = i.light * params.y;\n"
+    "    float3 albedo = tex0.Sample(samp0, i.uvl).rgb;\n"             // sRGB texture view: already linear
+    "    float3 n = i.glowInfo.yzw;\n"
+    "    float ao = i.aoBias.x;\n"
+    "    float sunLit = saturate(dot(n, fSunDir.xyz));\n"
     "#ifndef NO_SHADOWS\n"
-    "    if (params.x > 0.5f) {\n"
+    "    if (params.x > 0.5f && sunLit > 0.0f) {\n"
     "        float4 lp = mul(float4(i.wpos, 1.0f), lightViewProj);\n"
     "        float2 suv = float2(lp.x * 0.5f + 0.5f, 0.5f - lp.y * 0.5f);\n"
-    "        float lit = 1.0f;\n"
     "        if (suv.x > 0.0f && suv.x < 1.0f && suv.y > 0.0f && suv.y < 1.0f && lp.z < 1.0f) {\n"
-    "            float o = params.w;\n"                               // 2x2 taps of hardware PCF
-    "            lit = 0.25f * (shadowMap.SampleCmpLevelZero(shadowSamp, suv + float2(-o, -o), lp.z)\n"
-    "                         + shadowMap.SampleCmpLevelZero(shadowSamp, suv + float2( o, -o), lp.z)\n"
-    "                         + shadowMap.SampleCmpLevelZero(shadowSamp, suv + float2(-o,  o), lp.z)\n"
-    "                         + shadowMap.SampleCmpLevelZero(shadowSamp, suv + float2( o,  o), lp.z));\n"
+    "            float o = params.y;\n"                               // 2x2 taps of hardware PCF
+    "            float lit = 0.25f * (shadowMap.SampleCmpLevelZero(shadowSamp, suv + float2(-o, -o), lp.z)\n"
+    "                               + shadowMap.SampleCmpLevelZero(shadowSamp, suv + float2( o, -o), lp.z)\n"
+    "                               + shadowMap.SampleCmpLevelZero(shadowSamp, suv + float2(-o,  o), lp.z)\n"
+    "                               + shadowMap.SampleCmpLevelZero(shadowSamp, suv + float2( o,  o), lp.z));\n"
+    // Fade out toward the map's edge rather than stopping at a line.
+    "            float edge = saturate(min(min(suv.x, 1.0f - suv.x), min(suv.y, 1.0f - suv.y)) * 16.0f);\n"
+    "            sunLit *= lerp(1.0f, lit, edge);\n"
     "        }\n"
-    "        lit *= i.sunFacing;\n"
-    "        light *= lerp(1.0f - 0.4f * params.z, 1.0f, lit);\n"
     "    }\n"
     "#endif\n"
+    "    float3 ambient = lerp(fAmbientDown.rgb, fAmbientUp.rgb, n.y * 0.5f + 0.5f) * ao;\n"
+    "    float3 direct = fSunColor.rgb * sunLit * (0.55f + 0.45f * ao)\n"
+    "                  + fMoonColor.rgb * saturate(dot(n, fMoonDir.xyz)) * ao;\n"
+    "    float3 col = albedo * (ambient + direct) * i.aoBias.y;\n"
     // Reactive blocks (blocks.h BlockGlow): 1 = the music playing now,
     // 2 = The Line passing through this block's cell (found per pixel from
     // the world position minus the face normal: a vertex on a corner could
-    // floor into the neighbouring cell).
+    // floor into the neighbouring cell). They emit light of their own.
     "    float glow = 0.0f;\n"
-    "    float3 glowCol = float3(1.0f, 0.8f, 0.45f);\n"
+    "    float3 glowCol = float3(1.0f, 0.62f, 0.25f);\n"
     "    if (i.glowInfo.x > 1.5f) {\n"
-    "        float3 cell = floor(i.wpos - i.glowInfo.yzw * 0.58f) + 0.5f;\n"
+    "        float3 cell = floor(i.wpos - n * 0.58f) + 0.5f;\n"
     "        float2 r = cell.xz - lineA.xz;\n"
     "        float across = abs(r.x * lineB.y - r.y * lineB.x);\n"
     "        glow = saturate(1.0f - across / 0.75f) * saturate((0.6f - abs(cell.y - lineA.y)) * 4.0f);\n"
-    "        glowCol = float3(0.55f, 0.9f, 1.0f);\n"
+    "        glowCol = float3(0.35f, 0.85f, 1.0f);\n"
     "    } else if (i.glowInfo.x > 0.5f) {\n"
     "        glow = lineB.z;\n"
     "    }\n"
-    "    return float4(saturate(c.rgb * light + glow * (c.rgb * 0.9f + glowCol * 0.35f)), 1.0f);\n"
+    "    col += glow * (albedo * 1.2f + glowCol * 0.8f);\n"
+    "    float3 v = i.wpos - fCamPos.xyz;\n"
+    "    float dist = length(v);\n"
+    "    col = lerp(col, SkyColor(v / max(dist, 1e-3f)), FogAmount(dist));\n"
+    "    return float4(ToDisplay(col), saturate(glow));\n"
     "}\n";
 
 // Depth-only pass into the shadow map, from the sun (Section 4.8).
@@ -293,10 +354,10 @@ static const char* g_uiShaderSrc =
 // (renormalized) direction instead makes it smooth in every direction,
 // independent of the mesh's face boundaries.
 static const char* g_skyShaderSrc =
+    "// uses atmosphere\n"
     "cbuffer SkyCB : register(b0) {\n"
     "    row_major matrix viewProj;\n"
-    "    float4 sun;       // xyz toward the sun\n"
-    "    float4 params;    // x day amount 0..1, y stars visible, z direct sun\n"
+    "    float4 params;    // x stars visible, y direct-sun amount (disc brightness)\n"
     "    float4 moon;      // xyz toward the moon, w visibility\n"
     "    float4 ghostMoon; // xyz toward The Line's ghost moon, w strength\n"
     "    float4 starRow0; float4 starRow1; float4 starRow2; // sky direction -> star-field direction\n"
@@ -304,11 +365,6 @@ static const char* g_skyShaderSrc =
     "struct VSIn { float3 pos:POSITION; };\n"
     "struct PSIn { float4 pos:SV_POSITION; float3 dir:TEXCOORD0; };\n"
     "PSIn VSMain(VSIn input) { PSIn o; o.pos = mul(float4(input.pos,1.0f), viewProj); o.dir = input.pos; return o; }\n"
-    "static const float3 DAY_ZENITH = float3(0.25f, 0.45f, 0.85f);\n"
-    "static const float3 DAY_HORIZON = float3(0.65f, 0.75f, 0.95f);\n"
-    "static const float3 NIGHT_ZENITH = float3(0.012f, 0.018f, 0.045f);\n"
-    "static const float3 NIGHT_HORIZON = float3(0.045f, 0.055f, 0.10f);\n"
-    "static const float3 SUNSET = float3(1.0f, 0.52f, 0.25f);\n"
     "float Hash(float3 p) { p = frac(p * 0.3183099f + 0.1f); p *= 17.0f; return frac(p.x * p.y * p.z * (p.x + p.y + p.z)); }\n"
     // Procedural stars: each face of a cube around the sky is a grid of
     // ~1-degree cells; some cells hold one star at a hashed spot, size and
@@ -328,27 +384,44 @@ static const char* g_skyShaderSrc =
     "    float b = saturate(1.0f - length(frac(g) - spot) / size);\n"
     "    return b * b * (0.5f + 0.9f * Hash(key + 9.2f));\n"
     "}\n"
+    // Clouds: four octaves of value noise on a plane above the world,
+    // drifting with time -- sky pixels only, so the cost is fixed.
+    "float Hash2(float2 p) { p = frac(p * float2(0.1031f, 0.1030f)); p += dot(p, p.yx + 33.33f); return frac((p.x + p.y) * p.x); }\n"
+    "float Noise2(float2 p) {\n"
+    "    float2 i = floor(p), f = frac(p), u = f * f * (3.0f - 2.0f * f);\n"
+    "    return lerp(lerp(Hash2(i), Hash2(i + float2(1, 0)), u.x), lerp(Hash2(i + float2(0, 1)), Hash2(i + float2(1, 1)), u.x), u.y);\n"
+    "}\n"
+    "float CloudNoise(float3 d) {\n"
+    "    float2 uv = d.xz / (d.y + 0.12f) * 0.9f + float2(fCamPos.w * 0.006f, fCamPos.w * 0.002f);\n"
+    "    return 0.5f * Noise2(uv) + 0.25f * Noise2(uv * 2.03f + 17.1f) + 0.125f * Noise2(uv * 4.1f + 5.3f) + 0.0625f * Noise2(uv * 8.2f + 9.7f);\n"
+    "}\n"
     "float Disc(float3 d, float3 c, float cosR) { return smoothstep(cosR - 0.00008f, cosR + 0.00002f, dot(d, c)); }\n"
     "float4 PSMain(PSIn input) : SV_TARGET {\n"
     "    float3 d = normalize(input.dir);\n"
-    "    float h = saturate(d.y);\n"
-    "    float day = params.x;\n"
-    "    float3 col = lerp(lerp(NIGHT_HORIZON, DAY_HORIZON, day), lerp(NIGHT_ZENITH, DAY_ZENITH, day), h);\n"
+    "    float3 col = SkyColor(d);\n"
     "    float above = smoothstep(-0.04f, 0.04f, d.y);\n"
-    // Stars, fading in as the sun goes down.
+    "    float mu = dot(d, fSunDir.xyz);\n"
+    "    float cloud = 0.0f, cloudN = 0.0f;\n"
+    "    if (d.y > 0.0f) {\n"
+    "        cloudN = CloudNoise(d);\n"
+    "        cloud = smoothstep(fFog.w, fFog.w + 0.22f, cloudN) * smoothstep(0.0f, 0.15f, d.y);\n"
+    "    }\n"
+    // Stars, moon and its ghost behind the clouds.
     "    float3 s = float3(dot(starRow0.xyz, d), dot(starRow1.xyz, d), dot(starRow2.xyz, d));\n"
-    "    col += Stars(s) * params.y * above * float3(0.95f, 0.97f, 1.0f);\n"
-    // Moon, and The Line's faint ghost of it (a soft double exposure).
-    "    float3 moonCol = float3(0.86f, 0.88f, 0.95f);\n"
-    "    col = lerp(col, moonCol, Disc(d, moon.xyz, 0.99966f) * moon.w * above);\n"
-    "    col += moonCol * Disc(d, ghostMoon.xyz, 0.99966f) * ghostMoon.w * above;\n"
-    // Sun: warm the sky around it while low, then its disc and glow.
-    "    float toward = saturate(dot(d, sun.xyz));\n"
-    "    float low = saturate(1.0f - abs(sun.y) * 4.0f);\n"
-    "    col = lerp(col, SUNSET, low * pow(toward, 6.0f) * (1.0f - h) * 0.85f);\n"
-    "    float disc = smoothstep(0.9990f, 0.9996f, toward) + pow(toward, 64.0f) * 0.35f;\n"
-    "    col += disc * float3(1.0f, 0.95f, 0.80f) * saturate(sun.y * 6.0f + 0.4f);\n"
-    "    return float4(col, 1.0f);\n"
+    "    float veil = 1.0f - cloud * 0.9f;\n"
+    "    col += Stars(s) * params.x * above * veil * float3(0.8f, 0.85f, 1.0f);\n"
+    "    float3 moonCol = float3(0.9f, 0.92f, 1.0f) * 1.4f;\n"
+    "    col = lerp(col, moonCol, Disc(d, moon.xyz, 0.99966f) * moon.w * above * veil);\n"
+    "    col += moonCol * Disc(d, ghostMoon.xyz, 0.99966f) * ghostMoon.w * above * veil;\n"
+    // The sun's disc (bright enough to bloom), dimmed by cloud.
+    "    float sunDisc = smoothstep(0.9990f, 0.9996f, mu) * params.y * above;\n"
+    "    col += sunDisc * float3(1.0f, 0.9f, 0.7f) * 30.0f * (1.0f - cloud * 0.85f);\n"
+    // Clouds lit by the sky and the sun: silver lining toward the sun,
+    // warmer at dusk, darker where they're thickest.
+    "    float3 cloudLit = fAmbientUp.rgb * 1.1f + fSunColor.rgb * (0.30f + 0.55f * pow(saturate(mu), 4.0f)) + fMoonColor.rgb * 0.8f;\n"
+    "    cloudLit *= lerp(1.0f, 0.72f, smoothstep(fFog.w + 0.12f, fFog.w + 0.35f, cloudN));\n"
+    "    col = lerp(col, cloudLit, cloud * 0.92f);\n"
+    "    return float4(ToDisplay(col), saturate(sunDisc * (1.0f - cloud)));\n"
     "}\n";
 
 // Emits one cube face (4 verts + 6 indices) for the given corners.
@@ -580,6 +653,31 @@ void RenderScene(World& w, const Mat4& view, const Mat4& proj, Vec3 eye, Vec3 fo
     if (shadows) { ProfScope prof(PROF_SHADOW); UpdateShadowMap(w, eye, sky.sunDir); }
     if (!g_shadows) g_shadowValid = false; // re-render on re-enable
 
+    // The frame's atmosphere, shared by sky and world (b2).
+    {
+        Atmosphere atm = ComputeAtmosphere(sky);
+        float fogEnd = (float)std::max(2, g_loadRadius) * CHUNK_SIZE; // the loaded world's guaranteed edge
+        auto v4 = [](float* d, Vec3 v, float w) { d[0] = v.x; d[1] = v.y; d[2] = v.z; d[3] = w; };
+        FrameCBData f;
+        v4(f.sunDir, sky.sunDir, 0);
+        v4(f.sunColor, atm.sunColor, 0);
+        v4(f.moonDir, sky.moonDir, 0);
+        v4(f.moonColor, atm.moonColor, 0);
+        v4(f.zenith, atm.zenith, atm.twilightAmount);
+        v4(f.horizon, atm.horizon, 0);
+        v4(f.twilight, atm.twilight, 0);
+        v4(f.ambientUp, atm.ambientUp, 0);
+        v4(f.ambientDown, atm.ambientDown, 0);
+        v4(f.camPos, eye, (float)(g_worldTick / 60.0));
+        f.fog[0] = fogEnd * 0.5f; f.fog[1] = fogEnd; f.fog[2] = atm.exposure; f.fog[3] = CLOUD_COVER;
+        D3D11_MAPPED_SUBRESOURCE mapped;
+        g_context->Map(g_frameCB, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
+        memcpy(mapped.pData, &f, sizeof(f));
+        g_context->Unmap(g_frameCB, 0);
+        g_context->VSSetConstantBuffers(2, 1, &g_frameCB);
+        g_context->PSSetConstantBuffers(2, 1, &g_frameCB);
+    }
+
     int64_t worldStart = ProfNow();
     // With no post effect on, draw straight to the backbuffer: the post
     // path costs nothing at all while it's switched off.
@@ -617,10 +715,9 @@ void RenderScene(World& w, const Mat4& view, const Mat4& proj, Vec3 eye, Vec3 fo
                        G[1][0] * md.x + G[1][1] * md.y + G[1][2] * md.z,
                        G[2][0] * md.x + G[2][1] * md.y + G[2][2] * md.z };
         float moonVis = SkySmooth(-0.03f, 0.05f, md.y) * (1.0f - 0.75f * day);
-        struct { Mat4 viewProj; float sun[4]; float params[4]; float moon[4]; float ghost[4]; float rows[3][4]; } cb = {
+        struct { Mat4 viewProj; float params[4]; float moon[4]; float ghost[4]; float rows[3][4]; } cb = {
             skyViewProj,
-            { sky.sunDir.x, sky.sunDir.y, sky.sunDir.z, 0 },
-            { day, sky.starsVisible, sky.sunLight, 0 },
+            { sky.starsVisible, sky.sunLight, 0, 0 },
             { md.x, md.y, md.z, moonVis },
             { ghost.x, ghost.y, ghost.z, 0.22f * g_line.intensity * moonVis }, // always fainter than the moon
             { { M[0][0], M[0][1], M[0][2], 0 }, { M[1][0], M[1][1], M[1][2], 0 }, { M[2][0], M[2][1], M[2][2], 0 } },
@@ -649,11 +746,10 @@ void RenderScene(World& w, const Mat4& view, const Mat4& proj, Vec3 eye, Vec3 fo
         CBData cb;
         cb.mvp = viewProj;
         cb.lightViewProj = g_lightViewProj;
-        cb.sun[0] = sky.sunDir.x; cb.sun[1] = sky.sunDir.y; cb.sun[2] = sky.sunDir.z; cb.sun[3] = 0;
         cb.params[0] = shadows ? 1.0f : 0.0f;
-        cb.params[1] = sky.daylight;
-        cb.params[2] = sky.sunLight;
-        cb.params[3] = 0.5f / SHADOW_SIZE;
+        cb.params[1] = 0.5f / SHADOW_SIZE;
+        cb.params[2] = 0.0f;
+        cb.params[3] = 0.0f;
         Vec3 ld = LineDirection(g_line);
         cb.lineA[0] = g_line.pivotX; cb.lineA[1] = g_line.lineY; cb.lineA[2] = g_line.pivotZ; cb.lineA[3] = g_line.intensity;
         cb.lineB[0] = ld.x; cb.lineB[1] = ld.z; cb.lineB[2] = CurrentMusicLevel(); cb.lineB[3] = 0.0f;
@@ -859,12 +955,16 @@ bool InitD3D(HWND hwnd) {
     CreateSizeDependentTargets();
 
     ID3DBlob* errBlob = nullptr;
-    ID3DBlob* vsBlob = CompileShader(g_shaderSrc, "VSMain", "vs_4_0");
-    ID3DBlob* psBlob = CompileShader(g_shaderSrc, "PSMain", "ps_4_0");
+    // The sky and world shaders share the atmosphere block (fog must match
+    // the sky exactly), prepended at compile time.
+    const std::string worldSrc = std::string(g_atmosphereSrc) + g_shaderSrc;
+    const std::string skySrc = std::string(g_atmosphereSrc) + g_skyShaderSrc;
+    ID3DBlob* vsBlob = CompileShader(worldSrc.c_str(), "VSMain", "vs_4_0");
+    ID3DBlob* psBlob = CompileShader(worldSrc.c_str(), "PSMain", "ps_4_0");
     bool worldShadows = psBlob != nullptr;
     if (!psBlob) {
         const D3D_SHADER_MACRO noShadows[] = { { "NO_SHADOWS", "1" }, { nullptr, nullptr } };
-        psBlob = CompileShader(g_shaderSrc, "PSMain", "ps_4_0", noShadows);
+        psBlob = CompileShader(worldSrc.c_str(), "PSMain", "ps_4_0", noShadows);
     }
     if (!vsBlob || !psBlob) return false;
     g_device->CreateVertexShader(vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(), nullptr, &g_vs);
@@ -887,6 +987,8 @@ bool InitD3D(HWND hwnd) {
     g_device->CreateBuffer(&cbd, nullptr, &g_cbuffer);
     cbd.ByteWidth = 16; // float4 chunk origin
     g_device->CreateBuffer(&cbd, nullptr, &g_chunkCBuffer);
+    cbd.ByteWidth = sizeof(FrameCBData);
+    g_device->CreateBuffer(&cbd, nullptr, &g_frameCB);
 
     // Point-sampled up close (crisp pixel art), blended between mip levels
     // so distant blocks don't shimmer. Wrap addressing: each block face
@@ -983,17 +1085,11 @@ bool InitD3D(HWND hwnd) {
     // --- Sky pass pipeline objects: depth off (g_uiDepthState is reused
     // here -- it's the same DepthEnable=FALSE state the UI pass already
     // needed, no reason to create a second identical one) ---
-    ID3DBlob* skyVsBlob = nullptr, * skyPsBlob = nullptr;
-    hr = D3DCompile(g_skyShaderSrc, strlen(g_skyShaderSrc), nullptr, nullptr, nullptr,
-                     "VSMain", "vs_4_0", 0, 0, &skyVsBlob, &errBlob);
-    if (FAILED(hr)) {
-        if (errBlob) OutputDebugStringA((const char*)errBlob->GetBufferPointer());
-        return false;
-    }
-    hr = D3DCompile(g_skyShaderSrc, strlen(g_skyShaderSrc), nullptr, nullptr, nullptr,
-                     "PSMain", "ps_4_0", 0, 0, &skyPsBlob, &errBlob);
-    if (FAILED(hr)) {
-        if (errBlob) OutputDebugStringA((const char*)errBlob->GetBufferPointer());
+    ID3DBlob* skyVsBlob = CompileShader(skySrc.c_str(), "VSMain", "vs_4_0");
+    ID3DBlob* skyPsBlob = CompileShader(skySrc.c_str(), "PSMain", "ps_4_0");
+    if (!skyVsBlob || !skyPsBlob) {
+        if (skyVsBlob) skyVsBlob->Release();
+        if (skyPsBlob) skyPsBlob->Release();
         return false;
     }
     g_device->CreateVertexShader(skyVsBlob->GetBufferPointer(), skyVsBlob->GetBufferSize(), nullptr, &g_skyVS);
@@ -1008,7 +1104,7 @@ bool InitD3D(HWND hwnd) {
 
     D3D11_BUFFER_DESC skyCbd = {};
     skyCbd.Usage = D3D11_USAGE_DYNAMIC;
-    skyCbd.ByteWidth = sizeof(Mat4) + 7 * 4 * sizeof(float); // viewProj + 7 float4s (SkyCB)
+    skyCbd.ByteWidth = sizeof(Mat4) + 6 * 4 * sizeof(float); // viewProj + 6 float4s (SkyCB)
     skyCbd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
     skyCbd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
     g_device->CreateBuffer(&skyCbd, nullptr, &g_skyCBuffer);
@@ -1211,10 +1307,13 @@ bool InitTextures(std::string& problemSummary) {
 
     // Block faces: one Texture2DArray, a layer per distinct face texture,
     // full mip chain uploaded from the CPU-built mips.
+    // sRGB: textures are authored in display colour; the sampler hands the
+    // shader linear values, so lighting maths (and mip filtering) happen in
+    // linear light.
     D3D11_TEXTURE2D_DESC td = {};
     td.Width = BLOCK_TEX_SIZE; td.Height = BLOCK_TEX_SIZE;
     td.MipLevels = set.mipCount; td.ArraySize = set.layerCount;
-    td.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    td.Format = DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
     td.SampleDesc.Count = 1;
     td.Usage = D3D11_USAGE_IMMUTABLE;
     td.BindFlags = D3D11_BIND_SHADER_RESOURCE;

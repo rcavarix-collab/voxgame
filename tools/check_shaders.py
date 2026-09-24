@@ -8,7 +8,7 @@ import os, re, subprocess, sys, tempfile
 
 def extract(path):
     src = open(path, encoding='utf-8').read()
-    for m in re.finditer(r'static const char\*\s+(g_\w*[Ss]hader\w*)\s*=(.*?);\s*\n', src, re.S):
+    for m in re.finditer(r'static const char\*\s+(g_\w*(?:[Ss]hader|atmosphere)\w*)\s*=(.*?);\s*\n', src, re.S):
         name, body = m.group(1), m.group(2)
         # Walk literals and C++ comments together, so a // inside an HLSL
         # string isn't mistaken for a C++ comment (and vice versa).
@@ -20,20 +20,32 @@ def main():
     files = sys.argv[1:] or [os.path.join(os.path.dirname(__file__), '..', 'render.cpp')]
     failed = 0
     for f in files:
-        for name, text in extract(f):
+        shaders = list(extract(f))
+        # Shaders marked "// uses atmosphere" get g_atmosphereSrc prepended,
+        # exactly as render.cpp composes them at compile time.
+        prelude = dict(shaders).get('g_atmosphereSrc', '')
+        for name, text in shaders:
+            if name == 'g_atmosphereSrc':
+                continue
+            if '// uses atmosphere' in text:
+                text = prelude + text
             with tempfile.NamedTemporaryFile('w', suffix='.hlsl', delete=False) as t:
                 t.write(text)
             if 'VSMain' not in text and 'PSMain' not in text:
                 print(f"FAIL {name}: no VSMain/PSMain found (extraction problem?)")
                 failed += 1
+            variants = [('', [])]
+            if '#ifndef NO_SHADOWS' in text:
+                variants.append((' [NO_SHADOWS]', ['-DNO_SHADOWS']))
             for entry, stage in (('VSMain', 'vert'), ('PSMain', 'frag')):
+              for label, defines in variants:
                 if entry not in text:
                     continue
-                r = subprocess.run(['glslangValidator', '-D', '-S', stage, '-e', entry, '-V', '-o', os.devnull, t.name],
+                r = subprocess.run(['glslangValidator', '-D', *defines, '-S', stage, '-e', entry, '-V', '-o', os.devnull, t.name],
                                    capture_output=True, text=True)
                 ok = r.returncode == 0
                 failed += not ok
-                print(f"{'ok  ' if ok else 'FAIL'} {name}:{entry}")
+                print(f"{'ok  ' if ok else 'FAIL'} {name}:{entry}{label}")
                 if not ok:
                     print('\n'.join('    ' + l for l in (r.stdout + r.stderr).splitlines() if l.strip() and t.name not in l or 'ERROR' in l))
             os.unlink(t.name)

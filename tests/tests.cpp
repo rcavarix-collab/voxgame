@@ -126,6 +126,25 @@ static void TestBlockTextures() {
     CHECK(px[(size_t)8 * BLOCK_TEX_SIZE * 4 + 1] == 255);               // row 8: green
     CHECK(a.warnings.size() == 2); // dirt -> missing texture; unknown block
     for (auto& w : a.warnings) printf("    (expected) %s\n", w.c_str());
+
+    // Mips average in linear light: a black/white checker fades to the
+    // sRGB code of 50% linear (188), not to gamma-space 128; flat colour
+    // survives every level unchanged.
+    VtexSet checker;
+    ParseVtex("texture chk\nsize 8\npalette\n k 000000\n w ffffff\n r ff0000\npixels\n"
+              " kwkwkwkw\n wkwkwkwk\n kwkwkwkw\n wkwkwkwk\n kwkwkwkw\n wkwkwkwk\n kwkwkwkw\n wkwkwkwk\nend\n"
+              "texture flat\nsize 8\npalette\n r 804020\npixels\n"
+              " rrrrrrrr\n rrrrrrrr\n rrrrrrrr\n rrrrrrrr\n rrrrrrrr\n rrrrrrrr\n rrrrrrrr\n rrrrrrrr\nend\n"
+              "block stone\n all chk\nend\nblock dirt\n all flat\nend\n", "chk.vtex", checker);
+    CHECK(checker.errors.empty());
+    BlockTextureSet c;
+    BuildBlockTextures(checker, c);
+    uint16_t LC = c.faceLayer[BLOCK_STONE][FACE_POS_Z][FACE_POS_Y], LF = c.faceLayer[BLOCK_DIRT][FACE_POS_Z][FACE_POS_Y];
+    int m = 4, sz = BLOCK_TEX_SIZE >> m; // one texel = 2x2 source pixels
+    const uint8_t* cm = c.mips[m].data() + (size_t)LC * sz * sz * 4;
+    CHECK(cm[0] == 188 && cm[1] == 188 && cm[2] == 188 && cm[3] == 255);
+    const uint8_t* fm = c.mips.back().data() + (size_t)LF * 4;
+    CHECK(fm[0] == 0x20 && fm[1] == 0x40 && fm[2] == 0x80 && fm[3] == 255);
 }
 
 static void TestSaveRoundTrip() {
@@ -474,6 +493,29 @@ static void TestSky() {
     // Moving less than a texel doesn't move the map.
     Mat4 lvp2 = ShadowLightViewProj({ eye.x + 0.001f, eye.y, eye.z }, noon.sunDir, 64.0f, 200.0f, 2048);
     CHECK(fabsf(lvp2.m[3][0] - lvp.m[3][0]) < 1e-3f || fabsf(lvp2.m[3][0] - lvp.m[3][0]) > 2.0f / 2048 * 0.9f);
+
+    // Atmosphere (4.9): a white-gold high sun, an orange low one, none at
+    // night; moonlight only at night; the sunset band only near sunset;
+    // exposure lifted only at night; and no pops anywhere in the day.
+    Atmosphere an = ComputeAtmosphere(noon), ad = ComputeAtmosphere(ComputeSky(2940)), ah = ComputeAtmosphere(night);
+    CHECK(an.sunColor.x > ad.sunColor.x && an.sunColor.z / an.sunColor.x > 0.8f && ad.sunColor.z / ad.sunColor.x < 0.4f);
+    CHECK(ah.sunColor.x == 0.0f && ah.moonColor.z > 0.1f && an.moonColor.z == 0.0f);
+    CHECK(an.twilightAmount == 0.0f && ad.twilightAmount > 0.5f && ah.twilightAmount == 0.0f);
+    CHECK(an.exposure == 1.0f && ah.exposure > 2.0f && ad.exposure < 1.5f);
+    CHECK(an.zenith.z > an.zenith.x && an.horizon.x > an.zenith.x);    // deep blue overhead, paler at the horizon
+    CHECK(an.ambientUp.x > an.ambientDown.x && ah.ambientUp.z > ah.ambientUp.x); // sky above; night light is blue
+    Atmosphere prev = ComputeAtmosphere(ComputeSky(0));
+    float worst = 0;
+    for (int t = 1; t <= 3600; t++) {
+        Atmosphere a = ComputeAtmosphere(ComputeSky((float)t));
+        const Vec3* cur[] = { &a.sunColor, &a.moonColor, &a.zenith, &a.horizon, &a.ambientUp, &a.ambientDown };
+        const Vec3* old[] = { &prev.sunColor, &prev.moonColor, &prev.zenith, &prev.horizon, &prev.ambientUp, &prev.ambientDown };
+        for (int k = 0; k < 6; k++)
+            worst = std::max({ worst, fabsf(cur[k]->x - old[k]->x), fabsf(cur[k]->y - old[k]->y), fabsf(cur[k]->z - old[k]->z) });
+        worst = std::max({ worst, fabsf(a.exposure - prev.exposure), fabsf(a.twilightAmount - prev.twilightAmount) });
+        prev = a;
+    }
+    CHECK(worst < 0.05f); // per second of game time: every change is a fade (the steepest, exposure at dusk, ~3%/s)
 }
 
 static void TestTheLine() {

@@ -83,3 +83,44 @@ static inline void AxisAngleMatrix(Vec3 axis, float angle, float m[3][3]) {
 // stars turn about the same axis, in the same sense, as the sun does --
 // the normal east-to-west streaming.
 static inline Vec3 CelestialPole() { return Normalize({ 0.0f, 0.35f, 1.0f }); }
+
+// ---- Atmosphere: the colours of light at this time of day (Part XIII) ----
+// All linear-light RGB (the shaders tonemap and convert to sRGB at the
+// end). One function feeds the sky shader, the world shader's lighting
+// and fog, and the CPU preview used to tune them -- so the fog always
+// matches the sky behind it and nothing drifts apart.
+struct Atmosphere {
+    Vec3 sunColor;     // direct sunlight reaching the ground (0 at night)
+    Vec3 moonColor;    // direct moonlight (0 by day / when set)
+    Vec3 zenith;       // clear sky straight up
+    Vec3 horizon;      // clear sky at the horizon
+    Vec3 twilight;     // colour of the band around a low sun
+    Vec3 ambientUp;    // light from the sky onto up-facing surfaces
+    Vec3 ambientDown;  // bounce light onto down-facing surfaces
+    float exposure;    // a fake eye adaptation: brighter at night
+    float twilightAmount; // 0..1 how strong the sunset/sunrise band is
+};
+
+static inline Vec3 SkyLerp(Vec3 a, Vec3 b, float t) { return { a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t, a.z + (b.z - a.z) * t }; }
+static inline Vec3 SkyScale(Vec3 a, float s) { return { a.x * s, a.y * s, a.z * s }; }
+
+static inline Atmosphere ComputeAtmosphere(const SkyState& s) {
+    Atmosphere a;
+    float day = (s.daylight - NIGHT_LIGHT) / (1.0f - NIGHT_LIGHT);   // 0 night .. 1 day
+    float high = SkySmooth(0.0f, 0.45f, s.sunDir.y);                 // sun well up
+    // Sunlight: white-gold high in the sky, orange as it nears the horizon.
+    Vec3 sunLow = { 1.00f, 0.50f, 0.22f }, sunHigh = { 1.00f, 0.95f, 0.86f };
+    a.sunColor = SkyScale(SkyLerp(sunLow, sunHigh, high), 2.3f * s.sunLight);
+    // Moonlight: faint and blue, only while the moon is up and the sun isn't.
+    float moonUp = SkySmooth(-0.02f, 0.15f, s.moonDir.y) * (1.0f - day);
+    a.moonColor = SkyScale({ 0.55f, 0.65f, 1.0f }, 0.28f * moonUp);
+    a.zenith = SkyLerp({ 0.004f, 0.006f, 0.018f }, { 0.10f, 0.28f, 0.78f }, day);
+    a.horizon = SkyLerp({ 0.012f, 0.016f, 0.035f }, { 0.55f, 0.68f, 0.90f }, day);
+    a.twilightAmount = (1.0f - high) * SkySmooth(-0.18f, 0.02f, s.sunDir.y) * (1.0f - SkySmooth(0.25f, 0.45f, s.sunDir.y));
+    a.twilight = { 1.00f, 0.36f, 0.11f };
+    // Ambient: the sky's own light from above, a warm dim bounce from below.
+    a.ambientUp = SkyLerp({ 0.035f, 0.045f, 0.09f }, { 0.42f, 0.50f, 0.64f }, day);
+    a.ambientDown = SkyLerp({ 0.012f, 0.012f, 0.02f }, { 0.20f, 0.17f, 0.13f }, day);
+    a.exposure = 1.0f + 1.6f * (1.0f - day) * (1.0f - day); // twilight keeps its colour; only real night is lifted
+    return a;
+}
