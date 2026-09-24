@@ -518,7 +518,7 @@ bool LoadGame(World& w, Player& p, int slot) {
     // (a large save would otherwise stall the view around the player
     // behind thousands of far-away rebuilds). Placed after the legacy
     // settings block since that can change g_loadRadius.
-    w.chunks.clear();
+    w.ClearChunks();
     g_evictedChunks.clear();
     g_generatedColumns.clear();
     g_residentColumns.clear();
@@ -528,7 +528,7 @@ bool LoadGame(World& w, Player& p, int slot) {
         g_generatedColumns.insert(key);
         if (ColumnDistance(kv.first.x, kv.first.z, pcx, pcz) <= g_loadRadius + CHUNK_EVICT_MARGIN) {
             g_residentColumns.insert(key);
-            w.chunks.emplace(kv.first, std::move(kv.second));
+            w.AdoptChunk(kv.first, std::move(kv.second));
         } else {
             g_evictedChunks.emplace(kv.first, std::move(kv.second));
         }

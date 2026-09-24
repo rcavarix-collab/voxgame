@@ -158,10 +158,15 @@ static inline void AtlasRect(int slot, float& u0, float& v0, float& u1, float& v
     int row = slot / ATLAS_COLS;
     float texW = (float)(ATLAS_COLS * TILE_SIZE);
     float texH = (float)(ATLAS_ROWS * TILE_SIZE);
-    // Half-texel inset so point-filtered sampling never bleeds into the
-    // neighboring tile at the shared edge.
-    float insetU = 0.5f / texW;
-    float insetV = 0.5f / texH;
+    // A 1/64-texel inset: just enough that float error at a face's very
+    // edge can never floor into the neighbouring tile, far too small to
+    // shift any texel. (This used to be a half-texel inset, which under
+    // point sampling maps each face onto texel centres 0.5..63.5 -- so
+    // the first and last texel column of every tile drew at half width,
+    // a visible 1px seam on every block. No MSAA, so pixel centres never
+    // extrapolate past the face and a tiny margin is all that's needed.)
+    float insetU = (1.0f / 64.0f) / texW;
+    float insetV = (1.0f / 64.0f) / texH;
     u0 = (float)(col * TILE_SIZE) / texW + insetU;
     u1 = (float)((col + 1) * TILE_SIZE) / texW - insetU;
     v0 = (float)(row * TILE_SIZE) / texH + insetV;

@@ -159,7 +159,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
         // many catch-up ticks in one frame, and each would otherwise
         // generate another music chunk on top of the stall.
         if (g_menuScreen == MenuScreen::None) RefillMusicQueueIfNeeded();
-        RebuildDirtyChunks(g_world);
+        RebuildDirtyChunks(g_world, FloorDiv16((int)floorf(g_player.x)),
+                           FloorDiv16((int)floorf(g_player.y + PLAYER_EYE)), FloorDiv16((int)floorf(g_player.z)));
 
         float clearColor[4] = { 0.4f, 0.6f, 0.9f, 1.0f };
         g_context->OMSetRenderTargets(1, &g_rtv, g_dsv);

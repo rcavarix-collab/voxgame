@@ -69,6 +69,27 @@ struct Chunk {
 class World {
 public:
     std::unordered_map<ChunkCoord, std::unique_ptr<Chunk>, ChunkCoordHash> chunks;
+    // Exactly the resident chunks whose `dirty` flag is set, so the mesh
+    // rebuilder only ever looks at chunks that need work (none at all
+    // while nothing is changing) instead of scanning every resident
+    // chunk each frame. Chunks enter and leave `chunks` only through
+    // GetOrCreateChunk / AdoptChunk / TakeChunk / ClearChunks, which
+    // keep the two in step.
+    std::unordered_set<ChunkCoord, ChunkCoordHash> dirtyChunks;
+
+    void AdoptChunk(const ChunkCoord& cc, std::unique_ptr<Chunk> c) {
+        bool d = c->dirty;
+        if (chunks.emplace(cc, std::move(c)).second && d) dirtyChunks.insert(cc);
+    }
+    std::unique_ptr<Chunk> TakeChunk(const ChunkCoord& cc) {
+        auto it = chunks.find(cc);
+        if (it == chunks.end()) return nullptr;
+        std::unique_ptr<Chunk> c = std::move(it->second);
+        chunks.erase(it);
+        dirtyChunks.erase(cc);
+        return c;
+    }
+    void ClearChunks() { chunks.clear(); dirtyChunks.clear(); }
 
     static ChunkCoord ToChunk(int x, int y, int z) {
         return { FloorDiv16(x), FloorDiv16(y), FloorDiv16(z) };
@@ -85,6 +106,7 @@ public:
         auto chunk = std::make_unique<Chunk>();
         Chunk* ptr = chunk.get();
         chunks.emplace(cc, std::move(chunk));
+        dirtyChunks.insert(cc); // born dirty: no mesh yet
         return ptr;
     }
 
@@ -116,7 +138,7 @@ public:
 
     void MarkChunkDirty(const ChunkCoord& cc) {
         Chunk* c = FindChunk(cc);
-        if (c) c->dirty = true;
+        if (c && !c->dirty) { c->dirty = true; dirtyChunks.insert(cc); }
     }
 
     // Bulk-load / worldgen path: no gravity trigger, no live-support

@@ -123,10 +123,8 @@ static void MarkHorizontalNeighborsDirty(World& w, const ChunkCoord& cc) {
 static void EvictColumnFromWorld(World& w, int cx, int cz) {
     for (int cy = 0; cy <= FloorDiv16(Y_MAX); cy++) {
         ChunkCoord cc{ cx, cy, cz };
-        auto it = w.chunks.find(cc);
-        if (it == w.chunks.end()) continue;
-        std::unique_ptr<Chunk> c = std::move(it->second);
-        w.chunks.erase(it);
+        std::unique_ptr<Chunk> c = w.TakeChunk(cc);
+        if (!c) continue;
         if (c->vb) { c->vb->Release(); c->vb = nullptr; }
         if (c->ib) { c->ib->Release(); c->ib = nullptr; }
         c->indexCount = 0;
@@ -141,7 +139,7 @@ static void RestoreColumnToWorld(World& w, int cx, int cz) {
         ChunkCoord cc{ cx, cy, cz };
         auto it = g_evictedChunks.find(cc);
         if (it == g_evictedChunks.end()) continue;
-        w.chunks.emplace(cc, std::move(it->second));
+        w.AdoptChunk(cc, std::move(it->second)); // still flagged dirty from eviction
         g_evictedChunks.erase(it);
         MarkHorizontalNeighborsDirty(w, cc);
     }
@@ -236,13 +234,21 @@ void EnsureChunksLoaded(int playerChunkX, int playerChunkZ) {
     g_lastPlayerChunkX = playerChunkX;
     g_lastPlayerChunkZ = playerChunkZ;
 
-    for (int dx = -g_loadRadius; dx <= g_loadRadius; dx++) {
-        for (int dz = -g_loadRadius; dz <= g_loadRadius; dz++) {
-            int cx = playerChunkX + dx, cz = playerChunkZ + dz;
-            long long key = ColumnKey(cx, cz);
-            if (g_residentColumns.count(key) || g_pendingColumnSet.count(key)) continue;
-            g_pendingColumnSet.insert(key);
-            g_pendingColumns.push_back({ cx, cz });
+    // Queued ring by ring outward from the player's own column, so the
+    // ground under and around them always generates first. (This used
+    // to be a corner-to-corner raster order, which put the player's own
+    // column halfway down the queue -- dozens of ticks at spawn, long
+    // enough to fall into where the ground was about to appear.)
+    for (int ring = 0; ring <= g_loadRadius; ring++) {
+        for (int dx = -ring; dx <= ring; dx++) {
+            for (int dz = -ring; dz <= ring; dz++) {
+                if (dx != -ring && dx != ring && dz != -ring && dz != ring) continue; // ring edge only
+                int cx = playerChunkX + dx, cz = playerChunkZ + dz;
+                long long key = ColumnKey(cx, cz);
+                if (g_residentColumns.count(key) || g_pendingColumnSet.count(key)) continue;
+                g_pendingColumnSet.insert(key);
+                g_pendingColumns.push_back({ cx, cz });
+            }
         }
     }
 
@@ -315,7 +321,26 @@ static bool BoxIntersectsSolid(World& w, float cx, float cy, float cz) {
     return false;
 }
 
+static bool ColumnResidentAt(float x, float z) {
+    return g_residentColumns.count(ColumnKey(FloorDiv16((int)floor(x)), FloorDiv16((int)floor(z)))) != 0;
+}
+
 void UpdatePlayerPhysics(World& w, Player& p, float dt, bool fwd, bool back, bool left, bool right, bool jump) {
+    // Ground that doesn't exist yet reads as air. Until the player's own
+    // column is generated (spawn, a load, a teleport-sized jump) hold
+    // them exactly where they are instead of letting them fall into the
+    // space the terrain is about to fill.
+    if (!ColumnResidentAt(p.x, p.z)) { p.velY = 0.0f; return; }
+    // Never entombed: if the box overlaps solid blocks anyway (terrain
+    // that appeared around an edge, a block that fell onto the player),
+    // lift them a block per tick until they're standing free.
+    if (BoxIntersectsSolid(w, p.x, p.y, p.z)) {
+        p.y = floorf(p.y) + 1.0f;
+        p.velY = 0.0f;
+        p.onGround = false;
+        return;
+    }
+
     Vec3 f, r, u;
     GetCameraVectors(p, f, r, u);
     float fx = f.x, fz = f.z;
@@ -332,8 +357,9 @@ void UpdatePlayerPhysics(World& w, Player& p, float dt, bool fwd, bool back, boo
     float mlen = sqrtf(mx * mx + mz * mz);
     if (mlen > 0.0001f) { mx = mx / mlen * SPEED * dt; mz = mz / mlen * SPEED * dt; }
 
-    if (!BoxIntersectsSolid(w, p.x + mx, p.y, p.z)) p.x += mx;
-    if (!BoxIntersectsSolid(w, p.x, p.y, p.z + mz)) p.z += mz;
+    // Don't walk off the edge of generated ground either.
+    if (ColumnResidentAt(p.x + mx, p.z) && !BoxIntersectsSolid(w, p.x + mx, p.y, p.z)) p.x += mx;
+    if (ColumnResidentAt(p.x, p.z + mz) && !BoxIntersectsSolid(w, p.x, p.y, p.z + mz)) p.z += mz;
 
     const float GRAVITY = 20.0f;
     const float JUMP_SPEED = 7.0f;

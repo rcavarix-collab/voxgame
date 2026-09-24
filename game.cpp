@@ -12,27 +12,39 @@
 #include "persist.h"
 #include <cstdio>
 #include <cstring>
+#include <cmath>
 #include <string>
 #include <vector>
 #include <algorithm>
 
 // =======================================================================
 // Section 4.6 - UI pass support: quad builders on top of render.h's
-// font-glyph atlas layout (UIVertex/UI_CELL_W/H/UI_ATLAS_COLS/ROWS/
-// UI_WHITE_CELL live there -- InitTextures/InitD3D need them too, this
+// font-glyph atlas layout (UIVertex, the font bands, UI_WHITE_H live
+// there -- InitTextures/InitD3D need them too, this
 // file only needs the drawing functions built on top).
 // =======================================================================
 
-static void UIAtlasRect(int cell, float& u0, float& v0, float& u1, float& v1) {
-    int col = cell % UI_ATLAS_COLS;
-    int row = cell / UI_ATLAS_COLS;
-    float texW = (float)(UI_ATLAS_COLS * UI_CELL_W);
-    float texH = (float)(UI_ATLAS_ROWS * UI_CELL_H);
-    float insetU = 0.5f / texW, insetV = 0.5f / texH;
-    u0 = (float)(col * UI_CELL_W) / texW + insetU;
-    u1 = (float)((col + 1) * UI_CELL_W) / texW - insetU;
-    v0 = (float)(row * UI_CELL_H) / texH + insetV;
-    v1 = (float)((row + 1) * UI_CELL_H) / texH - insetV;
+// Nearest baked text size for a requested scale (1.0 == 28px cells).
+static int UIBandForScale(float scale) {
+    float want = 28.0f * scale;
+    int best = 0;
+    for (int i = 1; i < UI_FONT_BAND_COUNT; i++) {
+        float d = UI_BAND_CELL_H[i] - want, dBest = UI_BAND_CELL_H[best] - want;
+        if (d * d < dBest * dBest) best = i;
+    }
+    return best;
+}
+
+// Glyph cell `cell` (code-32) of font band `band`. The tiny inset only
+// keeps float error from ever flooring into the next cell; at 1:1 with
+// point sampling every screen pixel lands on a texel centre anyway.
+static void UIGlyphRect(const UIFontBand& fb, int cell, float& u0, float& v0, float& u1, float& v1) {
+    float texW = (float)UIAtlasWidth(), texH = (float)UIAtlasHeight();
+    float x = (float)((cell % UI_ATLAS_COLS) * fb.cellW);
+    float y = (float)(fb.atlasY + (cell / UI_ATLAS_COLS) * fb.cellH);
+    const float e = 1.0f / 64.0f;
+    u0 = (x + e) / texW;               u1 = (x + fb.cellW - e) / texW;
+    v0 = (y + e) / texH;               v1 = (y + fb.cellH - e) / texH;
 }
 
 static int UICharCell(char c) {
@@ -51,34 +63,39 @@ static void UIAddQuad(std::vector<UIVertex>& v, float x0, float y0, float x1, fl
     v.push_back({ x0, y1, u0, v1, r, g, b, a });
 }
 
-// Untextured tinted rectangle -- samples the reserved white cell.
+// Untextured tinted rectangle. All four corners sample the middle of the
+// atlas's solid-white strip, so the fill is uniform right to its edges.
+// (It used to stretch a whole white glyph cell, whose 1px transparent
+// rim smeared into a wide fade around every panel and the menu dim.)
 static void UIDrawRect(std::vector<UIVertex>& v, float x0, float y0, float x1, float y1,
                         float r, float g, float b, float a) {
-    float u0, v0, u1, v1;
-    UIAtlasRect(UI_WHITE_CELL, u0, v0, u1, v1);
-    UIAddQuad(v, x0, y0, x1, y1, u0, v0, u1, v1, r, g, b, a);
+    float u = 0.5f * UI_WHITE_H / UIAtlasWidth(), vv = 0.5f * UI_WHITE_H / UIAtlasHeight();
+    UIAddQuad(v, x0, y0, x1, y1, u, vv, u, vv, r, g, b, a);
 }
 
 static float UITextWidth(const std::string& text, float scale) {
-    return (float)text.size() * UI_CELL_W * scale;
+    return (float)(text.size() * UIGetFontBand(UIBandForScale(scale)).advance);
+}
+static float UITextHeight(float scale) {
+    return (float)UIGetFontBand(UIBandForScale(scale)).cellH;
 }
 
-// Fixed-advance (monospace-grid) text -- each glyph cell is centered on
-// its own character during atlas generation, so a constant per-char
-// advance is enough for a "rudimentary" HUD/menu without a real text
-// shaping pass.
+// Fixed-advance (monospace) text at the nearest baked size, drawn 1:1 on
+// whole pixels -- see render.h. Quads are a padded cell wide but step by
+// the font's advance, so neighbouring quads overlap only in their
+// transparent padding.
 static void UIDrawText(std::vector<UIVertex>& v, const std::string& text, float x, float y,
                         float scale, float r, float g, float b, float a) {
-    float w = UI_CELL_W * scale, h = UI_CELL_H * scale;
-    float curX = x;
+    UIFontBand fb = UIGetFontBand(UIBandForScale(scale));
+    float curX = floorf(x + 0.5f) - UI_GLYPH_PAD, top = floorf(y + 0.5f);
     for (char c : text) {
         int cell = UICharCell(c);
-        if (cell >= 0) {
+        if (cell > 0) { // space (cell 0) has no ink
             float u0, v0, u1, v1;
-            UIAtlasRect(cell, u0, v0, u1, v1);
-            UIAddQuad(v, curX, y, curX + w, y + h, u0, v0, u1, v1, r, g, b, a);
+            UIGlyphRect(fb, cell, u0, v0, u1, v1);
+            UIAddQuad(v, curX, top, curX + fb.cellW, top + fb.cellH, u0, v0, u1, v1, r, g, b, a);
         }
-        curX += w;
+        curX += fb.advance;
     }
 }
 
@@ -101,6 +118,9 @@ static GameState g_gameState = GameState::Title;
 static MenuScreen g_optionsReturnScreen = MenuScreen::TitleMain;
 enum class SlotPickerMode { New, Load };
 static SlotPickerMode g_slotPickerMode = SlotPickerMode::New;
+// Where the slot picker's BACK row returns to: TitleMain, or Pause when
+// Load Game was opened mid-game.
+static MenuScreen g_slotPickerReturnScreen = MenuScreen::TitleMain;
 // New Game on an already-occupied slot needs a confirmation rather than
 // silently overwriting -- a second click within a few seconds confirms;
 // otherwise the arm times out and a third click starts over.
@@ -124,6 +144,14 @@ static void PickAndAct(bool breakBlock) {
     if (breakBlock) {
         LiveEdit(g_world, hx, hy, hz, BLOCK_AIR);
     } else {
+        // Refuse a placement that would overlap the player's own box --
+        // it would only trap them (or, with physics' unstick rule, pop
+        // them up on top of it).
+        const Player& p = g_player;
+        bool overlapsPlayer = px + 1 > p.x - PLAYER_HALFW && px < p.x + PLAYER_HALFW
+                           && py + 1 > p.y && py < p.y + PLAYER_HEIGHT
+                           && pz + 1 > p.z - PLAYER_HALFW && pz < p.z + PLAYER_HALFW;
+        if (overlapsPlayer) return;
         BlockID toPlace = g_placeable[g_player.hotbarIndex];
         LiveEdit(g_world, px, py, pz, toPlace);
     }
@@ -463,10 +491,12 @@ static void HandleMenuClick(int mx, int my) {
     if (PointInRect(mx, my, SubmenuRowRect(PAUSE_LAYOUT, PROW_OPTIONS))) { g_optionsReturnScreen = MenuScreen::Pause; g_menuScreen = MenuScreen::OptionsHub; return; }
     if (PointInRect(mx, my, SubmenuRowRect(PAUSE_LAYOUT, PROW_SAVE))) { DoSave(); return; }
     if (PointInRect(mx, my, SubmenuRowRect(PAUSE_LAYOUT, PROW_LOAD))) {
-        DoLoad(); // may change g_dayTimeSeconds -- StartMusicPlayback re-anchors to whatever it loaded
-        g_menuScreen = MenuScreen::None;
-        CaptureMouseForPlay();
-        StartMusicPlayback();
+        // Same slot list as the title screen's Load Game (the bound
+        // quick-load input is what reloads the current slot directly).
+        g_slotPickerMode = SlotPickerMode::Load;
+        g_slotPickerReturnScreen = MenuScreen::Pause;
+        g_confirmOverwriteSlot = -1;
+        g_menuScreen = MenuScreen::SlotPicker;
         return;
     }
     if (PointInRect(mx, my, SubmenuRowRect(PAUSE_LAYOUT, PROW_QUIT_TO_TITLE))) {
@@ -542,6 +572,14 @@ static void HandleKeybindingsClick(int mx, int my) {
 static void ResetWorldForNewGame() {
     g_world = World();
     g_player = Player();
+    // Start standing on the surface (terrain height is a pure function
+    // of x/z, so this needs no generated chunks), taking the highest of
+    // the cells the player's footprint overlaps.
+    int top = 0;
+    for (float ox : { -PLAYER_HALFW, PLAYER_HALFW })
+        for (float oz : { -PLAYER_HALFW, PLAYER_HALFW })
+            top = std::max(top, TerrainHeight((int)floorf(g_player.x + ox), (int)floorf(g_player.z + oz)));
+    g_player.y = (float)(top + 1);
     g_dayTimeSeconds = 0.0f; // dawn -- first light in a land they've never seen (Section 13)
     g_generatedColumns.clear();
     g_residentColumns.clear();
@@ -567,12 +605,14 @@ static void EnterGameplay() {
 static void HandleTitleClick(int mx, int my) {
     if (PointInRect(mx, my, SubmenuRowRect(TITLE_LAYOUT, TROW_NEW_GAME))) {
         g_slotPickerMode = SlotPickerMode::New;
+        g_slotPickerReturnScreen = MenuScreen::TitleMain;
         g_confirmOverwriteSlot = -1;
         g_menuScreen = MenuScreen::SlotPicker;
         return;
     }
     if (PointInRect(mx, my, SubmenuRowRect(TITLE_LAYOUT, TROW_LOAD_GAME))) {
         g_slotPickerMode = SlotPickerMode::Load;
+        g_slotPickerReturnScreen = MenuScreen::TitleMain;
         g_confirmOverwriteSlot = -1;
         g_menuScreen = MenuScreen::SlotPicker;
         return;
@@ -593,6 +633,8 @@ static void HandleSlotPickerClick(int mx, int my) {
                 g_toastTimer = 2.0f;
                 return;
             }
+            // May change g_dayTimeSeconds -- EnterGameplay's
+            // StartMusicPlayback re-anchors to whatever it loaded.
             EnterGameplay();
             return;
         }
@@ -611,7 +653,7 @@ static void HandleSlotPickerClick(int mx, int my) {
         EnterGameplay();
         return;
     }
-    if (PointInRect(mx, my, SubmenuRowRect(SLOT_PICKER_LAYOUT, SLOTROW_BACK))) { g_menuScreen = MenuScreen::TitleMain; return; }
+    if (PointInRect(mx, my, SubmenuRowRect(SLOT_PICKER_LAYOUT, SLOTROW_BACK))) { g_menuScreen = g_slotPickerReturnScreen; return; }
 }
 
 // Centralizes what a just-pressed input does, whatever its source (a
@@ -739,11 +781,16 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     case WM_KEYDOWN:
         if (wParam < 256) g_keyDown[wParam] = true;
         if (g_rebindingAction != -1) {
-            // Escape is reserved as the universal "cancel this rebind"
-            // input rather than something bindable mid-capture -- every
+            // Escape cancels a rebind -- except on the Pause Menu row,
+            // where Escape is that action's own natural key: treating it
+            // as cancel there meant a Pause Menu moved off Escape could
+            // never be put back without resetting every binding. Every
             // other key or mouse button commits as the new binding,
             // wherever it's pressed (including, e.g., on the Back row).
-            if (wParam != VK_ESCAPE) { g_keyBindings[g_rebindingAction] = (int)wParam; SaveSettings(); }
+            if (wParam != VK_ESCAPE || g_rebindingAction == ACT_MENU) {
+                g_keyBindings[g_rebindingAction] = (int)wParam;
+                SaveSettings();
+            }
             g_rebindingAction = -1;
             return 0;
         }
@@ -835,7 +882,7 @@ void RenderUIPass() {
     const int SLOT = 48, GAP = 4;
     int hotbarN = g_placeableCount;
     int totalW = hotbarN * SLOT + (hotbarN - 1) * GAP;
-    float hbStartX = (SCREEN_W - totalW) / 2.0f;
+    float hbStartX = floorf((SCREEN_W - totalW) / 2.0f); // whole pixels: icons are point-sampled
     float hbY0 = SCREEN_H - SLOT - 16.0f;
     std::vector<UIVertex> iconVerts;
     for (int i = 0; i < hotbarN; i++) {
@@ -848,7 +895,9 @@ void RenderUIPass() {
         BlockID b = g_placeable[i];
         float iu0, iv0, iu1, iv1;
         AtlasRect(g_info[b].tex, iu0, iv0, iu1, iv1);
-        UIAddQuad(iconVerts, x0 + 6, y0 + 6, x1 - 6, y1 - 6, iu0, iv0, iu1, iv1, 1, 1, 1, 1);
+        // 32px icon = exactly half the 64px tile, so point sampling keeps
+        // every other texel evenly instead of an irregular 64->36 pick.
+        UIAddQuad(iconVerts, x0 + 8, y0 + 8, x1 - 8, y1 - 8, iu0, iv0, iu1, iv1, 1, 1, 1, 1);
     }
 
     if (!menuIsOpen) {
@@ -877,14 +926,14 @@ void RenderUIPass() {
             { ACT_FORWARD, "^", 1, 0 }, { ACT_LEFT, "<", 0, 1 },
             { ACT_RIGHT, ">", 2, 1 },   { ACT_BACK, "v", 1, 2 },
         };
-        UIDrawText(glyphVerts, "TOGGLE MOVE", x0, yTop - 16.0f, 0.45f, 1, 1, 1, 0.75f);
+        UIDrawText(glyphVerts, "TOGGLE MOVE", x0, yTop - 20.0f, 0.65f, 1, 1, 1, 0.75f);
         for (const Cell& c : cells) {
             float cx0 = x0 + c.cx * (S + G), cy0 = yTop + c.cy * (S + G);
             bool on = g_moveToggleLatch[c.act];
             if (on) UIDrawRect(glyphVerts, cx0, cy0, cx0 + S, cy0 + S, 1.0f, g_highContrastUI ? 0.9f : 0.8f, g_highContrastUI ? 0.0f : 0.2f, 0.95f);
             else UIDrawRect(glyphVerts, cx0, cy0, cx0 + S, cy0 + S, 0.08f, 0.08f, 0.08f, g_highContrastUI ? 0.9f : 0.55f);
             float gs = 0.8f;
-            float gx = cx0 + (S - UI_CELL_W * gs) / 2.0f, gy = cy0 + (S - UI_CELL_H * gs) / 2.0f;
+            float gx = cx0 + (S - UITextWidth(c.glyph, gs)) / 2.0f, gy = cy0 + (S - UITextHeight(gs)) / 2.0f;
             if (on) UIDrawText(glyphVerts, c.glyph, gx, gy, gs, 0, 0, 0, 1);
             else UIDrawText(glyphVerts, c.glyph, gx, gy, gs, 0.7f, 0.7f, 0.7f, g_highContrastUI ? 1.0f : 0.8f);
         }
@@ -906,7 +955,7 @@ void RenderUIPass() {
             UIDrawRect(glyphVerts, r.x0, r.y0, r.x1, r.y1, shade, shade, shade + 0.06f, 1);
         }
         float lw = UITextWidth(label, scale);
-        UIDrawText(glyphVerts, label, r.x0 + ((r.x1 - r.x0) - lw) / 2.0f, r.y0 + (r.y1 - r.y0 - UI_CELL_H * scale) / 2.0f, scale, 1, 1, 1, 1);
+        UIDrawText(glyphVerts, label, r.x0 + ((r.x1 - r.x0) - lw) / 2.0f, r.y0 + (r.y1 - r.y0 - UITextHeight(scale)) / 2.0f, scale, 1, 1, 1, 1);
     };
     // A slider row: label above, track+handle below. Value/range/label
     // text all come from the generic slider-by-ID lookups, so adding a
@@ -938,8 +987,10 @@ void RenderUIPass() {
     // must draw over the hotbar icons, which are a separate texture batch.
     size_t hudVertCount = glyphVerts.size();
 
+    // A flat, even dim behind any menu (uniform to the screen edges now
+    // that UIDrawRect no longer fades its borders -- no vignette).
     if (g_menuScreen != MenuScreen::None) {
-        UIDrawRect(glyphVerts, 0, 0, (float)SCREEN_W, (float)SCREEN_H, 0, 0, 0, 0.55f);
+        UIDrawRect(glyphVerts, 0, 0, (float)SCREEN_W, (float)SCREEN_H, 0, 0, 0, 0.45f);
     }
 
     if (g_menuScreen == MenuScreen::Pause) {
@@ -991,6 +1042,7 @@ void RenderUIPass() {
                 label = std::string(slotNum) + " - CLICK AGAIN TO OVERWRITE";
             } else {
                 label = std::string(slotNum) + (occupied ? " - SAVED" : " - EMPTY");
+                if (g_gameState == GameState::InGame && slot == g_currentSlot) label += " (CURRENT)";
             }
             drawRowButton(SubmenuRowRect(SLOT_PICKER_LAYOUT, slot), label, 0.85f);
         }
@@ -1047,11 +1099,11 @@ void RenderUIPass() {
         drawPanelBg(panel);
         drawPanelTitle(panel, KEYBIND_LAYOUT.panelW, "KEYBINDINGS", 1.0f);
         std::string hint = "CLICK A ROW, THEN PRESS THE NEW INPUT";
-        UIDrawText(glyphVerts, hint, panel.x0 + (KEYBIND_LAYOUT.panelW - UITextWidth(hint, 0.55f)) / 2.0f, panel.y0 + 44.0f, 0.55f, 0.8f, 0.8f, 0.8f, 0.8f);
+        UIDrawText(glyphVerts, hint, panel.x0 + (KEYBIND_LAYOUT.panelW - UITextWidth(hint, 0.65f)) / 2.0f, panel.y0 + 44.0f, 0.65f, 0.8f, 0.8f, 0.8f, 0.8f);
 
         for (int i = 0; i < ACT_COUNT; i++) {
             std::string label;
-            if (g_rebindingAction == i) label = std::string(g_actionLabels[i]) + ": PRESS INPUT (ESC CANCELS)";
+            if (g_rebindingAction == i) label = std::string(g_actionLabels[i]) + (i == ACT_MENU ? ": PRESS INPUT (ESC = ESCAPE)" : ": PRESS INPUT (ESC CANCELS)");
             else label = std::string(g_actionLabels[i]) + ": [" + GetInputDisplayName(g_keyBindings[i]) + "]";
             drawRowButton(SubmenuRowRect(KEYBIND_LAYOUT, i), label, 0.7f);
         }

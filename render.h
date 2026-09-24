@@ -46,17 +46,47 @@ extern ID3D11ShaderResourceView* g_uiSRV; // font-glyph + white-cell atlas
 extern ID3D11Buffer* g_uiVB;              // dynamic, re-mapped per UI draw batch
 static const UINT UI_VB_CAPACITY = 4096;   // vertices
 
-// Font-glyph atlas layout (Section 4.6): 16 cols x 6 rows = 96 cells,
-// ASCII 32..126 at cell (code-32) plus one reserved solid-white cell.
-// The struct and these constants live here (not in game.h, where the
+// Font-glyph atlas layout (Section 4.6). Text is drawn 1:1 -- one atlas
+// texel per screen pixel, point-sampled, snapped to whole pixels -- so
+// glyphs stay crisp instead of being resampled from one master size. To
+// still offer several text sizes, the atlas holds the full ASCII 32..126
+// set baked once per size ("band"), each in a 16 x 6 grid; a requested
+// scale picks the nearest band. Each glyph sits centred in a cell padded
+// UI_GLYPH_PAD px each side, but advances only by the font's own
+// monospace advance, so letters sit at normal text spacing rather than a
+// full cell apart. The top UI_WHITE_H rows are solid white: untextured
+// tinted rectangles sample their centre (Section 4.6).
+// The struct and these helpers live here (not in game.h, where the
 // UIDraw* helper *functions* that use them live) because InitD3D needs
 // UIVertex to size g_uiVB and InitTextures needs the atlas dimensions
 // to generate it -- both purely rendering concerns.
-static const int UI_CELL_W = 20;
-static const int UI_CELL_H = 28;
 static const int UI_ATLAS_COLS = 16;
 static const int UI_ATLAS_ROWS = 6;
-static const int UI_WHITE_CELL = UI_ATLAS_COLS * UI_ATLAS_ROWS - 1;
+static const int UI_GLYPH_PAD = 2;
+static const int UI_WHITE_H = 8;
+static const int UI_FONT_BAND_COUNT = 6;
+// Cell height of each band; scale 1.0 == 28 px, the old single size.
+static const int UI_BAND_CELL_H[UI_FONT_BAND_COUNT] = { 14, 18, 22, 28, 34, 44 };
+struct UIFontBand { int cellW, cellH, advance, atlasY; float fontPx; };
+static inline UIFontBand UIGetFontBand(int band) {
+    UIFontBand b = {};
+    int y = UI_WHITE_H;
+    for (int i = 0; i <= band; i++) {
+        b.cellH = UI_BAND_CELL_H[i];
+        b.fontPx = b.cellH * 0.62f;
+        // Consolas' advance is 0.55 em; round up and keep 1px of air.
+        b.advance = (int)(b.fontPx * 0.55f + 0.999f) + 1;
+        b.cellW = b.advance + 2 * UI_GLYPH_PAD;
+        b.atlasY = y;
+        y += UI_ATLAS_ROWS * b.cellH;
+    }
+    return b;
+}
+static inline int UIAtlasWidth() { return UI_ATLAS_COLS * UIGetFontBand(UI_FONT_BAND_COUNT - 1).cellW; }
+static inline int UIAtlasHeight() {
+    UIFontBand last = UIGetFontBand(UI_FONT_BAND_COUNT - 1);
+    return last.atlasY + UI_ATLAS_ROWS * last.cellH;
+}
 struct UIVertex { float x, y, u, v, r, g, b, a; };
 
 // ---- Sky pass objects (a third pass: depth off, drawn before the
@@ -78,7 +108,7 @@ void UpdateCBuffer(const Mat4& mvp);
 // Capped per-frame chunk mesh rebuild (Section 4.2/4-perf) -- see
 // render.cpp for the full reasoning; this is the single entry point
 // the game loop calls once per frame.
-void RebuildDirtyChunks(World& w);
+void RebuildDirtyChunks(World& w, int camCx, int camCy, int camCz);
 
 // ---- View-frustum culling (Section 4.2-perf) ----
 //

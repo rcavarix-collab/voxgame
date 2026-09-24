@@ -5,6 +5,7 @@
 #include "render.h"
 #include <d3dcompiler.h>
 #include <cstring>
+#include <algorithm>
 
 #pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "dxgi.lib")
@@ -22,8 +23,9 @@ extern "C" bool GenerateGameTextures(
     uint8_t** outAtlasPixelsBGRA, int* outAtlasW, int* outAtlasH);
 extern "C" void FreeGeneratedPixels(uint8_t* p);
 extern "C" bool GenerateUIAtlas(
-    int cellW, int cellH, int cols, int rows,
-    uint8_t** outPixelsBGRA, int* outW, int* outH);
+    int atlasW, int atlasH, int whiteH, int cols, int bandCount,
+    const int* cellW, const int* cellH, const int* bandY, const float* fontPx,
+    uint8_t** outPixelsBGRA);
 
 HWND g_hwnd = nullptr;
 ID3D11Device* g_device = nullptr;
@@ -224,11 +226,27 @@ static void RebuildChunkMesh(World& w, const ChunkCoord& cc, Chunk& c) {
 // dirty this frame simply isn't drawn yet (the world draw loop already
 // skips a zero-index-count chunk) and gets its turn next frame.
 static const int MAX_CHUNK_REBUILDS_PER_FRAME = 6;
-void RebuildDirtyChunks(World& w) {
-    int rebuilt = 0;
-    for (auto& kv : w.chunks) {
-        if (rebuilt >= MAX_CHUNK_REBUILDS_PER_FRAME) break;
-        if (kv.second->dirty) { RebuildChunkMesh(w, kv.first, *kv.second); rebuilt++; }
+// Nearest-first: of the chunks waiting (w.dirtyChunks -- nothing to scan
+// at all while the world is static), rebuild the few closest to the
+// camera. New ground, a load, or a render-distance change then fills in
+// outward from the player instead of in hash-map order, and the chunk
+// being edited under the cursor is never queued behind distant ones.
+void RebuildDirtyChunks(World& w, int camCx, int camCy, int camCz) {
+    if (w.dirtyChunks.empty()) return;
+    struct Pending { long long d2; ChunkCoord cc; };
+    static std::vector<Pending> pending; // reused: no per-frame allocation once warm
+    pending.clear();
+    for (const ChunkCoord& cc : w.dirtyChunks) {
+        long long dx = cc.x - camCx, dy = cc.y - camCy, dz = cc.z - camCz;
+        pending.push_back({ dx * dx + dy * dy + dz * dz, cc });
+    }
+    size_t n = std::min<size_t>(MAX_CHUNK_REBUILDS_PER_FRAME, pending.size());
+    auto nearer = [](const Pending& a, const Pending& b) { return a.d2 < b.d2; };
+    if (n < pending.size()) std::nth_element(pending.begin(), pending.begin() + n, pending.end(), nearer);
+    for (size_t i = 0; i < n; i++) {
+        const ChunkCoord& cc = pending[i].cc;
+        w.dirtyChunks.erase(cc);
+        if (Chunk* c = w.FindChunk(cc)) RebuildChunkMesh(w, cc, *c);
     }
 }
 
@@ -467,8 +485,10 @@ bool InitD3D(HWND hwnd) {
     uiVbd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
     g_device->CreateBuffer(&uiVbd, nullptr, &g_uiVB);
 
+    // Point-sampled: UI text and icons are drawn at whole-texel ratios on
+    // whole pixels (see UIDrawText), where linear filtering only blurs.
     D3D11_SAMPLER_DESC uiSampDesc = {};
-    uiSampDesc.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+    uiSampDesc.Filter = D3D11_FILTER_MIN_MAG_MIP_POINT;
     uiSampDesc.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP;
     uiSampDesc.AddressV = D3D11_TEXTURE_ADDRESS_CLAMP;
     uiSampDesc.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
@@ -549,8 +569,16 @@ bool InitTextures() {
 
     FreeGeneratedPixels(atlasPixels);
 
-    uint8_t* uiPixels = nullptr; int uiW = 0, uiH = 0;
-    if (!GenerateUIAtlas(UI_CELL_W, UI_CELL_H, UI_ATLAS_COLS, UI_ATLAS_ROWS, &uiPixels, &uiW, &uiH))
+    int bandW[UI_FONT_BAND_COUNT], bandH[UI_FONT_BAND_COUNT], bandY[UI_FONT_BAND_COUNT];
+    float bandPx[UI_FONT_BAND_COUNT];
+    for (int i = 0; i < UI_FONT_BAND_COUNT; i++) {
+        UIFontBand b = UIGetFontBand(i);
+        bandW[i] = b.cellW; bandH[i] = b.cellH; bandY[i] = b.atlasY; bandPx[i] = b.fontPx;
+    }
+    uint8_t* uiPixels = nullptr;
+    int uiW = UIAtlasWidth(), uiH = UIAtlasHeight();
+    if (!GenerateUIAtlas(uiW, uiH, UI_WHITE_H, UI_ATLAS_COLS, UI_FONT_BAND_COUNT,
+                         bandW, bandH, bandY, bandPx, &uiPixels))
         return false;
 
     D3D11_TEXTURE2D_DESC td3 = {};
