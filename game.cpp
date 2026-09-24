@@ -133,6 +133,11 @@ static MenuScreen g_slotPickerReturnScreen = MenuScreen::TitleMain;
 int g_confirmOverwriteSlot = -1;
 float g_confirmOverwriteTimer = 0.0f;
 static int g_mouseX = 0, g_mouseY = 0;
+// A button press in progress (menus): buttons act on release, like real
+// ones -- held down they show pressed in, and sliding off before letting
+// go cancels. g_pressRect is the button under the press, found while the
+// buttons draw (a press that lands on no drawn button acts on release as
+// clicks always did).
 static std::string g_toastMessage;
 float g_toastTimer = 0.0f; // seconds remaining; drawn by RenderUIPass
 float g_fpsTimer = 0.0f;
@@ -981,6 +986,25 @@ static void FireBoundAction(int code) {
 // Dispatches a click to whichever submenu is currently open. Only
 // called for the left button -- menus never respond to right/middle
 // click, matching ordinary UI convention.
+static bool g_pressActive = false;
+static int g_pressX = 0, g_pressY = 0;
+static UIRect g_pressRect = {};
+static bool g_pressRectValid = false;
+
+// Sliders act on press (they're dragged), and so do the map and library.
+static bool PressActsImmediately(int mx, int my) {
+    if (g_menuScreen == MenuScreen::Map || g_menuScreen == MenuScreen::Library) return true;
+    static const struct { int id; MenuScreen screen; } sliders[] = {
+        { SLIDER_SENS_X, MenuScreen::LookSettings }, { SLIDER_SENS_Y, MenuScreen::LookSettings },
+        { SLIDER_RENDER_DIST, MenuScreen::Graphics }, { SLIDER_MASTER_VOLUME, MenuScreen::Audio },
+        { SLIDER_MUSIC_VOLUME, MenuScreen::Audio }, { SLIDER_WORLD_VOLUME, MenuScreen::Audio },
+        { SLIDER_FOV, MenuScreen::Accessibility }, { SLIDER_MUSIC_INTENSITY, MenuScreen::Accessibility },
+    };
+    for (const auto& s : sliders)
+        if (s.screen == g_menuScreen && PointInRect(mx, my, GetSliderHitRect(GetSliderRowRect(s.id)))) return true;
+    return false;
+}
+
 static void DispatchMenuClick(int mx, int my) {
     switch (g_menuScreen) {
     case MenuScreen::Pause: HandleMenuClick(mx, my); break;
@@ -1063,7 +1087,11 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         g_mouseButtonDown[0] = true;
         int mx = (int)(short)LOWORD(lParam), my = (int)(short)HIWORD(lParam);
         if (g_rebindingAction != -1) { g_keyBindings[g_rebindingAction] = MOUSE_LEFT; g_rebindingAction = -1; SaveSettings(); return 0; }
-        if (g_menuScreen != MenuScreen::None) { DispatchMenuClick(mx, my); return 0; }
+        if (g_menuScreen != MenuScreen::None) {
+            if (PressActsImmediately(mx, my)) { DispatchMenuClick(mx, my); return 0; }
+            g_pressActive = true; g_pressX = mx; g_pressY = my; g_pressRectValid = false; // acts on release
+            return 0;
+        }
         if (!g_mouseCaptured) { CaptureMouseForPlay(); return 0; }
         ToggleMoveLatches(MOUSE_LEFT);
         FireBoundAction(MOUSE_LEFT);
@@ -1072,6 +1100,16 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     case WM_LBUTTONUP:
         g_mouseButtonDown[0] = false;
         g_mapDragging = false;
+        if (g_pressActive) {
+            g_pressActive = false;
+            int mx = (int)(short)LOWORD(lParam), my = (int)(short)HIWORD(lParam);
+            // Released on the button it pressed (or on something that isn't a
+            // drawn button): act, at the press point. Slid off: cancelled.
+            if (g_menuScreen != MenuScreen::None && (!g_pressRectValid || PointInRect(mx, my, g_pressRect)))
+                DispatchMenuClick(g_pressX, g_pressY);
+            g_pressRectValid = false;
+            return 0;
+        }
         if (g_menuScreen == MenuScreen::Library) LibraryMouseUp((int)(short)LOWORD(lParam), (int)(short)HIWORD(lParam));
         // Only release capture if a slider drag actually set it --
         // unconditionally releasing here would also kick the player out
@@ -1291,17 +1329,35 @@ void RenderUIPass() {
     // than the subtle gray-shade steps used otherwise. Text is already
     // white-on-dark in both modes, at effectively maximum contrast, so
     // only the fill colors below need to branch.
+    // A mechanical key: a raised cap on a darker base. Hovered, the cap
+    // brightens; pressed, it sinks into the base (its lit top edge gone, a
+    // shadow along its top), the label going down with it; released, it
+    // springs back and the button acts. All flat rectangles: free.
     auto drawRowButton = [&](const UIRect& r, const std::string& label, float scale = 1.0f) {
         bool hover = PointInRect(g_mouseX, g_mouseY, r);
+        bool held = g_pressActive && PointInRect(g_pressX, g_pressY, r);
+        if (held) { g_pressRect = r; g_pressRectValid = true; }
+        bool pressed = held && hover;
+        const float h = r.y1 - r.y0;
+        const float depth = std::max(2.0f, std::min(5.0f, floorf(h * 0.12f)));
+        const float sink = pressed ? depth - 1.0f : 0.0f;
+        const float capY0 = r.y0 + sink, capY1 = r.y1 - depth + sink;
+        float face, lip, base, shadow;
         if (g_highContrastUI) {
-            float shade = hover ? 0.9f : 0.04f;
-            UIDrawRect(glyphVerts, r.x0, r.y0, r.x1, r.y1, shade, shade, hover ? 0.1f : shade, 1);
+            face = pressed ? 0.75f : hover ? 0.9f : 0.06f; lip = hover ? 1.0f : 0.35f; base = 0.0f; shadow = 0.0f;
         } else {
-            float shade = hover ? 0.32f : 0.22f;
-            UIDrawRect(glyphVerts, r.x0, r.y0, r.x1, r.y1, shade, shade, shade + 0.06f, 1);
+            face = pressed ? 0.27f : hover ? 0.35f : 0.27f; lip = hover ? 0.50f : 0.40f; base = 0.16f; shadow = 0.13f;
         }
+        float blue = g_highContrastUI ? (hover || pressed ? 0.1f : face) : 0.06f;
+        if (!g_highContrastUI) UIDrawRect(glyphVerts, r.x0 - 1, r.y0 + sink - 1, r.x1 + 1, r.y1 + 1, 0.04f, 0.04f, 0.05f, 1); // outline
+        UIDrawRect(glyphVerts, r.x0, r.y0 + depth, r.x1, r.y1, base, base, base + (g_highContrastUI ? 0.0f : 0.03f), 1); // the base / body
+        UIDrawRect(glyphVerts, r.x0, capY0, r.x1, capY1, face, face, face + blue, 1);                                    // the cap
+        if (pressed) UIDrawRect(glyphVerts, r.x0, capY0, r.x1, capY0 + 2.0f, shadow, shadow, shadow + 0.02f, 1);         // pressed in: shadow along the top
+        else UIDrawRect(glyphVerts, r.x0, capY0, r.x1, capY0 + 2.0f, lip, lip, lip + (g_highContrastUI ? 0.0f : 0.05f), 1); // raised: a lit top edge
+        UIDrawRect(glyphVerts, r.x0, capY1 - 1.0f, r.x1, capY1, base + 0.05f, base + 0.05f, base + 0.08f, 1);          // the cap's lower edge
         float lw = UITextWidth(label, scale);
-        UIDrawText(glyphVerts, label, r.x0 + ((r.x1 - r.x0) - lw) / 2.0f, r.y0 + (r.y1 - r.y0 - UITextHeight(scale)) / 2.0f, scale, 1, 1, 1, 1);
+        float tr = g_highContrastUI && (hover || pressed) ? 0.0f : 1.0f;
+        UIDrawText(glyphVerts, label, r.x0 + ((r.x1 - r.x0) - lw) / 2.0f, capY0 + (capY1 - capY0 - UITextHeight(scale)) / 2.0f, scale, tr, tr, tr, 1);
     };
     // A slider row: label above, track+handle below. Value/range/label
     // text all come from the generic slider-by-ID lookups, so adding a
@@ -1311,14 +1367,33 @@ void RenderUIPass() {
         UIDrawRect(glyphVerts, r.x0, r.y0, r.x1, r.y1, g_highContrastUI ? 0.03f : 0.16f, g_highContrastUI ? 0.03f : 0.16f, g_highContrastUI ? 0.03f : 0.19f, 1);
         UIDrawText(glyphVerts, GetSliderLabel(sliderId), r.x0 + 8, r.y0 + 2.0f, 0.8f, 1, 1, 1, 1);
 
+        // A bead on a string: a taut thread across the track, brighter on the
+        // side the bead has travelled, knotted at both ends; the bead is a
+        // round (stacked-rectangle) disc with a lit crown, brighter under the
+        // cursor and a touch bigger while it's being dragged.
         UIRect track = GetSliderTrackRect(r);
-        UIDrawRect(glyphVerts, track.x0, track.y0, track.x1, track.y1, 0, 0, 0, 1);
         SliderRange rng = GetSliderRange(sliderId);
         float t = (GetSliderValue(sliderId) - rng.minV) / (rng.maxV - rng.minV);
-        float handleCx = track.x0 + t * (track.x1 - track.x0);
+        float bx = track.x0 + t * (track.x1 - track.x0);
+        float cy = floorf((track.y0 + track.y1) * 0.5f);
         bool hover = PointInRect(g_mouseX, g_mouseY, GetSliderHitRect(r));
-        float hc = hover ? 1.0f : (g_highContrastUI ? 0.95f : 0.85f);
-        UIDrawRect(glyphVerts, handleCx - 6, track.y0 - 6, handleCx + 6, track.y1 + 6, hc, hc, g_highContrastUI ? 0.0f : 0.2f, 1);
+        bool dragging = g_draggingSlider == sliderId;
+        const bool hc = g_highContrastUI;
+        float slack = hc ? 0.55f : 0.30f, taut = hc ? 1.0f : 0.62f;
+        UIDrawRect(glyphVerts, track.x0, cy - 1, track.x1, cy + 1, slack, slack, slack + (hc ? 0.0f : 0.04f), 1); // the string
+        UIDrawRect(glyphVerts, track.x0, cy - 1, bx, cy + 1, taut, taut * (hc ? 0.9f : 0.95f), hc ? 0.0f : taut * 0.8f, 1); // travelled
+        for (float kx : { track.x0, track.x1 }) UIDrawRect(glyphVerts, kx - 2, cy - 3, kx + 2, cy + 3, slack, slack, slack, 1); // knots
+        const float R = dragging ? 9.0f : 8.0f;
+        float bead = hover || dragging ? 1.0f : (hc ? 0.95f : 0.82f);
+        float br = bead, bg = bead * (hc ? 0.9f : 0.9f), bb = hc ? 0.0f : bead * 0.55f;
+        for (int k = 0; k < 8; k++) { // a disc in eight horizontal slices
+            float y0 = cy - R + k * (2 * R / 8), y1 = y0 + 2 * R / 8;
+            float yc = (y0 + y1) * 0.5f - cy;
+            float half = sqrtf(std::max(0.0f, R * R - yc * yc));
+            float shade = k < 2 ? 1.12f : k > 5 ? 0.78f : 1.0f; // lit crown, shaded underside
+            UIDrawRect(glyphVerts, bx - half, y0, bx + half, y1, std::min(1.0f, br * shade), std::min(1.0f, bg * shade), std::min(1.0f, bb * shade), 1);
+        }
+        UIDrawRect(glyphVerts, bx - R * 0.45f, cy - R * 0.7f, bx - R * 0.05f, cy - R * 0.35f, 1, 1, hc ? 0.6f : 0.95f, hc ? 0.9f : 0.55f); // a glint
     };
     auto drawPanelTitle = [&](const UIRect& panel, float panelW, const char* title, float scale) {
         float tw = UITextWidth(title, scale);

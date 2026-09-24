@@ -477,6 +477,9 @@ Escape backs out exactly one level, and which level depends on which tree it's i
 
 ---
 
+### 12.x Buttons and sliders you can feel
+Menu buttons are drawn as mechanical keys: a raised cap on a darker body with a dark outline and a lit top edge. Hovered, the cap brightens; held down, it sinks into its body (the lit edge gives way to a shadow, the label drops with it); buttons act **on release**, like real ones, and sliding off before letting go cancels. Sliders, the map and the library still act on press, since they're dragged. Sliders are **beads on a string**: a taut thread, brighter where the bead has travelled, knotted at both ends, with a round bead (stacked slices, a lit crown and a glint) that brightens under the cursor and swells slightly while dragged. All flat rectangles in the existing UI batch: no cost. High-contrast mode keeps the same shapes at luminance extremes.
+
 ## Part XIII — Day Clock
 
 One authoritative value, `g_dayTimeSeconds` (0 to `DAY_LENGTH_SECONDS = 3600`, one in-game day = one real hour, locked in), advancing only inside the exact same gate that already freezes physics and chunk generation while any menu is open (5.3) — so it is structurally impossible for the clock to run while paused, without needing a separate check. A fresh New Game starts it at 0 (dawn); Load Game restores whatever was saved (7.2.5); it is never derived from the real-world wall clock.
