@@ -59,7 +59,7 @@ struct FrameCBData {
     float zenith[4], horizon[4], twilight[4], ambientUp[4], ambientDown[4];
     float camPos[4], fog[4];
 };
-static const float CLOUD_COVER = 0.52f; // noise threshold: higher = clearer skies
+static const float CLOUD_COVER = 0.50f; // noise threshold: higher = clearer skies
 
 // Off-screen scene target + a readable depth buffer, for the post pass.
 static ID3D11RenderTargetView* g_sceneRTV = nullptr;
@@ -483,16 +483,21 @@ static const char* g_skyShaderSrc =
     "    float b = saturate(1.0f - length(frac(g) - spot) / size);\n"
     "    return b * b * (0.5f + 0.9f * Hash(key + 9.2f));\n"
     "}\n"
-    // Clouds: four octaves of value noise on a plane above the world,
-    // drifting with time -- sky pixels only, so the cost is fixed.
+    // Clouds: thin, wispy high-altitude streaks (cirrus), not heavy puffs.
+    // Value noise on a high plane (so they look small and far off),
+    // stretched along the wind and domain-warped into wisps, drifting with
+    // time -- sky pixels only, so the cost is fixed.
     "float Hash2(float2 p) { p = frac(p * float2(0.1031f, 0.1030f)); p += dot(p, p.yx + 33.33f); return frac((p.x + p.y) * p.x); }\n"
     "float Noise2(float2 p) {\n"
     "    float2 i = floor(p), f = frac(p), u = f * f * (3.0f - 2.0f * f);\n"
     "    return lerp(lerp(Hash2(i), Hash2(i + float2(1, 0)), u.x), lerp(Hash2(i + float2(0, 1)), Hash2(i + float2(1, 1)), u.x), u.y);\n"
     "}\n"
     "float CloudNoise(float3 d) {\n"
-    "    float2 uv = d.xz / (d.y + 0.12f) * 0.9f + float2(fCamPos.w * 0.006f, fCamPos.w * 0.002f);\n"
-    "    return 0.5f * Noise2(uv) + 0.25f * Noise2(uv * 2.03f + 17.1f) + 0.125f * Noise2(uv * 4.1f + 5.3f) + 0.0625f * Noise2(uv * 8.2f + 9.7f);\n"
+    "    float2 base = d.xz / (d.y + 0.06f) * 0.45f;\n"                                   // a high sheet: flat, far away
+    "    float2 p = float2(dot(base, float2(0.8f, 0.6f)), dot(base, float2(-0.6f, 0.8f)));\n" // into the wind's frame
+    "    p = p * float2(0.6f, 3.2f) + float2(fCamPos.w * 0.004f, 0.0f);\n"                    // long along the wind, thin across; drifting
+    "    p.y += (Noise2(p * float2(0.7f, 0.25f) + 5.2f) - 0.5f) * 2.4f;\n"                     // warp the streaks into wisps
+    "    return 0.5f * Noise2(p) + 0.25f * Noise2(p * 2.07f + 17.1f) + 0.15f * Noise2(p * float2(4.3f, 3.1f) + 5.3f) + 0.1f * Noise2(p * float2(9.1f, 6.7f) + 9.7f);\n"
     "}\n"
     "float Disc(float3 d, float3 c, float cosR) { return smoothstep(cosR - 0.00008f, cosR + 0.00002f, dot(d, c)); }\n"
     "float4 PSMain(PSIn input) : SV_TARGET {\n"
@@ -503,23 +508,25 @@ static const char* g_skyShaderSrc =
     "    float cloud = 0.0f, cloudN = 0.0f;\n"
     "    if (d.y > 0.0f) {\n"
     "        cloudN = CloudNoise(d);\n"
-    "        cloud = smoothstep(fFog.w, fFog.w + 0.22f, cloudN) * smoothstep(0.0f, 0.15f, d.y);\n"
+    // Sparse and translucent: at most ~55% opacity by day and ~25% at
+    // night, so the stars and moon still show through.
+    "        float wisp = smoothstep(fFog.w, fFog.w + 0.28f, cloudN);\n"
+    "        cloud = wisp * wisp * lerp(0.55f, 0.25f, params.x) * smoothstep(0.02f, 0.2f, d.y);\n"
     "    }\n"
     // Stars, moon and its ghost behind the clouds.
     "    float3 s = float3(dot(starRow0.xyz, d), dot(starRow1.xyz, d), dot(starRow2.xyz, d));\n"
-    "    float veil = 1.0f - cloud * 0.9f;\n"
+    "    float veil = 1.0f - cloud;\n"
     "    col += Stars(s) * params.x * above * veil * float3(0.8f, 0.85f, 1.0f);\n"
     "    float3 moonCol = float3(0.9f, 0.92f, 1.0f) * 1.4f;\n"
     "    col = lerp(col, moonCol, Disc(d, moon.xyz, 0.99966f) * moon.w * above * veil);\n"
     "    col += moonCol * Disc(d, ghostMoon.xyz, 0.99966f) * ghostMoon.w * above * veil;\n"
     // The sun's disc (bright enough to bloom), dimmed by cloud.
     "    float sunDisc = smoothstep(0.9990f, 0.9996f, mu) * params.y * above;\n"
-    "    col += sunDisc * float3(1.0f, 0.9f, 0.7f) * 30.0f * (1.0f - cloud * 0.85f);\n"
-    // Clouds lit by the sky and the sun: silver lining toward the sun,
-    // warmer at dusk, darker where they're thickest.
-    "    float3 cloudLit = fAmbientUp.rgb * 1.1f + fSunColor.rgb * (0.30f + 0.55f * pow(saturate(mu), 4.0f)) + fMoonColor.rgb * 0.8f;\n"
-    "    cloudLit *= lerp(1.0f, 0.72f, smoothstep(fFog.w + 0.12f, fFog.w + 0.35f, cloudN));\n"
-    "    col = lerp(col, cloudLit, cloud * 0.92f);\n"
+    "    col += sunDisc * float3(1.0f, 0.9f, 0.7f) * 30.0f * (1.0f - cloud);\n"
+    // Thin ice cloud is lit right through: bright, a strong glow toward
+    // the sun, and it catches the sunset's colour first.
+    "    float3 cloudLit = fAmbientUp.rgb * 1.3f + fSunColor.rgb * (0.35f + 0.9f * pow(saturate(mu), 6.0f)) + fMoonColor.rgb * 1.2f;\n"
+    "    col = lerp(col, cloudLit, cloud);\n"
     // Glow mask for bloom: the disc, plus a softer halo around it.
     "    float sunGlow = saturate(sunDisc + 0.5f * smoothstep(0.985f, 0.9996f, mu) * params.y * above);\n"
     "    return float4(ToDisplay(col), sunGlow * (1.0f - cloud));\n"
