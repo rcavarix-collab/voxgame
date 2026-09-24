@@ -66,10 +66,12 @@ Rules:
 ## Art guidance for this engine
 
 - **Nothing anyone owns.** No logos, brand marks, trademarks, real
-  currencies or crypto symbols, company or product names, or recognisable
-  characters from other works. Original motifs, natural materials and
-  traditional public-domain patterns (knotwork, florals, geometric
-  ornament) are all fine.
+  currencies or crypto symbols, company or product names, official
+  insignia, or recognisable characters, creatures or artwork from other
+  works — and don't recreate another game's textures or distinctive look.
+  Original motifs, natural materials and traditional public-domain
+  patterns (knotwork, florals, geometric ornament) are all fine. When
+  unsure, make it more original.
 - **No regular dither.** Don't fill a background with a repeating cycle
   of keys (`abca` / `cabc`, a checkerboard). Up close it reads as woven
   fabric; at a distance it turns into shimmering diagonal lines across the

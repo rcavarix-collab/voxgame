@@ -338,6 +338,8 @@ Per-region multi-chunk files (grouping a 16×16 column of chunks behind one smal
 
 ## Part VIII — Reference Material and How Each Was Used
 
+**Standing rule: nothing anyone owns.** Everything in the game — art, music, names, symbols, text, code — is original or genuinely free to use. No brands, logos, trademarks, product names, currencies or crypto symbols, official insignia; no copyrighted art, music, characters or text; nothing recreated from another game (textures, creatures, item names, distinctive look). Genre conventions and mechanics are shared ground; another work's specific expression isn't. Public-domain motifs (knotwork, florals, geometric and sacred-geometry figures) and natural materials are fine. When in doubt, make it more original.
+
 **Standing rule: consult these first.** The seed files in the repo root (Prismative.cpp, drillder.cpp, LG2.cpp, cc_2_2_2.cpp) — and totality.cpp, solarsystem.cpp and themer.cpp when they're pasted in — were each tested by hand and hold worked-out ideas. Before designing a new feature, texture, block behaviour or view, check whether one of them already solved it, and take the idea (never the code: see the licensing note at the top). The "Still to mine" notes below are the open leads.
 
 ### 8.1 Prismative.cpp (D3D11, closest in spirit to the target)

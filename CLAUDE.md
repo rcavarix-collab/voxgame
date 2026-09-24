@@ -6,7 +6,12 @@ The design of record is `DESIGN.md`; read the relevant part before changing a sy
 - **Lagless efficiency.** Cost scales with what's on screen or what changed, never with world size. Budget per-tick work; rebuild only on change; measure with the F3 profiler.
 - **Fake it convincingly, cheaply.** Visual effects are per-pixel tricks driven by small per-frame constants, not extra passes or per-block data (DESIGN.md 4.8–4.12).
 - **Photosensitivity.** Nothing flashes faster than 3 times a second (musiclevel.h shows how).
-- **Nothing anyone owns.** No brands, logos, trademarks, real currencies, or others' characters in art or names.
+- **Nothing anyone owns — no stepping on toes.** Everything in the game is original or genuinely free to use:
+  - no brands, logos, trademarks, product or company names, real currencies or crypto symbols, official insignia or emblems;
+  - no copyrighted art, music, melodies, text or characters, and nothing recreated from another game (its textures, creatures, item names, distinctive look or UI art) — shared genre mechanics are fine, their specific expression is not;
+  - traditional public-domain motifs (knotwork, florals, geometric and sacred-geometry figures) and natural materials are fine;
+  - code: the seed files are the owner's own; outside code is read for ideas only (DESIGN.md Part VIII — nothing copied, no copyleft); fonts are the player's installed system fonts, rendered at load, never shipped.
+  When unsure, make it more original rather than less.
 - **No numbers in player-facing displays** where a band or feel will do; keep debug UI minimal (F3, F7, F8).
 
 ## The seed files — consult them first
