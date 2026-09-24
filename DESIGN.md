@@ -388,12 +388,6 @@ Generation runs on the main thread, so it is budgeted like everything else: medi
 
 ---
 
-## Part XVI — Frame Profiler
-
-Part 1.3's rule (cost scales with what's on screen or changing, never with total world size) is only a rule if it can be checked, so the engine measures itself. `profiler.h/.cpp` times each system every frame with `QueryPerformanceCounter` (`ProfScope` RAII timers around terrain generation, eviction, physics, falls, music synthesis, mesh rebuilds, world draw submission, the UI pass and `Present`) and records load counters (resident chunks, chunks and triangles drawn, meshes built, dirty chunks / columns / falls waiting). A 128-frame ring buffer (~2 s) is summarised twice a second into average and worst milliseconds per system, plus frame time and **work time** (frame minus `Present`, which under vsync is mostly waiting rather than work). Worst-frame numbers matter as much as averages: a hitch is a single bad frame that an average hides.
-
-Collection is always on (a few dozen timer reads per frame); the overlay is toggled with F3 (unless F3 is bound to an action) or Display Settings → Profiler, and persisted in settings.cfg. New systems should get a `ProfScope` and, where they have a queue, a counter — that is how a design-rule regression shows up the day it's introduced instead of in a playtest.
-
 ## Part XV — Build
 
 Nine source files (`main.cpp world.cpp render.cpp audio.cpp persist.cpp game.cpp textures.cpp music_synth.cpp profiler.cpp`), one compiler invocation, no project file strictly needed (the checked-in `.vcxproj`/`.vcxproj.filters` list them all for Visual Studio):
@@ -415,3 +409,9 @@ Each `.cpp` above owns one subsystem and includes only the headers it needs (`co
 (`-lxaudio2_8` is MinGW's import-lib name for the same XAudio2 2.8 API that the Windows SDK's `xaudio2.lib` provides — a MinGW-only naming difference, same idea as `-municode` above it.)
 
 Default controls (all fully remappable to any keyboard key or the left/right/middle mouse button via Pause → Keybindings — click a row, then press the new input; Esc cancels a rebind in progress, except on the Pause Menu row, where Esc binds Escape): WASD to move, mouse to look (click once to capture the cursor), Space to jump, left-click to break the targeted block, right-click to place the selected hotbar block, number keys 1–9 to select a hotbar block (fixed, not remappable in this pass), F5 to save, F9 to load, Esc to open/close the Pause menu or back out one level from any of its submenus (Look Settings, Graphics, Display, Audio, Keybindings, each with its own Reset to Default), all clickable with the freed cursor.
+
+## Part XVI — Frame Profiler
+
+Part 1.3's rule (cost scales with what's on screen or changing, never with total world size) is only a rule if it can be checked, so the engine measures itself. `profiler.h/.cpp` times each system every frame with `QueryPerformanceCounter` (`ProfScope` RAII timers around terrain generation, eviction, physics, falls, music synthesis, mesh rebuilds, world draw submission, the UI pass and `Present`) and records load counters (resident chunks, chunks and triangles drawn, meshes built, dirty chunks / columns / falls waiting). A 128-frame ring buffer (~2 s) is summarised twice a second into average and worst milliseconds per system, plus frame time and **work time** (frame minus `Present`, which under vsync is mostly waiting rather than work). Worst-frame numbers matter as much as averages: a hitch is a single bad frame that an average hides.
+
+Collection is always on (a few dozen timer reads per frame); the overlay is toggled with F3 (unless F3 is bound to an action) or Display Settings → Profiler, and persisted in settings.cfg. New systems should get a `ProfScope` and, where they have a queue, a counter — that is how a design-rule regression shows up the day it's introduced instead of in a playtest.
