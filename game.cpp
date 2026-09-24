@@ -623,6 +623,32 @@ static void AutosaveNow(bool announce) {
     g_autosaveTimer = 0.0f;
 }
 bool IsInGame() { return g_gameState == GameState::InGame; }
+
+// The top of a performance report: what was measured, and on what.
+static std::string PerfReportHeader() {
+    char b[512];
+#ifdef _DEBUG
+    const char* build = "Debug";
+#else
+    const char* build = "Release";
+#endif
+    snprintf(b, sizeof b,
+             "Voxistics performance report\n"
+             "build: %s\nGPU: %s\nresolution: %d x %d%s\n"
+             "render distance: %d  shadows: %s  bloom: %s  SSAO: %s  edges: %s  music intensity: %.0f%%\n"
+             "day time: %s  position: %.0f, %.0f, %.0f\n\n",
+             build, GpuName().c_str(), g_screenW, g_screenH, g_fullscreen ? " (fullscreen)" : "",
+             g_loadRadius, g_shadows ? "on" : "off", g_bloom ? "on" : "off", g_postSSAO ? "on" : "off", g_postEdges ? "on" : "off",
+             g_musicIntensity * 100.0f, DayTimeLabel(g_dayTimeSeconds).c_str(), g_player.x, g_player.y, g_player.z);
+    return b;
+}
+
+void PollPerfCapture() {
+    std::string text;
+    if (!ProfTakeCaptureReport(text)) return;
+    std::string path = WriteTextToSaveFolder("perf_report.txt", text);
+    ShowToast(path.empty() ? "PERF REPORT COULD NOT BE SAVED" : "PERF REPORT SAVED: perf_report.txt (next to your saves)", 5.0f);
+}
 void TickAutosave(float dt) {
     if (g_gameState != GameState::InGame || g_menuScreen != MenuScreen::None) return;
     g_autosaveTimer += dt;
@@ -1095,6 +1121,13 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         if ((wParam == VK_F3 || wParam == VK_F7 || wParam == VK_F8 || wParam == VK_F11) && !(lParam & (1 << 30))) {
             bool bound = false;
             for (int a = 0; a < ACT_COUNT; a++) if (g_keyBindings[a] == (int)wParam) bound = true;
+            if (!bound && wParam == VK_F3 && (GetKeyState(VK_CONTROL) & 0x8000)) { // Ctrl+F3: a 30 s performance report
+                if (g_gameState == GameState::InGame && !ProfCapturing()) {
+                    ProfStartCapture(30.0f, PerfReportHeader());
+                    ShowToast("RECORDING PERFORMANCE FOR 30 S - PLAY AS USUAL", 3.0f);
+                }
+                return 0;
+            }
             if (!bound && wParam == VK_F3) { g_showProfiler = !g_showProfiler; SaveSettings(); return 0; }
             if (!bound && wParam == VK_F11) { ToggleFullscreenSetting(); return 0; }
             if (!bound && wParam == VK_F7) { g_lineDebug = !g_lineDebug; return 0; } // The Line's test marker (not saved)
@@ -1503,6 +1536,11 @@ void RenderUIPass() {
         drawRowButton(SubmenuRowRect(KEYBIND_LAYOUT, ACT_COUNT + 1), "BACK");
     }
 
+    if (ProfCapturing()) { // Ctrl+F3 recording: a quiet countdown, bottom left
+        char buf[48];
+        snprintf(buf, sizeof(buf), "RECORDING PERFORMANCE %d", (int)ceilf(ProfCaptureSecondsLeft()));
+        UIDrawText(glyphVerts, buf, 12.0f, g_screenH - 30.0f, 0.6f, 1.0f, 0.55f, 0.45f, 0.9f);
+    }
     if (g_showFPS) {
         char buf[32];
         snprintf(buf, sizeof(buf), "FPS: %d", g_fpsDisplay);

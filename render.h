@@ -118,6 +118,8 @@ void ResizeRenderTargets(int w, int h);
 // (the Graphics menu shows the ones that didn't as unavailable), and the
 // compiler's complaints if any (also written to shader_errors.txt).
 bool ShadowsAvailable();
+// The graphics adapter's name (for the performance report), "" if unknown.
+std::string GpuName();
 bool PostEffectsAvailable();
 bool BloomAvailable();
 const std::string& ShaderErrors();

@@ -59,6 +59,8 @@ void ApplyFullscreen(bool on);
 void TickAutosave(float dt);
 // True while a world is loaded (in play or in its menus), not at the title.
 bool IsInGame();
+// Once per frame: saves a finished performance capture (Ctrl+F3).
+void PollPerfCapture();
 
 // A transient centred message (save/load confirmations, startup problems).
 void ShowToast(const std::string& message, float seconds);

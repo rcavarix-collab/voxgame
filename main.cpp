@@ -106,6 +106,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
         // The profiler closes the previous frame with its true, unclamped
         // length -- a hitch is exactly what it is there to show.
         ProfEndFrame(dt);
+        PollPerfCapture();
         ProfBeginFrame();
         if (dt > 0.25f) dt = 0.25f; // clamp huge stalls (e.g. window drag)
         accumulator += dt;

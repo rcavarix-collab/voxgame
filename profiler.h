@@ -11,6 +11,7 @@
 #pragma once
 
 #include <cstdint>
+#include <string>
 
 enum ProfSection {
     PROF_TERRAIN,   // column queueing + generation
@@ -73,4 +74,15 @@ struct ProfReport {
 };
 const ProfReport& ProfGetReport();
 const char* ProfSectionName(ProfSection s);
+
+// Performance capture (Ctrl+F3, Part XVI): records every frame for
+// `seconds`, then builds a plain-text report -- frame and work time
+// percentiles, hitches and what caused the worst of them, per-system
+// costs, load peaks -- for the owner to save and send. `header` (build,
+// settings, resolution) goes at the top.
+void ProfStartCapture(float seconds, const std::string& header);
+bool ProfCapturing();
+float ProfCaptureSecondsLeft();
+// True once, when a capture has finished, with its report.
+bool ProfTakeCaptureReport(std::string& text);
 const char* ProfCounterName(ProfCounter c);

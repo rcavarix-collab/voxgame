@@ -72,3 +72,7 @@ void MigrateLegacySingleSaveIfPresent();
 
 bool SaveGame(World& w, Player& p, int slot);
 bool LoadGame(World& w, Player& p, int slot);
+
+// Writes a text file (e.g. the performance report) into the save folder,
+// replacing any old one. Returns the full path written, or "" on failure.
+std::string WriteTextToSaveFolder(const char* fileName, const std::string& text);

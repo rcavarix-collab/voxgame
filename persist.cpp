@@ -402,3 +402,13 @@ bool LoadGame(World& w, Player& p, int slot) {
     g_lastPlayerChunkZ = INT32_MIN;
     return true;
 }
+
+std::string WriteTextToSaveFolder(const char* fileName, const std::string& text) {
+    std::filesystem::path dir = GetSaveDirectory();
+    std::filesystem::path path = dir.empty() ? std::filesystem::path(fileName) : dir / fileName;
+    FILE* f = _wfopen(path.wstring().c_str(), L"wb");
+    if (!f) return "";
+    bool ok = fwrite(text.data(), 1, text.size(), f) == text.size();
+    ok = fclose(f) == 0 && ok;
+    return ok ? path.string() : "";
+}
