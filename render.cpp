@@ -3,6 +3,7 @@
 // D3D11 setup, chunk meshing, and the procedural sky mesh.
 
 #include "render.h"
+#include "profiler.h"
 #include <d3dcompiler.h>
 #include <cstring>
 #include <algorithm>
@@ -246,7 +247,7 @@ void RebuildDirtyChunks(World& w, int camCx, int camCy, int camCz) {
     for (size_t i = 0; i < n; i++) {
         const ChunkCoord& cc = pending[i].cc;
         w.dirtyChunks.erase(cc);
-        if (Chunk* c = w.FindChunk(cc)) RebuildChunkMesh(w, cc, *c);
+        if (Chunk* c = w.FindChunk(cc)) { RebuildChunkMesh(w, cc, *c); ProfAddCounter(PCOUNT_MESHES_BUILT, 1); }
     }
 }
 

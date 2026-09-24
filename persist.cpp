@@ -8,6 +8,7 @@
 #include <windows.h>
 #include <shlobj.h> // SHGetKnownFolderPath
 #include "persist.h"
+#include "profiler.h"
 #include "audio.h"
 #include <cstdio>
 #include <cstdlib>
@@ -171,6 +172,7 @@ bool SaveSettings() {
     ss << "invertY=" << (g_invertY ? 1 : 0) << "\n";
     ss << "renderDistance=" << g_loadRadius << "\n";
     ss << "showFPS=" << (g_showFPS ? 1 : 0) << "\n";
+    ss << "showProfiler=" << (g_showProfiler ? 1 : 0) << "\n";
     ss << "masterVolume=" << g_masterVolume << "\n";
     ss << "musicVolume=" << g_musicVolume << "\n";
     ss << "fov=" << g_fov << "\n";
@@ -238,6 +240,7 @@ void LoadSettings() {
     g_invertY = getB("invertY", g_invertY);
     g_loadRadius = getI("renderDistance", g_loadRadius);
     g_showFPS = getB("showFPS", g_showFPS);
+    g_showProfiler = getB("showProfiler", g_showProfiler);
     g_masterVolume = getF("masterVolume", g_masterVolume);
     g_musicVolume = getF("musicVolume", g_musicVolume);
     g_fov = getF("fov", g_fov);

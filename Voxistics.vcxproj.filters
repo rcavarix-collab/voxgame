@@ -39,6 +39,9 @@
     <ClCompile Include="music_synth.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="profiler.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="common.h">
@@ -60,6 +63,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="music_synth.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="profiler.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>

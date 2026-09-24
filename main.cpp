@@ -22,6 +22,7 @@
 #include "audio.h"
 #include "persist.h"
 #include "game.h"
+#include "profiler.h"
 
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
     // Wide (W-suffixed) throughout, deliberately -- mixing an ANSI-
@@ -82,6 +83,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
         QueryPerformanceCounter(&now);
         float dt = (float)(now.QuadPart - lastTime.QuadPart) / (float)freq.QuadPart;
         lastTime = now;
+        // The profiler closes the previous frame with its true, unclamped
+        // length -- a hitch is exactly what it is there to show.
+        ProfEndFrame(dt);
+        ProfBeginFrame();
         if (dt > 0.25f) dt = 0.25f; // clamp huge stalls (e.g. window drag)
         accumulator += dt;
 
@@ -141,15 +146,27 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
 
                 int pcx = FloorDiv16((int)floor(g_player.x));
                 int pcz = FloorDiv16((int)floor(g_player.z));
-                EnsureChunksLoaded(pcx, pcz);
-                ProcessColumnGeneration(g_world);
-                ProcessColumnEviction(g_world);
+                {
+                    ProfScope prof(PROF_TERRAIN);
+                    EnsureChunksLoaded(pcx, pcz);
+                    ProcessColumnGeneration(g_world);
+                }
+                {
+                    ProfScope prof(PROF_EVICT);
+                    ProcessColumnEviction(g_world);
+                }
 
                 bool fwd = IsActionDown(ACT_FORWARD), back = IsActionDown(ACT_BACK);
                 bool left = IsActionDown(ACT_LEFT), right = IsActionDown(ACT_RIGHT);
                 bool jump = IsActionDown(ACT_JUMP);
-                UpdatePlayerPhysics(g_world, g_player, FIXED_DT, fwd, back, left, right, jump);
-                ProcessFalls(g_world);
+                {
+                    ProfScope prof(PROF_PHYSICS);
+                    UpdatePlayerPhysics(g_world, g_player, FIXED_DT, fwd, back, left, right, jump);
+                }
+                {
+                    ProfScope prof(PROF_FALLS);
+                    ProcessFalls(g_world);
+                }
 
                 accumulator -= FIXED_DT;
             }
@@ -158,9 +175,20 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
         // Once per frame, not per tick: after a stall the tick loop runs
         // many catch-up ticks in one frame, and each would otherwise
         // generate another music chunk on top of the stall.
-        if (g_menuScreen == MenuScreen::None) RefillMusicQueueIfNeeded();
-        RebuildDirtyChunks(g_world, FloorDiv16((int)floorf(g_player.x)),
-                           FloorDiv16((int)floorf(g_player.y + PLAYER_EYE)), FloorDiv16((int)floorf(g_player.z)));
+        if (g_menuScreen == MenuScreen::None) {
+            ProfScope prof(PROF_MUSIC);
+            RefillMusicQueueIfNeeded();
+        }
+        {
+            ProfScope prof(PROF_MESH);
+            RebuildDirtyChunks(g_world, FloorDiv16((int)floorf(g_player.x)),
+                               FloorDiv16((int)floorf(g_player.y + PLAYER_EYE)), FloorDiv16((int)floorf(g_player.z)));
+        }
+        ProfSetCounter(PCOUNT_CHUNKS_RESIDENT, (int64_t)g_world.chunks.size());
+        ProfSetCounter(PCOUNT_DIRTY_WAITING, (int64_t)g_world.dirtyChunks.size());
+        ProfSetCounter(PCOUNT_COLUMNS_WAITING, (int64_t)g_pendingColumns.size());
+        ProfSetCounter(PCOUNT_FALLS_WAITING, (int64_t)g_fallQueue.size());
+        int64_t worldStart = ProfNow();
 
         float clearColor[4] = { 0.4f, 0.6f, 0.9f, 1.0f };
         g_context->OMSetRenderTargets(1, &g_rtv, g_dsv);
@@ -228,11 +256,20 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
             g_context->IASetVertexBuffers(0, 1, &c.vb, &stride, &offset);
             g_context->IASetIndexBuffer(c.ib, DXGI_FORMAT_R32_UINT, 0);
             g_context->DrawIndexed(c.indexCount, 0, 0);
+            ProfAddCounter(PCOUNT_CHUNKS_DRAWN, 1);
+            ProfAddCounter(PCOUNT_TRIANGLES_DRAWN, c.indexCount / 3);
+        }
+        ProfAdd(PROF_WORLD, ProfNow() - worldStart);
+
+        {
+            ProfScope prof(PROF_UI);
+            RenderUIPass();
         }
 
-        RenderUIPass();
-
-        g_swapChain->Present(1, 0);
+        {
+            ProfScope prof(PROF_PRESENT);
+            g_swapChain->Present(1, 0);
+        }
     }
 
     ShutdownAudio();

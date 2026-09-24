@@ -10,6 +10,7 @@
 #include "render.h"
 #include "audio.h"
 #include "persist.h"
+#include "profiler.h"
 #include <cstdio>
 #include <cstring>
 #include <cmath>
@@ -239,8 +240,8 @@ enum GraphicsRow { GROW_RENDER_DIST = 0, GROW_RESET = 1, GROW_BACK = 2 };
 // Display: one real setting -- an FPS counter toggle. Resolution/
 // fullscreen switching would need swap-chain resize and WM_SIZE
 // handling this prototype doesn't have yet, so it isn't faked here.
-static const SubmenuLayout DISPLAY_LAYOUT  = { 340.0f, 40.0f, 12.0f, 70.0f, 20.0f, 3 };
-enum DisplayRow { DROW_SHOW_FPS = 0, DROW_RESET = 1, DROW_BACK = 2 };
+static const SubmenuLayout DISPLAY_LAYOUT  = { 340.0f, 40.0f, 12.0f, 70.0f, 20.0f, 4 };
+enum DisplayRow { DROW_SHOW_FPS = 0, DROW_SHOW_PROFILER = 1, DROW_RESET = 2, DROW_BACK = 3 };
 
 // Audio: Master and Music sliders, backed by a real XAudio2 voice
 // (Section 10) playing the procedural ambient track. Separate channels
@@ -363,7 +364,7 @@ static void ResetGraphicsSettings() {
     g_loadRadius = 3;
     g_lastPlayerChunkX = INT32_MIN; g_lastPlayerChunkZ = INT32_MIN; // force a rescan at the new radius
 }
-static void ResetDisplaySettings() { g_showFPS = false; }
+static void ResetDisplaySettings() { g_showFPS = false; g_showProfiler = false; }
 static void ResetAudioSettings() { g_masterVolume = 1.0f; g_musicVolume = 1.0f; ApplyAudioVolumes(); }
 static void ResetAccessibilitySettings() {
     g_fov = 45.0f;
@@ -533,6 +534,7 @@ static void HandleGraphicsClick(int mx, int my) {
 }
 static void HandleDisplayClick(int mx, int my) {
     if (PointInRect(mx, my, SubmenuRowRect(DISPLAY_LAYOUT, DROW_SHOW_FPS))) { g_showFPS = !g_showFPS; SaveSettings(); return; }
+    if (PointInRect(mx, my, SubmenuRowRect(DISPLAY_LAYOUT, DROW_SHOW_PROFILER))) { g_showProfiler = !g_showProfiler; SaveSettings(); return; }
     if (PointInRect(mx, my, SubmenuRowRect(DISPLAY_LAYOUT, DROW_RESET))) { ResetDisplaySettings(); SaveSettings(); return; }
     if (PointInRect(mx, my, SubmenuRowRect(DISPLAY_LAYOUT, DROW_BACK))) { g_menuScreen = MenuScreen::OptionsHub; return; }
 }
@@ -793,6 +795,14 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             }
             g_rebindingAction = -1;
             return 0;
+        }
+        // F3 toggles the profiler overlay (Part XVI) -- unless the player
+        // has bound F3 to an action, in which case the action wins and
+        // the overlay stays reachable from Display settings.
+        if (wParam == VK_F3 && !(lParam & (1 << 30))) {
+            bool bound = false;
+            for (int a = 0; a < ACT_COUNT; a++) if (g_keyBindings[a] == VK_F3) bound = true;
+            if (!bound) { g_showProfiler = !g_showProfiler; SaveSettings(); return 0; }
         }
         if (wParam >= '1' && wParam <= '9' && g_menuScreen == MenuScreen::None) {
             int idx = (int)(wParam - '1');
@@ -1072,6 +1082,7 @@ void RenderUIPass() {
         drawPanelTitle(panel, DISPLAY_LAYOUT.panelW, "DISPLAY SETTINGS", 1.0f);
 
         drawRowButton(SubmenuRowRect(DISPLAY_LAYOUT, DROW_SHOW_FPS), g_showFPS ? "SHOW FPS COUNTER: ON" : "SHOW FPS COUNTER: OFF");
+        drawRowButton(SubmenuRowRect(DISPLAY_LAYOUT, DROW_SHOW_PROFILER), g_showProfiler ? "PROFILER (F3): ON" : "PROFILER (F3): OFF");
         drawRowButton(SubmenuRowRect(DISPLAY_LAYOUT, DROW_RESET), "RESET TO DEFAULT");
         drawRowButton(SubmenuRowRect(DISPLAY_LAYOUT, DROW_BACK), "BACK");
     } else if (g_menuScreen == MenuScreen::Audio) {
@@ -1115,6 +1126,38 @@ void RenderUIPass() {
         char buf[32];
         snprintf(buf, sizeof(buf), "FPS: %d", g_fpsDisplay);
         UIDrawText(glyphVerts, buf, 12.0f, 12.0f, 0.9f, 1, 1, 0.6f, 0.9f);
+    }
+
+    // Profiler overlay (Part XVI): per-system CPU ms, average and worst
+    // over the last ~2 s, then load counters. Monospace, so printf
+    // padding lines the columns up.
+    if (g_showProfiler) {
+        const ProfReport& r = ProfGetReport();
+        const float scale = 0.65f, lineH = UITextHeight(scale);
+        std::vector<std::string> lines;
+        char buf[96];
+        snprintf(buf, sizeof(buf), "%-15s %6s %6s", "MS", "AVG", "WORST"); lines.push_back(buf);
+        snprintf(buf, sizeof(buf), "%-15s %6.2f %6.2f", "FRAME", r.frameAvgMs, r.frameMaxMs); lines.push_back(buf);
+        snprintf(buf, sizeof(buf), "%-15s %6.2f %6.2f", "WORK (NO VSYNC)", r.workAvgMs, r.workMaxMs); lines.push_back(buf);
+        for (int i = 0; i < PROF_COUNT; i++) {
+            snprintf(buf, sizeof(buf), "  %-13s %6.2f %6.2f", ProfSectionName((ProfSection)i), r.avgMs[i], r.maxMs[i]);
+            lines.push_back(buf);
+        }
+        lines.push_back("");
+        snprintf(buf, sizeof(buf), "%-15s %6s %6s", "COUNT", "NOW", "PEAK"); lines.push_back(buf);
+        for (int i = 0; i < PCOUNT_COUNT; i++) {
+            snprintf(buf, sizeof(buf), "%-15s %6lld %6lld", ProfCounterName((ProfCounter)i),
+                     (long long)r.counters[i], (long long)r.countersMax[i]);
+            lines.push_back(buf);
+        }
+        float x = 12.0f, y = g_showFPS ? 44.0f : 12.0f;
+        float w = 0;
+        for (const std::string& l : lines) w = std::max(w, UITextWidth(l, scale));
+        UIDrawRect(glyphVerts, x - 6, y - 4, x + w + 6, y + lines.size() * lineH + 4, 0, 0, 0, 0.6f);
+        for (const std::string& l : lines) {
+            UIDrawText(glyphVerts, l, x, y, scale, 0.85f, 1.0f, 0.85f, 1.0f);
+            y += lineH;
+        }
     }
 
     // Transient save/load confirmation -- fades over its last half

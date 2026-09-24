@@ -103,6 +103,7 @@
     <ClCompile Include="game.cpp" />
     <ClCompile Include="textures.cpp" />
     <ClCompile Include="music_synth.cpp" />
+    <ClCompile Include="profiler.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="common.h" />
@@ -112,6 +113,7 @@
     <ClInclude Include="persist.h" />
     <ClInclude Include="game.h" />
     <ClInclude Include="music_synth.h" />
+    <ClInclude Include="profiler.h" />
   </ItemGroup>
   <ItemGroup>
     <None Include="DESIGN.md" />

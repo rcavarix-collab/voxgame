@@ -388,19 +388,25 @@ Generation runs on the main thread, so it is budgeted like everything else: medi
 
 ---
 
+## Part XVI — Frame Profiler
+
+Part 1.3's rule (cost scales with what's on screen or changing, never with total world size) is only a rule if it can be checked, so the engine measures itself. `profiler.h/.cpp` times each system every frame with `QueryPerformanceCounter` (`ProfScope` RAII timers around terrain generation, eviction, physics, falls, music synthesis, mesh rebuilds, world draw submission, the UI pass and `Present`) and records load counters (resident chunks, chunks and triangles drawn, meshes built, dirty chunks / columns / falls waiting). A 128-frame ring buffer (~2 s) is summarised twice a second into average and worst milliseconds per system, plus frame time and **work time** (frame minus `Present`, which under vsync is mostly waiting rather than work). Worst-frame numbers matter as much as averages: a hitch is a single bad frame that an average hides.
+
+Collection is always on (a few dozen timer reads per frame); the overlay is toggled with F3 (unless F3 is bound to an action) or Display Settings → Profiler, and persisted in settings.cfg. New systems should get a `ProfScope` and, where they have a queue, a counter — that is how a design-rule regression shows up the day it's introduced instead of in a playtest.
+
 ## Part XV — Build
 
-Eight source files (`main.cpp world.cpp render.cpp audio.cpp persist.cpp game.cpp textures.cpp music_synth.cpp`), one compiler invocation, no project file strictly needed (the checked-in `.vcxproj`/`.vcxproj.filters` list them all for Visual Studio):
+Nine source files (`main.cpp world.cpp render.cpp audio.cpp persist.cpp game.cpp textures.cpp music_synth.cpp profiler.cpp`), one compiler invocation, no project file strictly needed (the checked-in `.vcxproj`/`.vcxproj.filters` list them all for Visual Studio):
 
 ```
-cl main.cpp world.cpp render.cpp audio.cpp persist.cpp game.cpp textures.cpp music_synth.cpp /link d3d11.lib dxgi.lib d3dcompiler.lib gdiplus.lib gdi32.lib user32.lib shell32.lib ole32.lib uuid.lib xaudio2.lib /SUBSYSTEM:WINDOWS
+cl main.cpp world.cpp render.cpp audio.cpp persist.cpp game.cpp textures.cpp music_synth.cpp profiler.cpp /link d3d11.lib dxgi.lib d3dcompiler.lib gdiplus.lib gdi32.lib user32.lib shell32.lib ole32.lib uuid.lib xaudio2.lib /SUBSYSTEM:WINDOWS
 ```
 
 or with MinGW-w64 (used during development to compile-check this prototype on a non-Windows host, since it ships full D3D11/DXGI/D3DCompiler/GDI+/XAudio2 headers and import libraries):
 
 ```
 x86_64-w64-mingw32-g++ -std=c++17 -O2 -mwindows -municode -DUNICODE -D_UNICODE \
-  main.cpp world.cpp render.cpp audio.cpp persist.cpp game.cpp textures.cpp music_synth.cpp -o voxistics.exe \
+  main.cpp world.cpp render.cpp audio.cpp persist.cpp game.cpp textures.cpp music_synth.cpp profiler.cpp -o voxistics.exe \
   -ld3d11 -ldxgi -ld3dcompiler -lgdiplus -lgdi32 -luser32 -lole32 -lshell32 -luuid -lxaudio2_8 -static-libgcc -static-libstdc++
 ```
 
