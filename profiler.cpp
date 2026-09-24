@@ -123,7 +123,7 @@ const ProfReport& ProfGetReport() { return g_report; }
 
 const char* ProfSectionName(ProfSection s) {
     static const char* names[PROF_COUNT] = {
-        "TERRAIN", "EVICT", "PHYSICS", "UPDATES", "MUSIC", "WORLD SOUND", "MESH", "SHADOW MAP", "WORLD DRAW", "POST", "UI", "PRESENT",
+        "TERRAIN", "EVICT", "PHYSICS", "UPDATES", "PULSE", "MUSIC", "WORLD SOUND", "MESH", "SHADOW MAP", "WORLD DRAW", "POST", "UI", "PRESENT",
     };
     return names[s];
 }

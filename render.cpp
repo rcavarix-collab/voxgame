@@ -12,6 +12,7 @@
 #include "persist.h"
 #include "vtex.h"
 #include "glowlight.h"
+#include "pulse.h"
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -115,6 +116,11 @@ static ID3D11RasterizerState* g_cullBackRaster = nullptr;
 // Debug lines.
 struct DebugVertex { float x, y, z, r, g, b, a; };
 static const UINT DEBUG_VB_CAPACITY = 128;
+// Pulses in flight (Part VI): small glowing octahedra, drawn with the
+// debug pipeline's plain colour shader; only those near enough to see.
+static ID3D11Buffer* g_pulseVB = nullptr;
+static const UINT PULSE_DRAW_MAX = 512;
+static const UINT PULSE_VB_CAPACITY = PULSE_DRAW_MAX * 24;
 static ID3D11VertexShader* g_debugVS = nullptr;
 static ID3D11PixelShader* g_debugPS = nullptr;
 static ID3D11InputLayout* g_debugLayout = nullptr;
@@ -918,6 +924,7 @@ static void UpdateShadowMap(World& w, Vec3 eye, Vec3 sun) {
 }
 
 static void DrawLineDebug(const Mat4& viewProj, Vec3 player); // below InitD3D, beside its pipeline
+static void DrawPulses(const Mat4& viewProj, Vec3 eye);
 
 // Bloom (Section 4.10): the scene's glow (rgb * alpha) down to quarter
 // resolution, then blurred three times, each pass twice as wide as the
@@ -1107,6 +1114,7 @@ void RenderScene(World& w, const Mat4& view, const Mat4& proj, Vec3 eye, Vec3 fo
         Frustum frustum = ExtractFrustum(viewProj);
         DrawChunks(w, frustum, true);
         if (g_lineDebug) DrawLineDebug(viewProj, eye);
+        DrawPulses(viewProj, eye);
         // See-through blocks last: same shader, told by params.z to shade
         // as glass. Rebind the world pipeline (the debug lines change it).
         cb.params[2] = 1.0f;
@@ -1766,6 +1774,8 @@ bool InitD3D(HWND hwnd) {
             vb.Usage = D3D11_USAGE_DYNAMIC; vb.ByteWidth = DEBUG_VB_CAPACITY * sizeof(DebugVertex);
             vb.BindFlags = D3D11_BIND_VERTEX_BUFFER; vb.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
             g_device->CreateBuffer(&vb, nullptr, &g_debugVB);
+            vb.ByteWidth = PULSE_VB_CAPACITY * sizeof(DebugVertex);
+            g_device->CreateBuffer(&vb, nullptr, &g_pulseVB);
             D3D11_BUFFER_DESC cb = {};
             cb.Usage = D3D11_USAGE_DYNAMIC; cb.ByteWidth = sizeof(Mat4);
             cb.BindFlags = D3D11_BIND_CONSTANT_BUFFER; cb.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
@@ -1836,6 +1846,52 @@ static void DrawLineDebug(const Mat4& viewProj, Vec3 player) {
     g_context->IASetVertexBuffers(0, 1, &g_debugVB, &stride, &offset);
     g_context->Draw(n, 0);
     g_context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+}
+
+// Pulses on their way (Part VI): each a small octahedron of warm light,
+// sized by how visible it is (fading in at a harvester, out at the end of
+// a flight) -- the pipeline is opaque, and its alpha is the bloom's glow
+// mask, so they glow. Only the nearest few hundred within 48 blocks are
+// drawn: one small upload and one draw call.
+static void DrawPulses(const Mat4& viewProj, Vec3 eye) {
+    if (!g_debugVS || !g_debugPS || !g_debugLayout || !g_pulseVB || !g_debugCB) return;
+    static std::vector<PulseView> views;
+    static std::vector<DebugVertex> v;
+    g_pulse.Views(views);
+    if (views.empty()) return;
+    v.clear();
+    const float r0 = 0.17f; // a bead a little fatter than the pipe, so it shows sliding through
+    for (const PulseView& p : views) {
+        float dx = p.x - eye.x, dy = p.y - eye.y, dz = p.z - eye.z;
+        if (dx * dx + dy * dy + dz * dz > 48.0f * 48.0f || p.alpha <= 0.01f) continue;
+        if (v.size() + 24 > PULSE_VB_CAPACITY) break;
+        float r = r0 * p.alpha;
+        const float tip[6][3] = { { r, 0, 0 }, { -r, 0, 0 }, { 0, r, 0 }, { 0, -r, 0 }, { 0, 0, r }, { 0, 0, -r } };
+        const int faces[8][3] = { { 2, 0, 4 }, { 2, 4, 1 }, { 2, 1, 5 }, { 2, 5, 0 }, { 3, 4, 0 }, { 3, 1, 4 }, { 3, 5, 1 }, { 3, 0, 5 } };
+        for (int f = 0; f < 8; f++) {
+            float shade = f < 4 ? 1.0f : 0.8f; // upper facets a touch brighter, so it reads as a solid
+            for (int k = 0; k < 3; k++) {
+                const float* t = tip[faces[f][k]];
+                v.push_back({ p.x + t[0], p.y + t[1], p.z + t[2], 1.0f * shade, 0.86f * shade, 0.52f * shade, 1.0f });
+            }
+        }
+    }
+    if (v.empty()) return;
+    D3D11_MAPPED_SUBRESOURCE mapped;
+    g_context->Map(g_pulseVB, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
+    memcpy(mapped.pData, v.data(), v.size() * sizeof(DebugVertex));
+    g_context->Unmap(g_pulseVB, 0);
+    g_context->Map(g_debugCB, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
+    memcpy(mapped.pData, &viewProj, sizeof(Mat4));
+    g_context->Unmap(g_debugCB, 0);
+    g_context->VSSetShader(g_debugVS, nullptr, 0);
+    g_context->PSSetShader(g_debugPS, nullptr, 0);
+    g_context->IASetInputLayout(g_debugLayout);
+    g_context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    g_context->VSSetConstantBuffers(0, 1, &g_debugCB);
+    UINT stride = sizeof(DebugVertex), offset = 0;
+    g_context->IASetVertexBuffers(0, 1, &g_pulseVB, &stride, &offset);
+    g_context->Draw((UINT)v.size(), 0);
 }
 
 // assets/textures, looked for next to the working directory first (a

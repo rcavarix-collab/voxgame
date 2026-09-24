@@ -14,6 +14,7 @@
 #include "worldsound.h"
 #include "persist.h"
 #include "profiler.h"
+#include "pulse.h"
 #include "theline.h"
 #include "essence.h"
 #include "essencemap.h"
@@ -200,6 +201,7 @@ static void PickAndAct(bool breakBlock) {
         }
         LiveEdit(g_world, px, py, pz, toPlace, state);
         if (toPlace == BLOCK_ATTRACTOR) g_essence.AddAttractor(px, py, pz);
+        g_pulse.OnPlaced(px, py, pz, toPlace);
         WorldSoundPlace(toPlace, px, py, pz);
     }
 }
@@ -776,6 +778,7 @@ static void ResetWorldForNewGame() {
     g_player = Player();
     g_worldGen = DefaultNewWorldGen(); // TerrainHeight below reads it
     ResetLine(g_line); // a new world has no history to pivot around
+    g_pulse.Reset();   // ...and nothing in its pipes
     g_essence.Reset(g_worldGen.seed); // nothing discovered yet
     // Start standing on the surface (terrain height is a pure function
     // of x/z, so this needs no generated chunks), taking the highest of
@@ -1663,6 +1666,22 @@ void RenderUIPass() {
         }
         lines.push_back("");
         lines.push_back(ProfBootSummary(false)); // how long start-up took, and on what
+        if (g_gameState == GameState::InGame) {
+            // Pulse logistics (Part VI): totals, and what's held by the block in view.
+            snprintf(buf, sizeof(buf), "PULSE %d HARVESTING %d MOVING %lld IN %lld LOST",
+                     g_pulse.Harvesters(), g_pulse.InFlight(), g_pulse.delivered, g_pulse.lost);
+            lines.push_back(buf);
+            Vec3 f, r, u;
+            GetCameraVectors(g_player, f, r, u);
+            int hx, hy, hz, px, py, pz;
+            if (Raycast(g_world, g_player.x, g_player.y + g_player.eyeHeight, g_player.z, f.x, f.y, f.z, 6.0f, hx, hy, hz, px, py, pz)) {
+                BlockID b = g_world.Get(hx, hy, hz);
+                if (PulseCapacity(b) > 0) {
+                    snprintf(buf, sizeof(buf), "  HOLDS %d OF %d", PulseStored(g_world, hx, hy, hz), PulseCapacity(b));
+                    lines.push_back(buf);
+                }
+            }
+        }
         // The world sound palette's three axes (docs/SOUND_PALETTE.md 3).
         if (g_gameState == GameState::InGame) {
             SoundAxes ax = WorldSoundAxes();

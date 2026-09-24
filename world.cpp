@@ -9,6 +9,7 @@
 #define NOMINMAX // see render.cpp for why this precedes windows.h (pulled in transitively via d3d11.h here)
 #endif
 #include "world.h"
+#include "pulse.h"
 #include "shapes.h"
 #include <d3d11.h>
 #include <cmath>
@@ -361,6 +362,7 @@ void GenerateColumn(World& w, int cx, int cz) {
     for (int cy = 0; cy < COLUMN_CHUNKS; cy++) {
         auto it = g_evictedChunks.find({ cx, cy, cz });
         if (it == g_evictedChunks.end()) continue;
+        g_pulse.OnChunkArrived(it->first, *it->second); // its harvesters gather again (Part VI)
         w.AdoptChunk(it->first, std::move(it->second));
         g_evictedChunks.erase(it);
     }

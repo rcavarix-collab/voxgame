@@ -123,6 +123,7 @@
     <ClCompile Include="shapes.cpp" />
     <ClCompile Include="icons.cpp" />
     <ClCompile Include="theline.cpp" />
+    <ClCompile Include="pulse.cpp" />
     <ClCompile Include="essencemap.cpp" />
     <ClCompile Include="glowlight.cpp">
       <!-- Hot loop: optimised even in Debug so a Debug build stays playable (runtime checks and
@@ -159,6 +160,7 @@
     <ClInclude Include="shapes.h" />
     <ClInclude Include="icons.h" />
     <ClInclude Include="theline.h" />
+    <ClInclude Include="pulse.h" />
     <ClInclude Include="essencemap.h" />
     <ClInclude Include="glowlight.h" />
     <ClInclude Include="musiclevel.h" />

@@ -36,7 +36,7 @@ void RenderBlockIcons(BlockTextureSet& set) {
         else if (g_blocks[id].place == PLACE_AWAY) state = FACE_POS_Z;
         else if (g_blocks[id].place == PLACE_CLICKED_AXIS)
             // Props (4.15) show sitting on a floor; tubes and pipes run across.
-            state = g_blocks[id].shape >= SHAPE_SWELL_MOUND && g_blocks[id].shape != SHAPE_PIPE ? FACE_POS_Y : FACE_POS_X;
+            state = ShapeIsProp(g_blocks[id].shape) && g_blocks[id].shape != SHAPE_PIPE ? FACE_POS_Y : FACE_POS_X;
         w.Set(0, 0, 0, (BlockID)id, state);
         BuildChunkMesh(w, { 0, 0, 0 }, *w.FindChunk({ 0, 0, 0 }), verts, idx);
 

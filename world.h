@@ -97,11 +97,16 @@ public:
     // enter and leave `chunks` only through GetOrCreateChunk /
     // AdoptChunk / TakeChunk / ClearChunks, which keep the two in step.
     std::unordered_set<ChunkCoord, ChunkCoordHash> dirtyChunks;
+    // Counts every change to the blocks (edits, falls, chunks arriving or
+    // leaving), so a system that derives something from them -- the pulse
+    // networks (Part VI) -- knows when to look again, and only then.
+    uint64_t edits = 0;
 
     // Replaces any chunk already at cc.
     void AdoptChunk(const ChunkCoord& cc, std::unique_ptr<Chunk> c) {
         c->dirty = true; // new to the world: needs a mesh
         chunks[cc] = std::move(c);
+        edits++;
         dirtyChunks.insert(cc);
     }
     std::unique_ptr<Chunk> TakeChunk(const ChunkCoord& cc) {
@@ -110,9 +115,10 @@ public:
         std::unique_ptr<Chunk> c = std::move(it->second);
         chunks.erase(it);
         dirtyChunks.erase(cc);
+        edits++;
         return c;
     }
-    void ClearChunks() { chunks.clear(); dirtyChunks.clear(); }
+    void ClearChunks() { chunks.clear(); dirtyChunks.clear(); edits++; }
 
     static ChunkCoord ToChunk(int x, int y, int z) {
         return { FloorDiv16(x), FloorDiv16(y), FloorDiv16(z) };
@@ -191,6 +197,7 @@ public:
         int lx = LocalOf(x, cc.x), ly = LocalOf(y, cc.y), lz = LocalOf(z, cc.z);
         c->SetCell(Chunk::LocalIndex(lx, ly, lz), id, st);
         c->modified = true;
+        edits++;
         MarkDirtyForEdit(cc, lx, ly, lz);
     }
 

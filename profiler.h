@@ -18,6 +18,7 @@ enum ProfSection {
     PROF_EVICT,     // column eviction
     PROF_PHYSICS,   // player movement/collision
     PROF_UPDATES,   // scheduled block updates (gravity, ...)
+    PROF_PULSE,     // pulse logistics: harvesters, networks, pulses in flight (Part VI)
     PROF_MUSIC,     // music chunk synthesis
     PROF_SOUND,     // soundscape census + world sound palette
     PROF_MESH,      // chunk mesh rebuilds + GPU uploads

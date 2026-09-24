@@ -328,7 +328,7 @@ Canon BuildCanon(BlockShape shape) {
 const Canon& GetCanon(BlockShape shape) {
     static const std::vector<Canon> all = [] {
         std::vector<Canon> v(SHAPE_COUNT);
-        for (int s = SHAPE_SWELL_MOUND; s < SHAPE_COUNT; s++) v[s] = BuildCanon((BlockShape)s);
+        for (int s = SHAPE_SWELL_MOUND; s < SHAPE_COUNT; s++) if (ShapeIsProp(s)) v[s] = BuildCanon((BlockShape)s);
         return v;
     }();
     return all[shape];
@@ -484,7 +484,7 @@ int ShapeBoxes(BlockShape shape, uint8_t state, ShapeBox* out) {
     case SHAPE_FUNNEL:       out[0] = { 0, 4, 0, 8, 8, 8 }; out[1] = { 2, 0, 2, 6, 4, 6 }; return 2;
     case SHAPE_FUNNEL_HALF:  out[0] = { 0, 6, 0, 8, 8, 8 }; out[1] = { 2, 4, 2, 6, 6, 6 }; return 2;
     default:
-        if (shape >= SHAPE_SWELL_MOUND && shape < SHAPE_COUNT) {
+        if (ShapeIsProp(shape)) {
             // Cached: collision asks every tick.
             static ShapeBox cache[SHAPE_COUNT][8];
             static bool have[SHAPE_COUNT][8];
@@ -498,7 +498,7 @@ int ShapeBoxes(BlockShape shape, uint8_t state, ShapeBox* out) {
 }
 
 int ShapePolys(BlockShape shape, uint8_t state, ShapePoly* out, int variant) {
-    if (shape >= SHAPE_SWELL_MOUND && shape < SHAPE_COUNT) return PropPolys(shape, state, out, variant);
+    if (ShapeIsProp(shape)) return PropPolys(shape, state, out, variant);
     switch (shape) {
     case SHAPE_CUBE: case SHAPE_SLAB: case SHAPE_TUBE: {
         ShapeBox b; ShapeBoxes(shape, state, &b);
@@ -527,4 +527,51 @@ int ShapePolys(BlockShape shape, uint8_t state, ShapePoly* out, int variant) {
     case SHAPE_CARD:         return 0; // a plant card is built by the mesher itself (4.14)
     default:                 return 0;
     }
+}
+
+int PipePolys(uint8_t joined, uint8_t state, ShapePoly* out) {
+    // Built from boxes, but never lazily intersected: every face that would
+    // lie against another part (an arm's end on the node, a bar's end in its
+    // collar) or against what the pipe joins (the next pipe carries the
+    // tube on; a block covers it) is left out, so there are no doubled,
+    // flickering faces and a run is one seamless tube.
+    uint8_t mouths = PipeMouths(joined, state);
+    uint8_t ends = (uint8_t)(joined | mouths);
+    int n = 0;
+    auto box = [&](int x0, int y0, int z0, int x1, int y1, int z1, uint8_t skip) {
+        ShapePoly six[FACE_COUNT];
+        int m = BoxFaces(ShapeBox{ (uint8_t)x0, (uint8_t)y0, (uint8_t)z0, (uint8_t)x1, (uint8_t)y1, (uint8_t)z1 }, six);
+        for (int k = 0; k < m; k++) if (!(skip & (1u << six[k].texFace))) out[n++] = six[k];
+    };
+    auto bit = [](int f) { return (uint8_t)(1u << f); };
+    // A straight run: one bar, end to end, open only where it's a mouth
+    // (and there the collar is the end).
+    bool straight = false;
+    for (int axis = 0; axis < 3 && !straight; axis++) {
+        uint8_t pair = (uint8_t)(3u << (axis * 2));
+        if (ends != pair) continue;
+        straight = true;
+        uint8_t skip = pair; // both ends: joined onward, or inside a collar
+        if (axis == 0) box(0, 3, 3, 8, 5, 5, skip);
+        else if (axis == 1) box(3, 0, 3, 5, 8, 5, skip);
+        else box(3, 3, 0, 5, 5, 8, skip);
+    }
+    if (!straight) {
+        box(2, 2, 2, 6, 6, 6, 0); // the node a bend or junction turns in
+        // Arms: no face on the node, none at the far end (joined, or in a collar).
+        if (ends & bit(FACE_POS_X)) box(6, 3, 3, 8, 5, 5, bit(FACE_POS_X) | bit(FACE_NEG_X));
+        if (ends & bit(FACE_NEG_X)) box(0, 3, 3, 2, 5, 5, bit(FACE_POS_X) | bit(FACE_NEG_X));
+        if (ends & bit(FACE_POS_Y)) box(3, 6, 3, 5, 8, 5, bit(FACE_POS_Y) | bit(FACE_NEG_Y));
+        if (ends & bit(FACE_NEG_Y)) box(3, 0, 3, 5, 2, 5, bit(FACE_POS_Y) | bit(FACE_NEG_Y));
+        if (ends & bit(FACE_POS_Z)) box(3, 3, 6, 5, 5, 8, bit(FACE_POS_Z) | bit(FACE_NEG_Z));
+        if (ends & bit(FACE_NEG_Z)) box(3, 3, 0, 5, 5, 2, bit(FACE_POS_Z) | bit(FACE_NEG_Z));
+    }
+    // A collar round each open mouth, so an open end reads as one.
+    if (mouths & bit(FACE_POS_X)) box(7, 2, 2, 8, 6, 6, 0);
+    if (mouths & bit(FACE_NEG_X)) box(0, 2, 2, 1, 6, 6, 0);
+    if (mouths & bit(FACE_POS_Y)) box(2, 7, 2, 6, 8, 6, 0);
+    if (mouths & bit(FACE_NEG_Y)) box(2, 0, 2, 6, 1, 6, 0);
+    if (mouths & bit(FACE_POS_Z)) box(2, 2, 7, 6, 6, 8, 0);
+    if (mouths & bit(FACE_NEG_Z)) box(2, 2, 0, 6, 6, 1, 0);
+    return n;
 }

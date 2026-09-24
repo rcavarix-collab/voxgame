@@ -264,7 +264,20 @@ The falling-block queue is now one case of a general **scheduled update queue** 
 
 A column with updates pending isn't evicted (a cascade must finish in its own column), and pending updates are **saved** with their remaining delays (save v6), so a save taken mid-collapse finishes collapsing after loading instead of leaving blocks floating. Long-delay updates — machine timers — will want to travel with their chunk (stored per chunk, resumed when the column returns) rather than pinning a column in memory; that's the planned extension when machines arrive.
 
-## Part VI — Item Logistics (designed, not yet implemented in the prototype)
+## Part VI — Item Logistics: pulse
+
+### 6.0 Pulse (built; owner's rules)
+The first thing harvested is **pulse** (`pulse.h/.cpp`, native tests). The owner's rules, as given:
+- **A harvester gathers pulse evenly with time and the music**: one pulse on every beat of the playing track (`MusicHarmonyAt(clock).beat`), so a factory's rhythm is the song's. It holds up to 8 when nothing will take them, and gives up to two a beat, so a backlog drains once there's room. (What a harvester draws pulse *from* is open — today it simply gathers; essence is the natural candidate.)
+- **Pipes carry it** to storage or machine blocks, which **keep count** (a pulse store holds 256, a chest 64, the machine 32 as a buffer) until it's decided what pulse becomes or how it is burned. Counts live in each block's own data record, so they're saved with the world at no extra cost; what's in transit isn't (a load starts with empty pipes).
+- **No face rules yet**: a pipe joins any face of a harvester, store, chest or machine, and other pipes, by proximity. The pipe draws itself to meet what it joins: a straight bar for a run, a node with arms for a bend or junction (`PipePolys`, from the six neighbours — the mesher reads them).
+- **Networks** are the connected pipes (flood fill, kept until the world changes: `World::edits` counts every change, so a network is rebuilt only after one). A pulse entering a network goes to its outlets **in turn** — each store with room (counting pulses already on their way), and each open end — along the shortest way through the pipes (breadth-first). Junctions therefore splice streams and split them evenly.
+- **An open end** is a pipe joined on one side only (or none: then both ends of its placed axis), facing open space; it wears a collar. Pulse routed to it **shoots straight out** that way — pulse is only partly at the mercy of the world's physical laws, which is why it obeys machines, so it isn't pulled down — until it meets a **surface** (and is gone) or **the mouth of another pipe facing it**, which catches it midair and sends it on through its own network. The side of a pipe is a wall, and a store's face is a surface too: only mouths catch. Uncaught pulse fades after 64 blocks.
+- **Pulses aren't really there**: they're data, drawn passing through the gap for the player, so streams **cross each other freely**. A broken pipe is an open end like any other — pulse already inside flies out of the break, and a mouth beyond it can catch it (a one-block gap is jumped).
+- **Drawn** as small warm beads a little fatter than the pipe, sliding through and flying out; they glow (bloom). The nearest 512 within 48 blocks: one small upload, one draw. Nothing flashes: they fade in at a harvester and out at the end of a flight.
+- **Cost** scales with pulses in flight (at most 2,048) and networks in use (a network spans at most 4,096 pipes), never with the world; F3 shows the profiler's PULSE row, the totals, and what the block in view holds.
+
+The blocks are placeholders in look (borrowed textures) until the owner's name and art pass. Sections 6.1–6.4 below are the earlier general design; pulse follows 6.2 (abstract transfers with non-authoritative visuals) and a simpler form of 6.3 (flood fill on change, rather than incremental union-find).
 
 ### 6.1 The load-bearing interface
 Every object capable of holding items — chests, machine input/output buffers, the player's own inventory, and pipe endpoints — implements one shared interface:
@@ -297,7 +310,7 @@ Two literature detours were explicitly rejected as loose fits for this specific 
 The disjoint-set structure, by contrast, is an exact match: the problem it was proven optimal for (maintaining connected components under incremental merges) is *literally* the problem pipe-network connectivity poses.
 
 ### 6.5 Status
-Fully designed, **not yet coded**, and now provisional rather than committed: the pipe blocks that would have been this system's visible surface were pulled back out of the prototype (4.4) while the game's actual direction is still being decided. The design here is kept as a record of the thinking, not a queued-up Milestone 2 task list — whether item logistics is what this game becomes is an open question again, not a foregone conclusion the prototype is just waiting to catch up to.
+Pulse (6.0) is the first working slice: harvester, pipes, stores, open ends and catching. Still open: what harvesters draw from, what pulse becomes (the first real machine), other item kinds (some will fall under gravity; pulse doesn't), and whether pipes ever get face rules.
 
 ---
 

@@ -28,6 +28,8 @@
 #include "persist.h"
 #include "game.h"
 #include "profiler.h"
+#include "pulse.h"
+#include "music_synth.h"
 #include "theline.h"
 #include "essence.h"
 
@@ -204,6 +206,13 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
                 {
                     ProfScope prof(PROF_UPDATES);
                     ProcessScheduledUpdates(g_world);
+                }
+                {
+                    // Pulse flows evenly with the music: a harvester gathers on every beat.
+                    ProfScope prof(PROF_PULSE);
+                    MusicHarmony h;
+                    MusicHarmonyAt(g_dayTimeSeconds, &h);
+                    g_pulse.Tick(g_world, g_pulseTuning, h.beat, FIXED_DT);
                 }
                 UpdateLine(g_line, g_lineTuning, g_player.x, g_player.y, g_player.z, FIXED_DT);
                 WorldSoundTick(FIXED_DT); // footfalls, landings, slides, The Line passing

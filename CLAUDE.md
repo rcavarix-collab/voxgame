@@ -12,6 +12,8 @@ The owner keeps scope with MoSCoW (Must / Should / Could / Won't) against a stat
 - **Target machine: an outdated, modest Windows PC** (the owner's own). Design every feature to run well there; never read or report the player's hardware (no GPU/CPU/spec queries) — assume the modest machine instead.
 - **Privacy.** No telemetry, analytics, crash reporting, update checks or any network use; nothing about the player or their machine is collected or leaves it. Quality comes from testing before release. Debug aids (F3, the Ctrl+F3 report) only ever act when pressed and only write local files.
 - **Lagless efficiency.** Cost scales with what's on screen or what changed, never with world size. Budget per-tick work; rebuild only on change; measure with the F3 profiler.
+- **Fast boot.** Start-up is part of efficiency: nothing slow happens at launch that could be cached, deferred or done once. Check the boot timeline (F3 / the Ctrl+F3 report) after any change to start-up.
+- **Organization and careful annotation.** Keep code where a reader would look for it (one system per file, the project file as the source list), and annotate the *why*: every system opens with a header comment saying what it is, what it costs and where its design lives (DESIGN.md section), and non-obvious lines say what they guard against.
 - **Fake it convincingly, cheaply.** Visual effects are per-pixel tricks driven by small per-frame constants, not extra passes or per-block data (DESIGN.md 4.8–4.12).
 - **Photosensitivity.** Nothing flashes faster than 3 times a second (musiclevel.h shows how).
 - **Nothing anyone owns — no stepping on toes.** Everything in the game is original or genuinely free to use:
@@ -20,6 +22,7 @@ The owner keeps scope with MoSCoW (Must / Should / Could / Won't) against a stat
   - traditional public-domain motifs (knotwork, florals, geometric and sacred-geometry figures) and natural materials are fine;
   - code: the seed files are the owner's own; outside code is read for ideas only (DESIGN.md Part VIII — nothing copied, no copyleft); fonts are the player's installed system fonts, rendered at load, never shipped.
   When unsure, make it more original rather than less.
+- **Minimal text.** Most players don't enjoy reading: show, don't tell, and keep words few and plain enough for non-native English speakers to pick up through play. No translation for now (owner's call); English only.
 - **No numbers in player-facing displays** where a band or feel will do; keep debug UI minimal (F3, F7, F8).
 
 ## The seed files — consult them first

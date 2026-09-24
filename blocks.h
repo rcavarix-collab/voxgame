@@ -116,6 +116,10 @@ enum BlockID : uint8_t {
     BLOCK_MOSS_CANOPY,
     BLOCK_FERN_COIL,
     BLOCK_SPROUT_COIL,
+    // Pulse logistics (DESIGN.md Part VI)
+    BLOCK_PULSE_HARVESTER,
+    BLOCK_PULSE_PIPE,
+    BLOCK_PULSE_STORE,
     BLOCK_COUNT
 };
 
@@ -156,6 +160,8 @@ enum BlockShape : uint8_t {
     // Landmarks: distinctive, meant to be placed deliberately and sparingly
     SHAPE_CANOPY_CAP,    // a stalk under a broad faceted cap
     SHAPE_COIL_STALK,    // a stem curling over at the top, like a fern's head
+    // Logistics
+    SHAPE_PULSE_PIPE,    // a pipe that joins whatever is beside it: straight runs, bends, junctions (mesher)
     SHAPE_COUNT
 };
 
@@ -349,6 +355,10 @@ inline const BlockDef g_blocks[BLOCK_COUNT] = {
     { "moss_canopy",           true,  true,  true,  false, false, SHAPE_CANOPY_CAP,    PLACE_CLICKED_AXIS, GLOW_NONE,  false, TEX(nullptr, "moss", "log_top", "log_bark", nullptr) },
     { "fern_coil",             true,  true,  true,  false, false, SHAPE_COIL_STALK,    PLACE_CLICKED_AXIS, GLOW_NONE,  false, TEX("meadow_grass", nullptr, nullptr, nullptr, nullptr) },
     { "sprout_coil",           true,  true,  true,  false, false, SHAPE_COIL_STALK,    PLACE_CLICKED_AXIS, GLOW_NONE,  false, TEX("seedling_sprout", nullptr, nullptr, nullptr, nullptr) },
+    // Pulse logistics (Part VI): a harvester gathers pulse on the beat, pipes carry it, stores keep count.
+    { "pulse_harvester",       true,  true,  true,  false, true,  SHAPE_CUBE,          PLACE_PLAIN,        GLOW_NONE,  false, TEX("machine", "star_forge", nullptr, nullptr, nullptr) },
+    { "pulse_pipe",            true,  true,  true,  false, false, SHAPE_PULSE_PIPE,    PLACE_CLICKED_AXIS, GLOW_NONE,  false, TEX("tube", nullptr, nullptr, nullptr, nullptr) },
+    { "pulse_store",           true,  true,  true,  false, true,  SHAPE_CUBE,          PLACE_PLAIN,        GLOW_NONE,  false, TEX("custodian_lattice", "dawn_light", nullptr, nullptr, nullptr) },
 };
 #undef TEX
 
@@ -356,6 +366,13 @@ static inline bool BlockSolid(BlockID id) { return g_blocks[id].solid; }
 // Solid and a full cube (collision, geometry).
 static inline bool BlockFullCube(BlockID id) { return g_blocks[id].solid && g_blocks[id].shape == SHAPE_CUBE; }
 static inline bool BlockIsCard(BlockID id) { return g_blocks[id].shape == SHAPE_CARD; }
+// The faceted props (4.15): hull-built, anchored on the clicked face.
+static inline bool ShapeIsProp(int s) { return s >= SHAPE_SWELL_MOUND && s < SHAPE_PULSE_PIPE; }
+// Pulse logistics (Part VI): what a pulse pipe joins -- other pipes, and
+// any face of a harvester, store, chest or machine (no face rules yet).
+static inline bool BlockJoinsPipe(BlockID id) {
+    return id == BLOCK_PULSE_PIPE || id == BLOCK_PULSE_HARVESTER || id == BLOCK_PULSE_STORE || id == BLOCK_CHEST || id == BLOCK_MACHINE;
+}
 // A full cube you can't see through: hides the faces beside it and
 // darkens AO. Glass is a full cube but not opaque.
 static inline bool BlockOpaqueCube(BlockID id) { return BlockFullCube(id) && !g_blocks[id].translucent; }

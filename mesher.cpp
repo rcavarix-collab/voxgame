@@ -69,6 +69,16 @@ void BuildChunkMesh(World& w, const ChunkCoord& cc, const Chunk& c,
         }
     }
 
+    // The block in a padded cell (for the few shapes that depend on their
+    // neighbours: pulse pipes join what's beside them).
+    auto blockAt = [&](int px, int py, int pz) -> BlockID {
+        int lx = px - 1, ox = lx < 0 ? 0 : (lx >= CHUNK_SIZE ? 2 : 1), sx = lx - (ox - 1) * CHUNK_SIZE;
+        int ly = py - 1, oy = ly < 0 ? 0 : (ly >= CHUNK_SIZE ? 2 : 1), sy = ly - (oy - 1) * CHUNK_SIZE;
+        int lz = pz - 1, oz = lz < 0 ? 0 : (lz >= CHUNK_SIZE ? 2 : 1), sz = lz - (oz - 1) * CHUNK_SIZE;
+        const Chunk* n = around[oy][oz][ox];
+        return n ? (BlockID)n->blocks[Chunk::LocalIndex(sx, sy, sz)] : BLOCK_AIR;
+    };
+
     for (int ly = 0; ly < CHUNK_SIZE; ly++)
         for (int lz = 0; lz < CHUNK_SIZE; lz++)
             for (int lx = 0; lx < CHUNK_SIZE; lx++) {
@@ -106,7 +116,14 @@ void BuildChunkMesh(World& w, const ChunkCoord& cc, const Chunk& c,
                     // No AO on shapes (their faces rarely meet the grid).
                     ShapePoly polys[MAX_SHAPE_POLYS];
                     int variant = ShapeVariant(cc.x * CHUNK_SIZE + lx, cc.y * CHUNK_SIZE + ly, cc.z * CHUNK_SIZE + lz);
-                    int np = ShapePolys(g_blocks[id].shape, c.state[li], polys, variant);
+                    int np;
+                    if (g_blocks[id].shape == SHAPE_PULSE_PIPE) {
+                        BlockID nb[FACE_COUNT];
+                        for (int f = 0; f < FACE_COUNT; f++) nb[f] = blockAt(px + kFaces[f].nx, py + kFaces[f].ny, pz + kFaces[f].nz);
+                        np = PipePolys(PipeJoinMask(nb), c.state[li], polys);
+                    } else {
+                        np = ShapePolys(g_blocks[id].shape, c.state[li], polys, variant);
+                    }
                     // 16-bit indices: a chunk packed solid with the most
                     // detailed props could pass 65,536 vertices; the rest of
                     // such a chunk's props go unmeshed rather than wrap.

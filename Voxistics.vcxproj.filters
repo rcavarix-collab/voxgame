@@ -72,6 +72,9 @@
     <ClCompile Include="theline.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="pulse.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="essencemap.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -129,6 +132,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="theline.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="pulse.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="essencemap.h">

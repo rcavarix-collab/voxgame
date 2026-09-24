@@ -42,6 +42,25 @@ static const int MAX_SHAPE_BOXES = 4;
 // scatter of the same prop never lines up.
 int ShapePolys(BlockShape shape, uint8_t state, ShapePoly* out, int variant = 0);
 int ShapeBoxes(BlockShape shape, uint8_t state, ShapeBox* out);
+// A pulse pipe (Part VI) with `joined` = the faces (bit f = BlockFace f)
+// whose neighbour it joins: a straight bar for a run, a node with arms
+// for a bend or junction. A pipe joined on one side (or none: then along
+// its placed axis) is an open end, and its mouth gets a collar.
+int PipePolys(uint8_t joined, uint8_t state, ShapePoly* out);
+// Which of a pipe's six faces open onto something it joins.
+static inline uint8_t PipeJoinMask(const BlockID neighbour[FACE_COUNT]) {
+    uint8_t m = 0;
+    for (int f = 0; f < FACE_COUNT; f++) if (BlockJoinsPipe(neighbour[f])) m |= (uint8_t)(1u << f);
+    return m;
+}
+// The open ends of a pipe joined on `joined` (see PipePolys), as a face mask.
+static inline uint8_t PipeMouths(uint8_t joined, uint8_t state) {
+    int n = 0, only = 0;
+    for (int f = 0; f < FACE_COUNT; f++) if (joined & (1u << f)) { n++; only = f; }
+    if (n == 1) return (uint8_t)(1u << (only ^ 1)); // faces pair up: f ^ 1 is the opposite side
+    if (n == 0) { int f = StateFacing(state); return (uint8_t)((1u << f) | (1u << (f ^ 1))); }
+    return 0;
+}
 static inline int ShapeVariant(int x, int y, int z) {
     uint32_t h = (uint32_t)x * 73856093u ^ (uint32_t)y * 19349663u ^ (uint32_t)z * 83492791u;
     h ^= h >> 13; h *= 0x5bd1e995u; h ^= h >> 15;
