@@ -118,6 +118,7 @@ static ID3D11Buffer* g_debugCB = nullptr;
 static uint32_t g_meshVersion = 0;
 static float g_shadowAreaX = 0, g_shadowAreaZ = 0, g_shadowAreaHalf = -1; // -1: no map yet
 ID3D11ShaderResourceView* g_blockTexSRV = nullptr;
+static ID3D11ShaderResourceView* g_surfaceSRV = nullptr; // normal, shine, glow per layer (4.13)
 ID3D11ShaderResourceView* g_iconSRV = nullptr;
 
 ID3D11VertexShader* g_uiVS = nullptr;
@@ -220,19 +221,36 @@ static const char* g_shaderSrc =
     "SamplerState samp0 : register(s0);\n"
     "Texture3D glowTex : register(t2);\n"
     "SamplerState glowSamp : register(s2);\n"
+    "Texture2DArray surfTex : register(t3);\n"                      // normal xy, shine, glow (4.13)
     "#ifndef NO_SHADOWS\n"
     "Texture2D<float> shadowMap : register(t1);\n"
     "SamplerComparisonState shadowSamp : register(s1);\n"
     "#endif\n"
     "float4 PSMain(PSIn i) : SV_TARGET {\n"
     "    float4 texel = tex0.Sample(samp0, i.uvl);\n"                  // sRGB texture view: already linear
+    "    float4 surf = surfTex.Sample(samp0, i.uvl);\n"
     "    float3 albedo = texel.rgb;\n"
-    "    float3 n = i.glowInfo.yzw;\n"
+    "    float3 nGeo = i.glowInfo.yzw;\n"                              // the face itself
+    // Per-pixel normal (4.13): the surface map's tangent-space normal, in
+    // a frame built from screen-space derivatives of position and texture
+    // coordinates -- right for every face and every shape, with no
+    // tangent data in the vertex.
+    "    float3 dp1 = ddx(i.wpos), dp2 = ddy(i.wpos);\n"
+    "    float2 duv1 = ddx(i.uvl.xy), duv2 = ddy(i.uvl.xy);\n"
+    "    float3 dp2perp = cross(dp2, nGeo), dp1perp = cross(nGeo, dp1);\n"
+    "    float3 T = dp2perp * duv1.x + dp1perp * duv2.x;\n"
+    "    float3 B = dp2perp * duv1.y + dp1perp * duv2.y;\n"
+    "    float frameScale = rsqrt(max(max(dot(T, T), dot(B, B)), 1e-20f));\n"
+    "    float2 nxy = surf.xy * 2.0f - 1.0f;\n"
+    "    float3 n = normalize((T * nxy.x + B * nxy.y) * frameScale + nGeo * sqrt(saturate(1.0f - dot(nxy, nxy))));\n"
     "    float ao = i.aoBias.x;\n"
     "    float shadow = 1.0f;\n"
     // Softened falloff (sqrt of N.L): a faked wrap so a low sun still
     // lights flat ground enough for its long shadows to read at dawn/dusk.
-    "    float sunLit = sqrt(saturate(dot(n, fSunDir.xyz)));\n"
+    // The face itself must face the sun too, so bumps never light a side
+    // turned away from it.
+    "    float facing = saturate(dot(nGeo, fSunDir.xyz) * 8.0f);\n"
+    "    float sunLit = sqrt(saturate(dot(n, fSunDir.xyz))) * facing;\n"
     "#ifndef NO_SHADOWS\n"
     "    if (params.x > 0.5f && sunLit > 0.0f) {\n"
     "        float4 lp = mul(float4(i.wpos, 1.0f), lightViewProj);\n"
@@ -254,6 +272,17 @@ static const char* g_shaderSrc =
     "    float3 direct = fSunColor.rgb * sunLit * (0.55f + 0.45f * ao)\n"
     "                  + fMoonColor.rgb * saturate(dot(n, fMoonDir.xyz)) * ao;\n"
     "    float3 col = albedo * (ambient + direct) * i.aoBias.y;\n"
+    "    float3 v = i.wpos - fCamPos.xyz;\n"
+    "    float dist = length(v);\n"
+    "    float3 view = v / max(dist, 1e-3f);\n"
+    // Shine (4.13): a sun glint and a faint sheen of sky where the surface
+    // map says the material is glossy (ice, wet stone, metal); matte
+    // elsewhere at no cost beyond the multiply.
+    "    if (surf.b > 0.004f) {\n"
+    "        float3 rv = reflect(view, n);\n"
+    "        float fres = 0.04f + 0.96f * pow(1.0f - saturate(dot(-view, n)), 5.0f);\n"
+    "        col += (fSunColor.rgb * shadow * facing * pow(saturate(dot(rv, fSunDir.xyz)), 60.0f) * 1.5f + SkyColor(rv) * fres * 0.35f) * surf.b;\n"
+    "    }\n"
     // Light from glowing blocks nearby (4.12): one lookup in the light
     // grid, at the centre of the open cell this face looks into, so a wall
     // between a light and a surface leaves the surface dark. Music light
@@ -261,11 +290,12 @@ static const char* g_shaderSrc =
     // (it lights its blocks only as it passes -- a cheap stand-in for
     // knowing which ones are lit).
     "    if (glowGrid.w > 0.5f) {\n"
-    "        float2 gl = glowTex.SampleLevel(glowSamp, (i.wpos + n * 0.42f - glowGrid.xyz) / 64.0f, 0).rg;\n"
+    "        float3 gl = glowTex.SampleLevel(glowSamp, (i.wpos + nGeo * 0.42f - glowGrid.xyz) / 64.0f, 0).rgb;\n"
     "        float2 rl = i.wpos.xz - lineA.xz;\n"
     "        float lineNear = saturate(1.0f - abs(rl.x * lineB.y - rl.y * lineB.x) / 8.0f) * saturate(1.0f - abs(i.wpos.y - lineA.y) / 8.0f);\n"
-    "        float3 emitted = gl.r * lineB.z * float3(1.0f, 0.62f, 0.25f) + gl.g * lineNear * float3(0.35f, 0.85f, 1.0f);\n"
-    "        col += albedo * emitted * 1.5f * ao;\n"
+    "        float3 emitted = gl.r * lineB.z * float3(1.0f, 0.62f, 0.25f) + gl.g * lineNear * float3(0.35f, 0.85f, 1.0f)\n"
+    "                       + gl.b * float3(1.0f, 0.45f, 0.15f);\n"                          // embers (magma): steady
+    "        col += albedo * emitted * 1.5f * ao * (0.6f + 0.4f * saturate(n.y * 0.5f + 0.5f + dot(n, nGeo) - 1.0f));\n" // bumps catch it a little
     "    }\n"
     // Reactive blocks (blocks.h BlockGlow): 1 = the music playing now,
     // 2 = The Line passing through this block's cell (found per pixel from
@@ -273,20 +303,20 @@ static const char* g_shaderSrc =
     // floor into the neighbouring cell). They emit light of their own.
     "    float glow = 0.0f;\n"
     "    float3 glowCol = float3(1.0f, 0.62f, 0.25f);\n"
-    "    if (i.glowInfo.x > 1.5f) {\n"
-    "        float3 cell = floor(i.wpos - n * 0.58f) + 0.5f;\n"
+    "    if (i.glowInfo.x > 1.5f && i.glowInfo.x < 2.5f) {\n"
+    "        float3 cell = floor(i.wpos - nGeo * 0.58f) + 0.5f;\n"
     "        float2 r = cell.xz - lineA.xz;\n"
     "        float across = abs(r.x * lineB.y - r.y * lineB.x);\n"
     "        glow = saturate(1.0f - across / 0.75f) * saturate((0.6f - abs(cell.y - lineA.y)) * 4.0f);\n"
     "        glowCol = float3(0.35f, 0.85f, 1.0f);\n"
-    "    } else if (i.glowInfo.x > 0.5f) {\n"
+    "    } else if (i.glowInfo.x > 0.5f && i.glowInfo.x < 1.5f) {\n"
     "        glow = lineB.z;\n"
     "    }\n"
     "    col += glow * (albedo * 1.2f + glowCol * 0.8f);\n"
-    "    float3 v = i.wpos - fCamPos.xyz;\n"
-    "    float dist = length(v);\n"
-    "    float3 view = v / max(dist, 1e-3f);\n"
-    "    float outAlpha = saturate(glow);\n"                            // opaque pass: the bloom mask
+    // The texture's own glow map (4.13): veins, cores, runes light up by
+    // themselves, whatever the lighting, and bloom.
+    "    col += albedo * surf.a * 2.5f;\n"
+    "    float outAlpha = saturate(max(glow, surf.a));\n"               // opaque pass: the bloom mask
     // See-through blocks (4.11), faked: the tinted body lets the world
     // behind show through by the texture's alpha; toward grazing angles it
     // turns into a mirror of the sky (Schlick's Fresnel) and grows more
@@ -852,7 +882,7 @@ static void UpdateGlowLight(World& w, Vec3 eye) {
     g_glowDirty = false;
     g_glowLit = !g_glowGrid.texels.empty();
     if (g_glowLit && g_glowTex)
-        g_context->UpdateSubresource(g_glowTex, 0, nullptr, g_glowGrid.texels.data(), GLOW_GRID * 2, GLOW_GRID * GLOW_GRID * 2);
+        g_context->UpdateSubresource(g_glowTex, 0, nullptr, g_glowGrid.texels.data(), GLOW_GRID * 4, GLOW_GRID * GLOW_GRID * 4);
 }
 
 void RenderEmptyScene() {
@@ -982,8 +1012,8 @@ void RenderScene(World& w, const Mat4& view, const Mat4& proj, Vec3 eye, Vec3 fo
         g_context->PSSetConstantBuffers(0, 1, &g_cbuffer);
         ID3D11SamplerState* samplers[3] = { g_sampler, g_shadowSampler, g_glowSampler };
         g_context->PSSetSamplers(0, 3, samplers);
-        ID3D11ShaderResourceView* srvs[3] = { g_blockTexSRV, shadows ? g_shadowSRV : nullptr, g_glowSRV };
-        g_context->PSSetShaderResources(0, 3, srvs);
+        ID3D11ShaderResourceView* srvs[4] = { g_blockTexSRV, shadows ? g_shadowSRV : nullptr, g_glowSRV, g_surfaceSRV };
+        g_context->PSSetShaderResources(0, 4, srvs);
         Frustum frustum = ExtractFrustum(viewProj);
         DrawChunks(w, frustum, true);
         if (g_lineDebug) DrawLineDebug(viewProj, eye);
@@ -1283,7 +1313,7 @@ bool InitD3D(HWND hwnd) {
         D3D11_TEXTURE3D_DESC gd = {};
         gd.Width = gd.Height = gd.Depth = GLOW_GRID;
         gd.MipLevels = 1;
-        gd.Format = DXGI_FORMAT_R8G8_UNORM;
+        gd.Format = DXGI_FORMAT_R8G8B8A8_UNORM; // R music, G timestream, B embers
         gd.Usage = D3D11_USAGE_DEFAULT;
         gd.BindFlags = D3D11_BIND_SHADER_RESOURCE;
         if (SUCCEEDED(g_device->CreateTexture3D(&gd, nullptr, &g_glowTex)))
@@ -1649,6 +1679,19 @@ bool InitTextures(std::string& problemSummary) {
     if (FAILED(g_device->CreateTexture2D(&td, init.data(), &blockTex))) return false;
     g_device->CreateShaderResourceView(blockTex, nullptr, &g_blockTexSRV);
     blockTex->Release();
+
+    // The matching surface layers: linear (not sRGB) -- they're vectors
+    // and masks, not colours.
+    td.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    for (int L = 0; L < set.layerCount; L++)
+        for (int m = 0; m < set.mipCount; m++) {
+            int sz = BLOCK_TEX_SIZE >> m;
+            init[(size_t)L * set.mipCount + m].pSysMem = set.surface[m].data() + (size_t)L * sz * sz * 4;
+        }
+    ID3D11Texture2D* surfTex = nullptr;
+    if (FAILED(g_device->CreateTexture2D(&td, init.data(), &surfTex))) return false;
+    g_device->CreateShaderResourceView(surfTex, nullptr, &g_surfaceSRV);
+    surfTex->Release();
 
     D3D11_TEXTURE2D_DESC itd = {};
     itd.Width = set.iconsW; itd.Height = set.iconsH;

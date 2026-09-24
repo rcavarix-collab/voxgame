@@ -102,6 +102,29 @@ static void TestVtex() {
     VtexSet al7; ParseVtex("texture q\nsize 8\npalette\n g 80c0ff4\npixels\nend\n", "seven.vtex", al7);
     CHECK(!al7.errors.empty());
 
+    // Surface maps: height (0-9a-z), shine and glow (0-9) after the pixels.
+    {
+        std::string rows8 = ""; for (int i = 0; i < 8; i++) rows8 += " aaaaaaaa\n";
+        std::string hrows = ""; for (int i = 0; i < 8; i++) hrows += " 0123456z\n";
+        std::string srows = ""; for (int i = 0; i < 8; i++) srows += " 00000009\n";
+        VtexSet m;
+        ParseVtex("texture ramp\nsize 8\npalette\n a 808080\npixels\n" + rows8 + "height\n" + hrows + "shine\n" + srows + "glow\n" + srows + "end\n", "maps.vtex", m);
+        CHECK(m.errors.empty() && m.textures.size() == 1);
+        if (!m.textures.empty()) {
+            const VtexTexture& t = m.textures[0];
+            CHECK(t.height.size() == 64 && fabsf(t.height[0]) < 1e-6f && fabsf(t.height[7] - 1.0f) < 1e-6f && fabsf(t.height[3] - 3.0f / 35.0f) < 1e-6f);
+            CHECK(t.shine.size() == 64 && t.shine[7] == 1.0f && t.shine[0] == 0.0f && t.glow[7] == 1.0f);
+        }
+        VtexSet e;
+        std::string badH = ""; for (int i = 0; i < 8; i++) badH += " 0000000!\n";
+        ParseVtex("texture b1\nsize 8\npalette\n a 808080\npixels\n" + rows8 + "height\n" + badH + "end\n", "badh.vtex", e);           // bad digit
+        ParseVtex("texture b2\nsize 8\npalette\n a 808080\npixels\n" + rows8 + "glow\n 0000000\nend\n", "short.vtex", e);            // short row
+        ParseVtex("texture b3\nsize 8\npalette\n a 808080\npixels\n" + rows8 + "shine\n" + srows + "shine\n" + srows + "end\n", "twice.vtex", e); // twice
+        ParseVtex("texture b4\nsize 8\npalette\n a 808080\npixels\n" + rows8 + "glow\n 00000000\nend\n", "few.vtex", e);            // too few rows
+        CHECK(e.textures.empty() && e.errors.size() == 4);
+        for (auto& x : e.errors) printf("    (expected) %s\n", x.c_str());
+    }
+
     VtexSet bad;
     ParseVtex("texture a\nsize 8\npalette\n x 000000\npixels\n xxxxxxx\nend\n", "short.vtex", bad);  // 7-char row
     ParseVtex("texture b\nsize 8\npalette\n x 000000\npixels\n xxxxxxxy\nend\n", "key.vtex", bad);   // unknown key
@@ -203,6 +226,28 @@ static void TestBlockTextures() {
         printf("    %s: biggest inner step %.1f / %.1f, across the wrap %.1f / %.1f\n", g_blocks[id].name, maxCol, maxRow, wrapX, wrapY);
         CHECK(wrapX <= maxCol * 1.05 + 1 && wrapY <= maxRow * 1.05 + 1);
         if (id == BLOCK_DIRT) { bool green = false; for (int i = 0; i < S * S; i++) if (L[i * 4 + 1] > L[i * 4 + 2]) green = true; CHECK(!green); }
+    }
+
+    // Surface layers: flat and matte without maps; a height ramp rising
+    // along u tilts the normal back toward -u; shine and glow carry over;
+    // the smallest mip of a flat surface stays flat.
+    {
+        const size_t S = BLOCK_TEX_SIZE;
+        CHECK(t.surface.size() == (size_t)t.mipCount && t.surface[0].size() == t.mips[0].size());
+        const uint8_t* flat = t.surface[0].data() + (size_t)t.faceLayer[BLOCK_STONE][FACE_POS_Z][FACE_POS_Y] * S * S * 4;
+        CHECK(flat[0] == 128 && flat[1] == 128 && flat[2] == 0 && flat[3] == 0);
+        std::string rows = "", h = "", g = "";
+        for (int i = 0; i < 16; i++) { rows += " aaaaaaaaaaaaaaaa\n"; h += " 0011223344556677\n"; g += " 0000000000000009\n"; }
+        VtexSet ramp;
+        ParseVtex("texture rampy\nsize 16\npalette\n a 808080\npixels\n" + rows + "height\n" + h + "glow\n" + g + "end\nblock stone\n all rampy\nend\n", "rampy.vtex", ramp);
+        CHECK(ramp.errors.empty());
+        BlockTextureSet rt; BuildBlockTextures(ramp, rt);
+        const uint8_t* L = rt.surface[0].data() + (size_t)rt.faceLayer[BLOCK_STONE][FACE_POS_Z][FACE_POS_Y] * S * S * 4;
+        const uint8_t* mid = L + (20 * S + 8) * 4;   // on a step between two height levels
+        CHECK(mid[0] < 126 && mid[1] >= 127 && mid[1] <= 129); // leans toward -u, not along v
+        CHECK(L[(20 * S + 63) * 4 + 3] == 255 && L[(20 * S + 10) * 4 + 3] == 0);  // glow only in the last column
+        const uint8_t* top = rt.surface.back().data() + (size_t)rt.faceLayer[BLOCK_DIRT][FACE_POS_Z][FACE_POS_Y] * 4;
+        CHECK(top[0] == 128 && top[1] == 128);
     }
 
     // Mips average in linear light: a black/white checker fades to the
@@ -763,8 +808,8 @@ static void TestGlowLight() {
     int ox, oy, oz; GlowGridOrigin(10.5f, 12.6f, 10.5f, ox, oy, oz);
     CHECK(ox == -32 && oy == -32 && oz == -32);
     GlowGrid g; BuildGlowGrid(w, ox, oy, oz, g);
-    auto at = [&](int x, int y, int z, int ch) { return (int)g.texels[((size_t)(((z - oz) * GLOW_GRID + (y - oy)) * GLOW_GRID + (x - ox))) * 2 + ch]; };
-    CHECK(g.emitters.size() == 1 && g.texels.size() == (size_t)GLOW_GRID * GLOW_GRID * GLOW_GRID * 2);
+    auto at = [&](int x, int y, int z, int ch) { return (int)g.texels[((size_t)(((z - oz) * GLOW_GRID + (y - oy)) * GLOW_GRID + (x - ox))) * 4 + ch]; };
+    CHECK(g.emitters.size() == 1 && g.texels.size() == (size_t)GLOW_GRID * GLOW_GRID * GLOW_GRID * 4);
     CHECK(at(11, 11, 10, 0) > 150 && at(11, 11, 10, 1) == 0);     // beside it: bright, music channel only
     CHECK(at(7, 11, 10, 0) > 0 && at(7, 11, 10, 0) < at(9, 11, 10, 0)); // falls off with distance
     CHECK(at(15, 11, 10, 0) == 0);                                  // behind the wall: in its shadow
@@ -781,6 +826,9 @@ static void TestGlowLight() {
     w.Set(20, 11, 20, BLOCK_TIMESTREAM);
     BuildGlowGrid(w, ox, oy, oz, g);
     CHECK(g.emitters.size() == 2 && at(21, 11, 20, 1) > 150 && at(21, 11, 20, 0) == 0);
+    w.Set(20, 11, 3, BLOCK_MAGMA_ROCK); // an ember: the third channel
+    BuildGlowGrid(w, ox, oy, oz, g);
+    CHECK(g.emitters.size() == 3 && at(21, 11, 3, 2) > 150 && at(21, 11, 3, 0) == 0 && at(21, 11, 3, 1) == 0);
     World none; none.Set(0, 0, 0, BLOCK_STONE);
     BuildGlowGrid(none, ox, oy, oz, g);
     CHECK(g.emitters.empty() && g.texels.empty());

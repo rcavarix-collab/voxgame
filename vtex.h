@@ -16,6 +16,10 @@ struct VtexTexture {
     std::string name;
     int size = 0;                // pixels per side (8, 16, 32 or 64)
     std::vector<uint32_t> rgb;   // size*size, 0xTTRRGGBB, row 0 = top; TT = 255 - alpha (0 = opaque, so opaque art reads as plain RGB)
+    // Optional surface maps (each size*size, 0..1, empty when not given):
+    // height drives the normal map, shine a sun glint, glow what lights up
+    // on its own (DESIGN.md 4.13).
+    std::vector<float> height, shine, glow;
     std::string source;          // "file:line" where it was defined
 };
 

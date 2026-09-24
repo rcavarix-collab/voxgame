@@ -63,6 +63,7 @@ enum BlockGlow : uint8_t {
     GLOW_NONE = 0,
     GLOW_MUSIC,       // pulses with the music actually playing
     GLOW_TIMESTREAM,  // lights while The Line passes through it (Part XVIII)
+    GLOW_EMBER,       // a steady warm light source (magma); what glows on it is the texture's glow map (4.13)
 };
 
 // How placement sets the state byte.
@@ -153,7 +154,7 @@ inline const BlockDef g_blocks[BLOCK_COUNT] = {
     { "cracked_earth",      true,  false, true,  false, false, SHAPE_CUBE,         PLACE_PLAIN, GLOW_NONE, false,        TEX("cracked_earth", nullptr, nullptr, nullptr, nullptr) },
     { "clay",               true,  false, true,  false, false, SHAPE_CUBE,         PLACE_PLAIN, GLOW_NONE, false,        TEX("clay", nullptr, nullptr, nullptr, nullptr) },
     { "basalt",             true,  false, true,  false, false, SHAPE_CUBE,         PLACE_PLAIN, GLOW_NONE, false,        TEX("basalt", nullptr, nullptr, nullptr, nullptr) },
-    { "magma_rock",         true,  false, true,  false, false, SHAPE_CUBE,         PLACE_PLAIN, GLOW_NONE, false,        TEX("magma_rock", nullptr, nullptr, nullptr, nullptr) },
+    { "magma_rock",         true,  false, true,  false, false, SHAPE_CUBE,         PLACE_PLAIN, GLOW_EMBER, false,       TEX("magma_rock", nullptr, nullptr, nullptr, nullptr) },
     { "log",                true,  false, true,  false, false, SHAPE_CUBE,         PLACE_PLAIN, GLOW_NONE, false,        TEX(nullptr, "log_top", "log_top", "log_bark", nullptr) },
     { "moss",               true,  false, true,  false, false, SHAPE_CUBE,         PLACE_PLAIN, GLOW_NONE, false,        TEX("moss", nullptr, nullptr, nullptr, nullptr) },
 };

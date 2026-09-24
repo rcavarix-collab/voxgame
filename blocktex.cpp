@@ -1,6 +1,7 @@
 // blocktex.cpp -- see blocktex.h.
 
 #include "blocktex.h"
+#include <algorithm>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
@@ -303,6 +304,32 @@ void DrawMissing(uint8_t* px) {
         }
 }
 
+// The surface layer for authored art (see BlockTextureSet::surface): the
+// height map, scaled up by whole pixels like the colours, turned into
+// normals by central differences that wrap round the edges (the tile
+// repeats, so its slopes do too), plus shine and glow.
+void BuildSurface(const VtexTexture& t, uint8_t* sf) {
+    const int N = BLOCK_TEX_SIZE, k = N / t.size;
+    auto at = [&](const std::vector<float>& m, int x, int y) {
+        x = ((x % N) + N) % N; y = ((y % N) + N) % N;
+        return m[(size_t)(y / k) * t.size + (x / k)];
+    };
+    const float slope = SURFACE_DEPTH * N * 0.5f; // height units per texel -> tangent-space slope, over a 2-texel difference
+    for (int y = 0; y < N; y++)
+        for (int x = 0; x < N; x++) {
+            uint8_t* o = sf + ((size_t)y * N + x) * 4;
+            if (!t.height.empty()) {
+                float dx = (at(t.height, x + 1, y) - at(t.height, x - 1, y)) * slope;
+                float dy = (at(t.height, x, y + 1) - at(t.height, x, y - 1)) * slope;
+                float len = sqrtf(dx * dx + dy * dy + 1.0f);
+                o[0] = (uint8_t)std::lround((-dx / len * 0.5f + 0.5f) * 255.0f);
+                o[1] = (uint8_t)std::lround((-dy / len * 0.5f + 0.5f) * 255.0f);
+            }
+            if (!t.shine.empty()) o[2] = (uint8_t)std::lround(at(t.shine, x, y) * 255.0f);
+            if (!t.glow.empty()) o[3] = (uint8_t)std::lround(at(t.glow, x, y) * 255.0f);
+        }
+}
+
 void Upscale(const VtexTexture& t, uint8_t* px) {
     int k = BLOCK_TEX_SIZE / t.size;
     for (int y = 0; y < BLOCK_TEX_SIZE; y++)
@@ -362,14 +389,16 @@ void BuildBlockTextures(const VtexSet& authored, BlockTextureSet& out) {
     // Resolve every (block, facing, face) to a layer, assigning layers in
     // first-use order so the set is deterministic.
     std::map<std::string, uint16_t> layerOf;
-    std::vector<std::vector<uint8_t>> layers;
+    std::vector<std::vector<uint8_t>> layers, surfaces; // colour and surface, one of each per layer
     auto layerFor = [&](const std::string& wanted, int id) -> uint16_t {
         auto it = layerOf.find(wanted);
         if (it != layerOf.end()) return it->second;
         std::vector<uint8_t> px(LAYER_BYTES);
+        std::vector<uint8_t> sf(LAYER_BYTES);
+        for (size_t i = 0; i < LAYER_BYTES; i += 4) { sf[i] = 128; sf[i + 1] = 128; sf[i + 2] = 0; sf[i + 3] = 0; } // flat, matte, dark
         auto a = art.find(wanted);
         auto p = procedural.find(wanted);
-        if (a != art.end()) Upscale(*a->second, px.data());
+        if (a != art.end()) { Upscale(*a->second, px.data()); BuildSurface(*a->second, sf.data()); }
         else if (p != procedural.end()) px = p->second;
         else {
             auto own = procedural.find(g_blocks[id].name);
@@ -378,6 +407,7 @@ void BuildBlockTextures(const VtexSet& authored, BlockTextureSet& out) {
         }
         uint16_t layer = (uint16_t)layers.size();
         layers.push_back(std::move(px));
+        surfaces.push_back(std::move(sf));
         out.layerNames.push_back(wanted);
         layerOf[wanted] = layer;
         return layer;
@@ -430,6 +460,37 @@ void BuildBlockTextures(const VtexSet& authored, BlockTextureSet& out) {
                             ? (uint8_t)((a + b + e + f + 2) / 4)
                             : toSrgb(0.25f * (toLinear[a] + toLinear[b] + toLinear[e] + toLinear[f]));
                     }
+        }
+    }
+
+    // Surface mips: normals are averaged as vectors and renormalised (a
+    // bumpy surface far away flattens out, the right way round); shine and
+    // glow average plainly.
+    out.surface.resize(mips);
+    out.surface[0].reserve(LAYER_BYTES * surfaces.size());
+    for (auto& l : surfaces) out.surface[0].insert(out.surface[0].end(), l.begin(), l.end());
+    for (int m = 1; m < mips; m++) {
+        int src = BLOCK_TEX_SIZE >> (m - 1), dst = src >> 1;
+        out.surface[m].resize((size_t)dst * dst * 4 * surfaces.size());
+        for (size_t L = 0; L < surfaces.size(); L++) {
+            const uint8_t* s = out.surface[m - 1].data() + L * (size_t)src * src * 4;
+            uint8_t* d = out.surface[m].data() + L * (size_t)dst * dst * 4;
+            for (int y = 0; y < dst; y++)
+                for (int x = 0; x < dst; x++) {
+                    float nx = 0, ny = 0, nz = 0, sh = 0, gl = 0;
+                    for (int k = 0; k < 4; k++) {
+                        const uint8_t* q = s + ((size_t)(2 * y + (k >> 1)) * src + 2 * x + (k & 1)) * 4;
+                        float ax = q[0] / 127.5f - 1.0f, ay = q[1] / 127.5f - 1.0f;
+                        nx += ax; ny += ay; nz += sqrtf(std::max(0.0f, 1.0f - ax * ax - ay * ay));
+                        sh += q[2]; gl += q[3];
+                    }
+                    float len = sqrtf(nx * nx + ny * ny + nz * nz);
+                    if (len < 1e-6f) { nx = 0; ny = 0; len = 1; }
+                    uint8_t* o = d + ((size_t)y * dst + x) * 4;
+                    o[0] = (uint8_t)std::lround((nx / len * 0.5f + 0.5f) * 255.0f);
+                    o[1] = (uint8_t)std::lround((ny / len * 0.5f + 0.5f) * 255.0f);
+                    o[2] = (uint8_t)std::lround(sh / 4); o[3] = (uint8_t)std::lround(gl / 4);
+                }
         }
     }
 

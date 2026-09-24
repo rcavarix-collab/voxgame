@@ -67,7 +67,7 @@ void BuildGlowGrid(World& w, int ox, int oy, int oz, GlowGrid& g) {
                             solid[Cell(gx, gy, gz)] = BlockOpaqueCube(id) ? 1 : 0;
                             BlockGlow glow = g_blocks[id].glow;
                             if (glow != GLOW_NONE)
-                                g.emitters.push_back({ ox + gx, oy + gy, oz + gz, (uint8_t)(glow == GLOW_MUSIC ? 0 : 1) });
+                                g.emitters.push_back({ ox + gx, oy + gy, oz + gz, (uint8_t)(glow == GLOW_MUSIC ? 0 : (glow == GLOW_TIMESTREAM ? 1 : 2)) });
                         }
             }
 
@@ -83,7 +83,7 @@ void BuildGlowGrid(World& w, int ox, int oy, int oz, GlowGrid& g) {
 
     // Each emitter lights every open cell it can see within its reach,
     // (1 - d/r)^2 falling off to nothing at the edge; overlapping lights add.
-    g.texels.assign((size_t)N * N * N * 2, 0);
+    g.texels.assign((size_t)N * N * N * 4, 0);
     const float reach = GLOW_RADIUS + 0.5f;
     for (const GlowEmitter& e : g.emitters) {
         int ex = e.x - ox, ey = e.y - oy, ez = e.z - oz;
@@ -96,7 +96,7 @@ void BuildGlowGrid(World& w, int ox, int oy, int oz, GlowGrid& g) {
                     if (d >= reach) continue;
                     if (Blocked(solid.data(), ex, ey, ez, x, y, z)) continue;
                     float f = 1.0f - d / reach;
-                    uint8_t& t = g.texels[(size_t)Cell(x, y, z) * 2 + e.channel];
+                    uint8_t& t = g.texels[(size_t)Cell(x, y, z) * 4 + e.channel];
                     t = (uint8_t)std::min(255, t + (int)(f * f * 255.0f + 0.5f));
                 }
     }

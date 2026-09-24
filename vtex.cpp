@@ -71,6 +71,7 @@ void ParseVtex(const std::string& text, const std::string& fileName, VtexSet& ou
     bool paletteSet[128];
     bool bad = false;        // current entry has an error; skip to its `end`
     int rowsRead = 0;
+    int mapKind = 0;         // 0 pixels, 1 height, 2 shine, 3 glow: which grid rows are filling
     int entryLine = 0;
 
     auto err = [&](int line, const std::string& msg) {
@@ -92,7 +93,7 @@ void ParseVtex(const std::string& text, const std::string& fileName, VtexSet& ou
             // stripping happens only after the colour.
             std::string t = Trim(raw);
             if (t.empty() || t[0] == '#') continue;
-            if (Trim(StripComment(t)) == "pixels") { mode = Mode::Pixels; rowsRead = 0; continue; }
+            if (Trim(StripComment(t)) == "pixels") { mode = Mode::Pixels; rowsRead = 0; mapKind = 0; continue; }
             if (Trim(StripComment(t)) == "end") { fail(ln, "texture '" + tex.name + "' ended before its pixels"); mode = Mode::Top; bad = false; continue; }
             char key = t[0];
             size_t p = 1;
@@ -115,14 +116,46 @@ void ParseVtex(const std::string& text, const std::string& fileName, VtexSet& ou
         if (mode == Mode::Pixels) {
             std::string t = Trim(StripComment(raw));
             if (t.empty()) continue;
+            static const char* kMapNames[4] = { "pixel", "height", "shine", "glow" };
             if (t == "end") {
                 if (!bad && rowsRead != tex.size)
-                    fail(ln, "texture '" + tex.name + "' has " + std::to_string(rowsRead) + " pixel rows, expected " + std::to_string(tex.size));
+                    fail(ln, "texture '" + tex.name + "' has " + std::to_string(rowsRead) + " " + kMapNames[mapKind] + " rows, expected " + std::to_string(tex.size));
                 if (!bad) out.textures.push_back(tex);
-                mode = Mode::Top; bad = false;
+                mode = Mode::Top; bad = false; mapKind = 0;
                 continue;
             }
             if (bad) continue;
+            // After a complete grid, an optional surface map may follow:
+            // `height` (0-9 then a-z, low to high), `shine` or `glow` (0-9).
+            if (rowsRead == tex.size && (t == "height" || t == "shine" || t == "glow")) {
+                mapKind = t == "height" ? 1 : (t == "shine" ? 2 : 3);
+                std::vector<float>& m = mapKind == 1 ? tex.height : (mapKind == 2 ? tex.shine : tex.glow);
+                if (!m.empty()) { fail(ln, "texture '" + tex.name + "' has two '" + t + "' maps"); continue; }
+                m.assign((size_t)tex.size * tex.size, 0.0f);
+                rowsRead = 0;
+                continue;
+            }
+            if (mapKind != 0) {
+                if (rowsRead >= tex.size) { fail(ln, "texture '" + tex.name + "' has more than " + std::to_string(tex.size) + " " + kMapNames[mapKind] + " rows"); continue; }
+                if ((int)t.size() != tex.size) {
+                    fail(ln, "texture '" + tex.name + "' " + kMapNames[mapKind] + " row " + std::to_string(rowsRead + 1) + " is " + std::to_string(t.size()) +
+                             " characters, expected " + std::to_string(tex.size));
+                    continue;
+                }
+                std::vector<float>& m = mapKind == 1 ? tex.height : (mapKind == 2 ? tex.shine : tex.glow);
+                for (int x = 0; x < tex.size; x++) {
+                    char c = t[x];
+                    int v = c >= '0' && c <= '9' ? c - '0' : (mapKind == 1 && c >= 'a' && c <= 'z' ? 10 + c - 'a' : -1);
+                    if (v < 0) {
+                        fail(ln, "texture '" + tex.name + "' " + kMapNames[mapKind] + " row " + std::to_string(rowsRead + 1) + " has '" + std::string(1, c) +
+                                 "' (expected " + (mapKind == 1 ? "0-9 or a-z" : "0-9") + ")");
+                        break;
+                    }
+                    m[(size_t)rowsRead * tex.size + x] = mapKind == 1 ? v / 35.0f : v / 9.0f;
+                }
+                rowsRead++;
+                continue;
+            }
             if (rowsRead >= tex.size) { fail(ln, "texture '" + tex.name + "' has more than " + std::to_string(tex.size) + " pixel rows"); continue; }
             if ((int)t.size() != tex.size) {
                 fail(ln, "texture '" + tex.name + "' row " + std::to_string(rowsRead + 1) + " is " + std::to_string(t.size()) +
