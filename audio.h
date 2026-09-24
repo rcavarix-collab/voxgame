@@ -8,6 +8,8 @@
 
 #pragma once
 
+#include "sfx_synth.h"
+
 bool InitAudio();
 void ShutdownAudio();
 
@@ -32,3 +34,16 @@ void RefillMusicQueueIfNeeded();
 // audio queued ahead; musiclevel.h), fading ~0.1 s after each; 0 while
 // silent or paused. Once per frame.
 float CurrentMusicLevel();
+
+// ---- World sound palette (docs/SOUND_PALETTE.md; DESIGN.md Part X.4) ----
+// A second voice beside the music, on small buffers (~35-45 ms), rendering
+// sfx_synth.h's palette in time and in key with what the music is playing.
+void PlayWorldSound(const SoundCue& cue);
+void ReleaseWorldSound(SoundId id);
+// Pausing: every palette tail fades away over `seconds` (silence = time stopped).
+void FadeWorldSounds(float seconds);
+// Once per frame: the soundscape's axes and scene, whether play is live
+// (the ambient scheduler runs only then), and a queue top-up.
+void UpdateWorldSound(const SoundAxes& axes, const AmbientScene& scene, bool playing);
+// The music time now audible (the chunk playing, not the audio queued ahead).
+double AudibleMusicTime();

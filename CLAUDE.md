@@ -25,4 +25,5 @@ Prismative.cpp, drillder.cpp, LG2.cpp and cc_2_2_2.cpp (repo root) are the owner
 - Native tests: `bash tests/run.sh` (no Windows needed; stubs in tests/stub).
 - Shaders: `python3 tools/check_shaders.py` (glslangValidator HLSL front end, every variant).
 - New .cpp files go into Voxistics.vcxproj (and .filters) — the project file is the source list.
+- Sound: the world sound palette (docs/SOUND_PALETTE.md) is harmony-locked to the music; any new sound goes through `sfx_synth.cpp` with pitches from the safe sets, and `bash tools/sound_demo.sh analyze` must stay clean (demo WAVs: `tools/sound_demo.sh demo DIR`).
 - Art: `.vtex` files in assets/textures (spec: assets/textures/TEXTURE_BRIEF.md). Natural set: regenerate with `python3 tools/natural_textures.py`.

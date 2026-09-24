@@ -39,6 +39,7 @@ extern bool g_fullscreen; // borderless fullscreen on the window's monitor (Disp
 extern bool g_shadows, g_postEdges, g_postSSAO, g_bloom;
 extern float g_masterVolume;
 extern float g_musicVolume;
+extern float g_worldVolume; // the world sound palette (sfx_synth.h), under Master
 extern float g_fov; // degrees, vertical
 // Accessibility (Section 11): press-to-toggle instead of hold-to-move for WASD.
 extern bool g_toggleMovement;

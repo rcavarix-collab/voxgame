@@ -18,6 +18,7 @@ enum ProfSection {
     PROF_PHYSICS,   // player movement/collision
     PROF_UPDATES,   // scheduled block updates (gravity, ...)
     PROF_MUSIC,     // music chunk synthesis
+    PROF_SOUND,     // soundscape census + world sound palette
     PROF_MESH,      // chunk mesh rebuilds + GPU uploads
     PROF_SHADOW,    // shadow map re-render (only when stale)
     PROF_WORLD,     // sky + world draw submission (CPU side)

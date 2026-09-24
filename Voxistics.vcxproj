@@ -131,6 +131,15 @@
       <BasicRuntimeChecks Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Default</BasicRuntimeChecks>
       <DebugInformationFormat Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">ProgramDatabase</DebugInformationFormat>
     </ClCompile>
+    <ClCompile Include="sfx_synth.cpp">
+      <!-- Hot loop: optimised even in Debug so a Debug build stays playable (runtime checks and
+           edit-and-continue are incompatible with /O2, so they're off for this file only). -->
+      <Optimization Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">MaxSpeed</Optimization>
+      <BasicRuntimeChecks Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Default</BasicRuntimeChecks>
+      <DebugInformationFormat Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">ProgramDatabase</DebugInformationFormat>
+    </ClCompile>
+    <ClCompile Include="soundscape.cpp" />
+    <ClCompile Include="worldsound.cpp" />
     <ClCompile Include="essence.cpp" />
   </ItemGroup>
   <ItemGroup>
@@ -153,6 +162,10 @@
     <ClInclude Include="essencemap.h" />
     <ClInclude Include="glowlight.h" />
     <ClInclude Include="musiclevel.h" />
+    <ClInclude Include="synth_kit.h" />
+    <ClInclude Include="sfx_synth.h" />
+    <ClInclude Include="soundscape.h" />
+    <ClInclude Include="worldsound.h" />
     <ClInclude Include="library.h" />
     <ClInclude Include="essence.h" />
     <ClInclude Include="sky.h" />

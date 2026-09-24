@@ -25,6 +25,7 @@
 // evaluated once per 64-sample control block and interpolated.
 
 #include "music_synth.h"
+#include "synth_kit.h"
 #include <cmath>
 #include <cstdint>
 #include <vector>
@@ -33,8 +34,6 @@
 namespace {
 
 const double kDayLength = MUSIC_DAY_LENGTH;
-const double kPi = 3.14159265358979323846;
-const double kSR = (double)MUSIC_SAMPLE_RATE;
 const int kBlock = 64; // control-rate interval (~1.45 ms)
 const double kSilentDb = -60.0;
 // Resonance is part of the accessibility ceiling: Q never exceeds this, at
@@ -47,114 +46,10 @@ const double kMaxQ = 1.2;
 const double kOutputScale = 0.78;
 const double kResumeFadeSeconds = 1.5;
 
-// ---------------------------------------------------------------------
-// Primitives
-// ---------------------------------------------------------------------
+// Primitives (oscillators, noise, filters) live in synth_kit.h, shared
+// with the world sound palette.
+using namespace synth;
 
-// floor() via truncation: a single SSE2 conversion, where std::floor is an
-// out-of-line library call on baseline x64 targets (both MSVC and GCC
-// without SSE4.1) -- and every oscillator needs two per sample. Valid for
-// |x| < 2^63; phases here stay below ~1e7.
-inline double FastFloor(double x) {
-    double r = (double)(long long)x;
-    return r > x ? r - 1.0 : r;
-}
-inline double Frac(double x) { return x - FastFloor(x); }
-
-inline double Smooth(double u) {
-    if (u <= 0.0) return 0.0;
-    if (u >= 1.0) return 1.0;
-    return u * u * (3.0 - 2.0 * u);
-}
-
-// sin(2*pi*p) for any p: branchless reduction to a quarter period, then a
-// 9th-order odd polynomial (max error ~4e-6, below -100 dB).
-inline double Sin01(double p) {
-    double q = p - FastFloor(p + 0.5);                 // [-0.5, 0.5)
-    double r = 0.25 - std::fabs(0.25 - std::fabs(q));  // [0, 0.25], same |sin|
-    double x = r * (2.0 * kPi);
-    double x2 = x * x;
-    double v = x * (1.0 + x2 * (-1.0 / 6.0 + x2 * (1.0 / 120.0 + x2 * (-1.0 / 5040.0 + x2 * (1.0 / 362880.0)))));
-    return std::copysign(v, q);
-}
-
-// Raised-cosine 0->1 over u in [0,1]: zero slope at both ends, so no
-// envelope corner ever clicks.
-inline double Ramp(double u) {
-    if (u <= 0.0) return 0.0;
-    if (u >= 1.0) return 1.0;
-    return 0.5 - 0.5 * Sin01(0.5 * u + 0.25);
-}
-
-const double kTriNorm = 1.0 / (1.0 + 1.0 / 9.0 + 1.0 / 25.0);
-
-// Additive soft triangle: the triangle series' odd partials 1, 3, 5 at
-// their 1/n^2 amplitudes, normalized to unit peak. The 3rd and 5th
-// partials come from the fundamental s = sin(x) through the exact
-// multiple-angle identities sin 3x = 3s - 4s^3 and
-// sin 5x = 5s - 20s^3 + 16s^5 -- the same partials, one sine evaluation.
-inline double SoftTriFrom(double s) {
-    double s2 = s * s;
-    double s3 = s * (3.0 - 4.0 * s2);
-    double s5 = s * (5.0 + s2 * (-20.0 + 16.0 * s2));
-    return (s - s3 * (1.0 / 9.0) + s5 * (1.0 / 25.0)) * kTriNorm;
-}
-inline double SoftTri(double p) { return SoftTriFrom(Sin01(p)); }
-
-// PolyBLEP correction for a unit discontinuity at phase 0 (p in [0,1)).
-inline double PolyBlep(double p, double dt) {
-    if (p < dt) { p /= dt; return p + p - p * p - 1.0; }
-    if (p > 1.0 - dt) { p = (p - 1.0) / dt; return p * p + p + p + 1.0; }
-    return 0.0;
-}
-inline double BlepSaw(double p, double dt) { return 2.0 * p - 1.0 - PolyBlep(p, dt); }
-// Pulse of duty `w`, DC removed so a width change never shifts the mix.
-inline double BlepPulse(double p, double dt, double w) {
-    double v = p < w ? 1.0 : -1.0;
-    v += PolyBlep(p, dt);
-    v -= PolyBlep(Frac(p + 1.0 - w), dt);
-    return v - (2.0 * w - 1.0);
-}
-
-inline uint64_t Mix64(uint64_t x) {
-    x ^= x >> 33; x *= 0xff51afd7ed558ccdULL;
-    x ^= x >> 33; x *= 0xc4ceb9fe1a85ec53ULL;
-    x ^= x >> 33;
-    return x;
-}
-// Deterministic "random" in [0,1) keyed by event identity, so the same
-// event always gets the same micro-timing and variation.
-inline double Hash01(uint64_t a, uint64_t b) {
-    return (double)(Mix64(Mix64(a + 0x9E3779B97F4A7C15ULL) ^ (b * 0xD1B54A32D192ED03ULL)) >> 11) * (1.0 / 9007199254740992.0);
-}
-// White noise as a pure function of the (wrapped) sample index.
-inline double Noise(uint64_t n, uint64_t seed) {
-    return (double)(Mix64(n * 0x9E3779B97F4A7C15ULL + seed) >> 11) * (2.0 / 9007199254740992.0) - 1.0;
-}
-
-struct Biquad { double b0, b1, b2, a1, a2; };
-
-// RBJ cookbook lowpass.
-Biquad Lowpass(double fc, double q) {
-    double w0 = 2.0 * kPi * fc / kSR;
-    double alpha = std::sin(w0) / (2.0 * q), c = std::cos(w0), a0 = 1.0 + alpha;
-    return { (1.0 - c) * 0.5 / a0, (1.0 - c) / a0, (1.0 - c) * 0.5 / a0, -2.0 * c / a0, (1.0 - alpha) / a0 };
-}
-// RBJ cookbook bandpass, constant 0 dB peak.
-Biquad Bandpass(double fc, double q) {
-    double w0 = 2.0 * kPi * fc / kSR;
-    double alpha = std::sin(w0) / (2.0 * q), c = std::cos(w0), a0 = 1.0 + alpha;
-    return { alpha / a0, 0.0, -alpha / a0, -2.0 * c / a0, (1.0 - alpha) / a0 };
-}
-inline double RunBiquad(const Biquad& f, double x, double& z1, double& z2) {
-    double y = f.b0 * x + z1;
-    z1 = f.b1 * x - f.a1 * y + z2;
-    z2 = f.b2 * x - f.a2 * y;
-    return y;
-}
-// Decaying IIR state eventually goes denormal, which is dramatically slow
-// on x86 -- flushed once per control block.
-inline void FlushDenormal(double& z) { if (std::fabs(z) < 1e-15) z = 0.0; }
 
 // ---------------------------------------------------------------------
 // Automation curves: (seconds, value) keyframes, smoothstep between, and
@@ -571,9 +466,34 @@ struct Ctrl {
     double bassSine, bassTri, bassSaw;
     double pulse, motif, counter, night, bed, air, airTone, duck, master;
     double cutoff, q, bedFc, airFc;
+    double padSaw;  // the low pad's saw share (0.5 as composed)
+    double midWow;  // mid-pad wow as a frequency ratio (0 as composed)
 };
 
-void ComputeCtrl(const Score& sc, double t, double intensity, Ctrl& c) {
+// The soundscape colour's pull on the track (docs/SOUND_PALETTE.md 6).
+// Every factor is exactly 1 (and the wow exactly 0) at the neutral point,
+// so an unchanged soundscape renders the track exactly as composed.
+struct ColourMods { double cutoff, padSaw, air, bed, padHigh, midWow, master, duck, pulse; };
+inline double DbRatio(double db) { return std::pow(10.0, db / 20.0); }
+ColourMods ComputeColourMods(const MusicColour& c) {
+    const MusicColour n;
+    double dp = c.positive - n.positive, da = c.activity - n.activity, dm = c.mechanical - n.mechanical;
+    double neg = c.positive < 0.0f ? -c.positive : 0.0;
+    ColourMods m;
+    m.cutoff = (1.0 + 0.15 * dm) * std::pow(2.0, 0.15 * dp); // machinery a touch brighter, health a touch more open
+    m.padSaw = DbRatio(3.0 * dm);      // machinery: more saw edge; nature: triangle-warm
+    m.air = DbRatio(3.0 * dm);         // machinery: glassier air tones
+    m.bed = DbRatio(-3.0 * dm);        // nature: breathier noise bed
+    m.padHigh = DbRatio(2.0 * dp);     // health: more shimmer on top
+    m.midWow = std::pow(2.0, 3.0 * neg / 1200.0) - 1.0; // neglect: the mid pad wears (+-3 cents)
+    m.master = DbRatio(-1.0 * neg);
+    m.duck = 1.0 + 0.3 * da;           // activity: the groove pumps a little harder
+    m.pulse = DbRatio(1.5 * da);
+    return m;
+}
+
+void ComputeCtrl(const Score& sc, double t, double intensity, const MusicColour& colour, Ctrl& c) {
+    const ColourMods cm = ComputeColourMods(colour);
     double w[CH_COUNT];
     sc.ChordWeights(t, w);
     double gLow = kPadLowGain(t), gMid = kPadMidGain(t), gHigh = kPadHighGain(t);
@@ -590,7 +510,7 @@ void ComputeCtrl(const Score& sc, double t, double intensity, Ctrl& c) {
     };
     fill(sc.low, gLow, c.low, false);
     fill(sc.mid, gMid, c.mid, true);
-    fill(sc.high, gHigh, c.high, true);
+    fill(sc.high, gHigh * cm.padHigh, c.high, true);
     fill(sc.bass, 1.0, c.bass, false);
 
     double drift = Sin01(t / 150.0);
@@ -598,17 +518,19 @@ void ComputeCtrl(const Score& sc, double t, double intensity, Ctrl& c) {
     c.bassTri = kBassTriGain(t) * (1.0 - 0.25 * drift);
     c.bassSaw = kBassSawGain(t) * (1.0 + 0.2 * Sin01(t / 120.0 + 0.3));
 
-    c.pulse = kPulseGain(t) * intensity;
+    c.pulse = kPulseGain(t) * intensity * cm.pulse;
     c.motif = kMotifGain(t) * intensity;
     c.counter = kCounterGain(t) * intensity;
     c.night = kNightGain(t) * intensity;
-    c.duck = Eval(kDuckDepth, t) * (1.0 + 0.2 * Sin01(t / 150.0 + 0.5)) * intensity;
-    c.bed = kBedGain(t) * (0.8 + 0.2 * Sin01(t / 45.0 + 0.1));
+    c.duck = Eval(kDuckDepth, t) * (1.0 + 0.2 * Sin01(t / 150.0 + 0.5)) * intensity * cm.duck;
+    c.bed = kBedGain(t) * (0.8 + 0.2 * Sin01(t / 45.0 + 0.1)) * cm.bed;
     c.air = kAirGain(t);
-    c.airTone = c.air * (0.5 + 0.5 * Sin01(t / 40.0));
-    c.master = kMasterGain(t);
+    c.airTone = c.air * (0.5 + 0.5 * Sin01(t / 40.0)) * cm.air;
+    c.master = kMasterGain(t) * cm.master;
+    c.padSaw = 0.5 * cm.padSaw;
+    c.midWow = cm.midWow;
 
-    c.cutoff = EvalHz(kCutoffHz, t);
+    c.cutoff = std::min(3600.0, EvalHz(kCutoffHz, t) * cm.cutoff);
     c.q = std::min(kMaxQ, 0.70710678 + 1.2 * Eval(kResonance, t));
     c.bedFc = c.bed > 0.0 ? 500.0 * std::pow(2.0, 0.55 + 0.55 * Sin01(t / 90.0)) : 0.0;
     c.airFc = c.air > 0.0 ? 2600.0 * std::pow(2.0, 0.2 * Sin01(t / 120.0)) : 0.0;
@@ -626,20 +548,31 @@ const uint64_t kBedSeed = 0x1234567ULL, kAirSeed = 0x89ABCDEFULL;
 
 // Renders `count` samples starting at wrapped time `tStart`; the caller
 // guarantees the run doesn't cross the 3600 -> 0 wrap.
-void RenderRun(double tStart, int count, double intensity, MusicState* st, int16_t* out) {
+// `col0`/`col1`: the soundscape colour at the run's first and last sample;
+// each control block takes the colour interpolated to its end.
+void RenderRun(double tStart, int count, double intensity, const MusicColour& col0, const MusicColour& col1,
+               MusicState* st, int16_t* out) {
     const Score& sc = GetScore();
     static std::vector<Note> notes; // reused across calls: no per-chunk allocation
     notes.clear();
     GatherNotes(sc, tStart, tStart + count / kSR, notes);
 
+    auto colourAt = [&](int sample) {
+        double f = count > 0 ? (double)sample / count : 0.0;
+        MusicColour c;
+        c.positive = (float)Lerp(col0.positive, col1.positive, f);
+        c.activity = (float)Lerp(col0.activity, col1.activity, f);
+        c.mechanical = (float)Lerp(col0.mechanical, col1.mechanical, f);
+        return c;
+    };
     Ctrl cur, next;
-    ComputeCtrl(sc, tStart, intensity, cur);
+    ComputeCtrl(sc, tStart, intensity, col0, cur);
 
     for (int b0 = 0; b0 < count; b0 += kBlock) {
         int len = std::min(kBlock, count - b0);
         double tb = tStart + b0 / kSR;
         double te = tb + len / kSR;
-        ComputeCtrl(sc, te, intensity, next);
+        ComputeCtrl(sc, te, intensity, colourAt(b0 + len), next);
         double invLen = 1.0 / len;
 
         Biquad master = Lowpass(cur.cutoff, cur.q);
@@ -693,10 +626,15 @@ void RenderRun(double tStart, int count, double intensity, MusicState* st, int16
                 lowSaw += g * BlepSaw(p, fr / kSR);
             }
             st->padSawZ += kPadSawA * (lowSaw - st->padSawZ);
-            pre += 0.7 * lowTri + 0.5 * st->padSawZ;
+            pre += 0.7 * lowTri + Lerp(cur.padSaw, next.padSaw, f) * st->padSawZ;
+            // Wear (a negative soundscape): a slow +-cents wow on the mid pad,
+            // as a phase offset that's still a pure function of time.
+            double wow = Lerp(cur.midWow, next.midWow, f);
+            double wowPhase = wow > 0.0 ? wow * (1.0 - Sin01(0.4 * t + 0.25)) * (1.0 / (2.0 * kPi * 0.4)) : 0.0;
             for (int k = 0; k < nMid; k++) {
                 int i = midIdx[k];
-                pre += Lerp(cur.mid[i], next.mid[i], f) * Sin01(sc.mid.freq[i] * t);
+                double fr = sc.mid.freq[i];
+                pre += Lerp(cur.mid[i], next.mid[i], f) * Sin01(fr * t + fr * wowPhase);
             }
             for (int k = 0; k < nHigh; k++) {
                 int i = highIdx[k];
@@ -793,7 +731,47 @@ void ResetMusicState(MusicState* s) {
     *s = MusicState{};
 }
 
-void GenerateMusicChunk(double startTime, int sampleCount, double intensity, MusicState* state, int16_t* outPCM) {
+void MusicHarmonyAt(double t, MusicHarmony* h) {
+    t = std::fmod(t, kDayLength);
+    if (t < 0.0) t += kDayLength;
+    const Score& sc = GetScore();
+    double w[CH_COUNT];
+    sc.ChordWeights(t, w);
+    int best = 0, second = -1;
+    for (int c = 1; c < CH_COUNT; c++) if (w[c] > w[best]) best = c;
+    for (int c = 0; c < CH_COUNT; c++) if (c != best && (second < 0 || w[c] > w[second])) second = c;
+    for (int c = 0; c < CH_COUNT; c++) h->weight[c] = w[c];
+    h->chord = best;
+    h->blending = w[second] > 0.2;
+    h->other = h->blending ? second : best;
+    h->bassHz = kChords[best].bass;
+    int si = sc.SectionAt(t);
+    h->section = si;
+    h->bpm = sc.sec[si].bpm;
+    h->beat = sc.BeatAt(t);
+    h->sectionStartBeat = sc.sec[si].beatStart;
+    h->pulsed = kPulseGain(t) > 0.0316; // above -30 dB: a pulse worth locking to
+    h->cutoffHz = EvalHz(kCutoffHz, t);
+    h->masterGain = kMasterGain(t);
+    h->duckDepth = Eval(kDuckDepth, t);
+    h->motifGain = kMotifGain(t);
+}
+
+void GenerateMusicChunk(double startTime, int sampleCount, double intensity, MusicState* state, int16_t* outPCM,
+                        const MusicColour* colour) {
+    MusicColour target = colour ? *colour : MusicColour();
+    MusicColour from = target;
+    if (state->colourValid) { from.positive = state->colourP; from.activity = state->colourA; from.mechanical = state->colourM; }
+    state->colourP = target.positive; state->colourA = target.activity; state->colourM = target.mechanical;
+    state->colourValid = true;
+    auto colourAt = [&](int sample) {
+        double f = sampleCount > 0 ? (double)sample / sampleCount : 1.0;
+        MusicColour c;
+        c.positive = (float)Lerp(from.positive, target.positive, f);
+        c.activity = (float)Lerp(from.activity, target.activity, f);
+        c.mechanical = (float)Lerp(from.mechanical, target.mechanical, f);
+        return c;
+    };
     double t = std::fmod(startTime, kDayLength);
     if (t < 0.0) t += kDayLength;
     int done = 0;
@@ -802,9 +780,14 @@ void GenerateMusicChunk(double startTime, int sampleCount, double intensity, Mus
         int untilWrap = (int)std::ceil((kDayLength - t) * kSR);
         if (untilWrap <= 0) { t -= kDayLength; continue; }
         int n = std::min(sampleCount - done, untilWrap);
-        RenderRun(t, n, intensity, state, outPCM + done);
+        RenderRun(t, n, intensity, colourAt(done), colourAt(done + n), state, outPCM + done);
         done += n;
         t += n / kSR;
         if (t >= kDayLength) t -= kDayLength;
     }
 }
+
+// The public enums in music_synth.h name the same chords and sections.
+static_assert((int)MUSIC_DM9 == 0 && (int)MUSIC_DRONE == 4 && (int)MUSIC_CHORD_COUNT == 5, "chord order");
+static_assert((int)MUSIC_NIGHT == 5, "section order");
+static_assert(MUSIC_SAMPLE_RATE == 44100, "synth_kit.h assumes 44.1 kHz");

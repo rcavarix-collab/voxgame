@@ -28,7 +28,7 @@ The **anchor set** — safe under every chord — is **D, G, A** (root, 4th, 5th
 
 **1.5 Deep-bass relationship.** Any sound with sub weight (Land, Set, Sealed, Heartbeat…) glides its thump onto the *current chord's bass note* (D2 73.4, G1 49.0, E1 41.2, A1 55.0 Hz) — the same way the track's own thump glides 104 → 52 Hz. If the pulse layer is audible and the onset falls within 60 ms of a beat, the sub is dropped (the kick already carries it) and only the upper body plays.
 
-**1.6 No aggressive transients, no sudden brightness.** Every envelope corner is the track's raised cosine (zero slope, no clicks). Minimum attack: 6 ms tonal, 3 ms noise. Noise is never unfiltered and never above 4.2 kHz. Metallic partials are at most −20 dB re the body and die within ~60 ms, so they colour an attack and never sustain as a pitch.
+**1.6 No aggressive transients, no sudden brightness.** Every envelope corner is the track's raised cosine (zero slope, no clicks). Minimum attack: 6 ms tonal, 3 ms noise. Noise is never unfiltered, and the whole palette passes a two-stage 4.2 kHz lowpass on its way out. Metallic partials are at most −20 dB re the body and die within ~60 ms, so they colour an attack and never sustain as a pitch.
 
 **1.7 Level: punctuation, not competition.** Levels are in the same dB scale as Part XIV's layer tables (the motif sits at −15 to −19, the pads −19 to −31). No palette sound exceeds **−21 dB**; interactions sit at −23 to −27, textures −28 to −36. The whole bus follows the track's master curve (`kMasterGain`), so it breathes with the day, and it has its own **World sounds** volume slider under Master.
 
@@ -56,11 +56,15 @@ The **anchor set** — safe under every chord — is **D, G, A** (root, 4th, 5th
 ## 3. The three axes
 
 ### 3.1 Where they come from (soundscape.cpp)
-A fixed-cost census: each frame reads one horizontal slab of a 32 × 24 × 32 box around the player (768 lookups), so the whole box refreshes every ~½ s whatever the world's size. Each block has a **sound material** (earth, stone, wood, plant, glass, crystal, metal, flesh, genesis, water, ice, sand, snow, ember) which rolls up into classes: *natural* (earth, wood, plant, moss, water…), *mechanical* (machine, tube, chest, foundation, lattice, archivist wall), *dark* (the flesh set, void static) and *genesis* (the genesis set).
+A fixed-cost census: each frame reads one horizontal slab of a 32 × 24 × 32 box around the player (1,024 lookups, top-down so "open to the sky" costs one extra read), so the whole box refreshes every 24 frames whatever the world's size. Each block has a **sound material** (earth, stone, wood, plant, glass, crystal, metal, flesh, genesis, water, ice, sand, snow, ember) which rolls up into classes: *natural* (earth, wood, plant, moss, water…), *mechanical* (machine, tube, chest, foundation, lattice, archivist wall), *dark* (the flesh set, void static) and *genesis* (the genesis set).
 
-- **M** target = mechanical ÷ (mechanical + natural), eased toward 0.35 (bare rock) when there's little of either nearby. Slew τ 5 s.
-- **P** target = 0.2 + 0.8 · (natural·0.3 + genesis − dark·1.5) ÷ (natural·0.3 + genesis + dark·1.5 + 16). Later: unmanaged byproducts and sour essence (Part XX) join the negative side. Slew τ 10 s.
-- **A** target = 0.12 + 0.35 · movement (walk 0.4, sprint 0.8, slide 1.0) + 0.3 · recent interactions (last 8 s, saturating at 12) + 0.12 · the section's own energy (Midday 1, Morning/Afternoon 0.6, Dawn/Dusk 0.25, Night 0) + 0.15 · mechanical presence. Rises with τ 1.5 s, falls with τ 6 s — busy fast, calm slowly, like breath.
+Counts become saturating *presences* (1 − e^(−count/scale)), so a handful of machines registers and a hundred doesn't dominate: mechanical (scale 20), natural *exposed* surface (150), plants (20), genesis (15), dark (15).
+
+- **M** target = 0.35 + 0.6 · mechanical − 0.3 · natural · (1 − mechanical): open land ≈ 0.05, bare rock underground 0.35, a works yard of 60 machines ≈ 0.9. Slew τ 5 s.
+- **P** target = 0.1 + 0.2 · natural + 0.2 · plants + 0.5 · genesis − 1.3 · dark: bare dirt ≈ 0.3, a meadow ≈ 0.5, fifteen blocks of flesh drag it to about −0.5. Later: unmanaged byproducts and sour essence (Part XX) join the negative side. Slew τ 10 s.
+- **A** target = 0.12 + 0.35 · movement (walk 0.4, sprint 0.8, slide 1.0) + 0.3 · recent interactions (decaying over ~8 s, saturating at 12) + 0.12 · the section's own energy (Midday 1, Morning/Afternoon 0.6, Dawn/Dusk 0.25, Night 0) + 0.15 · mechanical. Rises with τ 1.5 s, falls with τ 6 s — busy fast, calm slowly, like breath.
+
+The same census fills the ambient scene (plants, water, ember, glow, machines, dark, the nearest three music blocks), a roof probe (a solid block within 12 above = enclosed; 12+ of the 40 above = deep), and notices **discoveries**, one per sweep at most: dark ground first seen (or again after 10 minutes) → Omen; ore coming into range (2-minute cooldown) → Vein; three or more block types new this session in one sweep → Horizon; the first of each glowing block type → Glint. The first 20 seconds of a session only take stock (nothing is "new" on arrival).
 
 The F3 profiler shows the three as bars.
 
@@ -108,8 +112,9 @@ Axis values change continuously, but anything that would be a *discrete* change 
 - **Merge.** A second onset within 30 ms of the first doesn't start a new note: it adds up to +1.5 dB to the first. No flams, no doubled attacks.
 - **Repeat softening.** The same sound retriggered within 150 ms plays −3 dB (down to −9) and rotates its timbre variant, so rapid clicking doesn't machine-gun.
 - **Interval rule.** A new tonal onset may not sit a 2nd from any palette pitch still sounding above −20 dB; it moves to the next ladder tone.
-- **Voice ceiling.** 24 partial-voices; when full, the oldest releases over 20 ms (raised cosine).
-- **Hierarchy.** Tier 2 suppresses tiers 3–5 for its duration. Tier 5 plays only when A < 0.4 and no tier 2 has played in the last 8 bars, each rare sound with its own cooldown. Tier 3–4 events are spent from the ambient budget (§3.2).
+- **Voice ceiling.** 48 partial-voices. When full, ambience (tiers 3–5) simply yields; an interaction or event takes the slot of the quietest, lowest-priority voice (almost always a tail near silence).
+- **Level ceiling, per sound.** After a sound is built, the voices sounding at each of its peaks are summed at their envelope level there; if the sum could pass −22.5 dB (the −21 ceiling less a margin for the echo's return) the whole sound comes down together. Bells are level-normalised by their partials.
+- **Hierarchy.** Tier 2 suppresses tiers 3–5 for its duration (footfalls excepted: they're physical, and exempt from the budget too). Tiers 3–5 are also scaled by the Music Intensity setting (14.4): at 0 only interactions and events remain. Tier 5 plays only when A < 0.4 and no tier 2 has played in the last 8 bars, each rare sound with its own cooldown. Tier 3–4 events are spent from the ambient budget (§3.2).
 - **Motif respect.** Tonal palette bodies live mostly in D5–A6, above the motif (D4–C5) and the countermelody (A4–G5), alongside the air layer's own A5/E6 — a register the track already treats as "sparkle". Vocal pads and thumps sit below. Ambient events avoid onsets that collide with a motif note in the same octave.
 - **Breathing with the track.** Tonal tails get the bass's sidechain dip at half depth (the duck curve, 14.3), so the palette pumps with the groove instead of against it.
 
@@ -181,7 +186,7 @@ Immediate (≤ ~25 ms), tier 1, and always harmonically current. **Material tint
 **I1 · Set (place a block)** — *tier 1*
 - Synthesis: *body* morph voice at the gesture's current ladder pitch (step **up** each Set in the gesture), 6/exp τ 120 ms, through a pluck filter — lowpass starting at 6·f0 and falling to 1.5·f0 with τ 60 ms (the track's subtractive family, played as a pluck); *sub* THUMP(2·bass → bass, τ 70 ms) at −6 dB re body, 3/exp 90 ms; *grain* NOISE→lp(material) 3/exp 15 ms at −14 dB. Echo send 0.25. Level −24.
 - Axes default: P +0.2 · A 0.4 · M 0.3.
-- Axis response: M morphs the body (warm pluck → clean pulse blip) and tightens jitter to zero. P picks the pool (P < 0: ladder restricted to root/4th/5th, stepping down an octave register) and brightens the pluck's start (6·f0 → 8·f0 at P = 1). A above 0.6 shortens τ to 80 ms and lets a grace note in — a quick build becomes a crisp, rising 16th-note run.
+- Axis response: M morphs the body (warm pluck → clean pulse blip) and tightens jitter to zero. P picks the pool (P < −0.25: ladder restricted to root/4th/5th/♭7; below −0.5 an octave down) and brightens the pluck's start (6·f0 → 8·f0 at P = 1). A above 0.6 shortens τ to 80 ms — a quick build becomes a crisp, rising run. (No grace note here: an interaction never waits.)
 - Why it sits: every placement is a chord tone, and a building session plays an arpeggio up the current chord; the sub lands on the bass note, so it never fights the low end.
 
 **I2 · Take (break a block)** — *tier 1*
@@ -226,7 +231,7 @@ Immediate (≤ ~25 ms), tier 1, and always harmonically current. **Material tint
 ### 5.3 Discovery — "something new"
 Tier 2: quantised to the next beat (next half-bar when calm), never more than one per 2 bars.
 
-**D1 · Unveil (first time a block type is placed this world)**
+**D1 · Unveil (first time a block type is placed this session)**
 - Synthesis: three BELL(1, 2, 3; partial gains 1, 0.3, 0.12; partial τ ×0.5) notes, ladder root → 5th → 9th (e.g. D5 A5 E6 under Dm9), 8th notes, each 6/exp τ 600 ms; echo send 0.5. Level −25.
 - Axes default: P +0.4 · A 0.4 · M 0.3.
 - Axis response: P > 0.5 adds the octave on top as a 4th note; P < 0 plays root → 4th → root (a question, not an answer). A → 16ths instead of 8ths at A > 0.6. M adds the bar-mode partials (a clean glass/metal chime) and drops jitter.
@@ -336,7 +341,7 @@ Tier 4: long, soft, spent from the ambient budget; chord-aware for their whole l
 ### 5.6 Progress and positive feedback
 
 **P1 · Streak (successive Sets in one gesture)**
-- Not a separate sound: I1 walking up the ladder. At index 7 (a full octave) the next Set also fires P2.
+- Not a separate sound: I1 walking up the ladder. When a streak reaches the octave above where it started, it also fires P2 and the next Set starts a new gesture.
 - Axes: P decides the direction (P < 0: the streak never climbs above index 4 — building in neglected land feels capped).
 
 **P2 · Cadence (streak octave / a task completed)** — *tier 2*
@@ -404,19 +409,22 @@ Small, bounded, slewed (≥ 8 s), so the composition keeps its identity. Applied
 
 | Axis | Track response |
 |---|---|
-| M → mechanical | shared cutoff ×(1 + 0.15·(M − 0.35)); low-pad saw +2 dB·(M − 0.35)×1.5; air tones +2 dB·(M − 0.35)×1.5 (glassier); bed noise −1.5 dB (drier) |
-| M → organic | bed noise +1.5 dB (breathier); pad saw down (triangle-warm) |
-| P → positive | high pad +2 dB·P; cutoff ×2^(0.15·P) |
-| P → negative | mid pad wow ±3 cents × (−P) at 0.4 Hz; master −1 dB × (−P) |
-| A → active | duck depth ×(0.85 + 0.3·A); pulse thump +1.5 dB·(A − 0.3) |
+| M (from 0.35) | shared cutoff ×(1 + 0.15·ΔM); low-pad saw and air tones +3 dB·ΔM (machinery: more edge, glassier); noise bed −3 dB·ΔM (nature: breathier) |
+| P (from 0.2) | high pad +2 dB·ΔP; shared cutoff ×2^(0.15·ΔP) |
+| P below 0 | mid pad wow ±3 cents × (−P) at 0.4 Hz; master −1 dB × (−P) |
+| A (from 0.3) | duck depth ×(1 + 0.3·ΔA); pulse thump +1.5 dB·ΔA |
+
+Verified: at the neutral point the rendered track is bit-identical to the composition without the palette.
 
 ---
 
 ## 7. Cost
-- Palette voice: rendered in 512-sample buffers (11.6 ms) with 3 queued (~35 ms latency) on its own XAudio2 source voice; nothing renders when no voice is active and the echo tail is below −80 dB.
-- 24 partial-voices maximum; typical play is 2–6. Per-sample work per voice is an oscillator (polynomial sine / PolyBLEP), an envelope and one filter — the same primitives as the track.
+- Palette voice: rendered in 512-sample buffers (11.6 ms) with 3 queued (~35 ms latency) on its own XAudio2 source voice. A played sound renders immediately (not next frame). Outside play (title screen, pause) nothing renders once the palette is silent.
+- 48 partial-voices maximum; typical play is 2–6. An idle palette costs ~0.1 % of a core (the bus and scheduler only). Per-sample work per voice is an oscillator (polynomial sine / PolyBLEP), an envelope and one filter — the same primitives as the track.
 - Harmony queries: one `MusicHarmonyAt` per trigger and per control block while voices are active.
 - Census: 768 block reads per frame, constant.
 
-## 8. Tests (tests/tests.cpp)
-Offline renders of every sound at every axis corner under every chord: peak ≤ the −21 dB ceiling; no sample-to-sample step above the click threshold; spectral energy above 4.2 kHz under −40 dB; every tonal fundamental in the chord's safe set; gesture ladder behaviour (Set rises, Take falls, merge within 30 ms); ambient density per 4 bars within budget at A 0 and A 1; determinism (the same inputs render the same samples).
+## 8. Checks
+- **tests/tests.cpp** (every build): every sound × every chord × the axis corners — every pitch in the chord's safe set, never above the −21 dB ceiling; Set climbs, Take falls; merge within 30 ms; determinism; the ambient budget (calm ≤ ~1 per 4 bars, busy several times more); pausing fades to exact silence; the neutral colour leaves the track bit-identical; the census reads a meadow organic and positive, a works yard mechanical, flesh negative with an Omen.
+- **tools/sound_demo.sh analyze**: the same matrix at all 8 axis corners, reporting each sound's mean and worst level, its worst-frame spectral share above 4.2 kHz and above 10 kHz (clicks are broadband), and pitch safety.
+- **tools/sound_demo.sh demo DIR**: WAV renders of each category over the day's music, at contrasting axes, with solo versions.

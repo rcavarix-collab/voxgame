@@ -20,6 +20,9 @@
 #include "../theline.h"
 #include "../essence.h"
 #include "../essencemap.h"
+#include "../music_synth.h"
+#include "../sfx_synth.h"
+#include "../soundscape.h"
 #include <cstdio>
 #include <cstring>
 #include <cmath>
@@ -1124,6 +1127,221 @@ static void TestEssence() {
     CHECK(fabsf(MapWorldX(z, 300) - wx) < 1e-2f && fabsf(MapWorldZ(z, 200) - wz) < 1e-2f && fabsf(z.scale - 0.24f) < 1e-5f);
 }
 
+
+// ---------------------------------------------------------------------
+// World sound palette (docs/SOUND_PALETTE.md)
+
+static double FindChordTime(int chord, double from) {
+    MusicHarmony h, h2;
+    for (double t = from; t < from + 200; t += 0.25) {
+        MusicHarmonyAt(t, &h); MusicHarmonyAt(t + 3.0, &h2);
+        if (h.chord == chord && !h.blending && h2.chord == chord && !h2.blending) return t;
+    }
+    return -1;
+}
+
+static bool InSafeSet(int chord, bool anchor, double hz) {
+    int midi = (int)lround(69 + 12 * log2(hz / 440.0));
+    int pc = ((midi % 12) + 12) % 12;
+    if (anchor) return pc == 2 || pc == 7 || pc == 9;
+    static const int sets[5][7] = { { 2, 4, 5, 7, 9, 0, -1 }, { 7, 9, 0, 2, 5, -1, -1 }, { 4, 7, 9, 11, 2, -1, -1 },
+                                    { 9, 0, 2, 4, 7, -1, -1 }, { 2, 4, 5, 7, 9, 0, -1 } };
+    for (int k = 0; k < 7; k++) if (sets[chord][k] == pc) return true;
+    return false;
+}
+
+// Renders `seconds` of a palette from music time t0 (the clock running).
+static std::vector<float> RenderPalette(SoundPalette& p, double t0, double seconds) {
+    std::vector<float> out((size_t)(seconds * 44100) / 512 * 512);
+    for (size_t i = 0; i < out.size(); i += 512) p.Render(out.data() + i, 512, t0 + i / 44100.0, true);
+    return out;
+}
+
+static void TestMusicHarmony() {
+    printf("music harmony + colour\n");
+    MusicHarmony h;
+    MusicHarmonyAt(20, &h);
+    CHECK(h.section == MUSIC_DAWN && h.chord == MUSIC_DM9 && !h.pulsed);
+    MusicHarmonyAt(1500, &h);
+    CHECK(h.section == MUSIC_MIDDAY && h.pulsed && fabs(h.bpm - 124) < 1e-9);
+    MusicHarmonyAt(3400, &h);
+    CHECK(h.section == MUSIC_NIGHT && !h.pulsed);
+    for (int c = 0; c < 4; c++) CHECK(FindChordTime(c, 1200) > 0); // every chord of the cycle shows up in Midday
+    // Beats advance at the section's tempo.
+    MusicHarmony a, b; MusicHarmonyAt(1500, &a); MusicHarmonyAt(1501, &b);
+    CHECK(fabs((b.beat - a.beat) - 124.0 / 60.0) < 1e-6);
+    // The neutral colour renders the track exactly as composed.
+    const int N = 11025;
+    std::vector<int16_t> x(N), y(N), z(N);
+    MusicState s1, s2, s3; ResetMusicState(&s1); ResetMusicState(&s2); ResetMusicState(&s3);
+    MusicColour neutral, far; far.positive = -1; far.activity = 1; far.mechanical = 1;
+    for (int k = 0; k < 8; k++) {
+        GenerateMusicChunk(1500 + k * 0.25, N, 1.0, &s1, x.data());
+        GenerateMusicChunk(1500 + k * 0.25, N, 1.0, &s2, y.data(), &neutral);
+        GenerateMusicChunk(1500 + k * 0.25, N, 1.0, &s3, z.data(), &far);
+    }
+    CHECK(x == y);
+    // A far colour changes it, but only a little (small, bounded shifts).
+    double diff = 0, ref = 0;
+    for (int i = 0; i < N; i++) { diff += fabs((double)x[i] - z[i]); ref += fabs((double)x[i]); }
+    CHECK(diff > 0 && diff < ref * 0.8);
+}
+
+static void TestSoundPalette() {
+    printf("sound palette\n");
+    const double chordT[4] = { FindChordTime(MUSIC_DM9, 1200), FindChordTime(MUSIC_G7SUS4, 1200),
+                               FindChordTime(MUSIC_EM7, 1200), FindChordTime(MUSIC_A7SUS4, 1200) };
+    // Every sound, under every chord, at the axis extremes: every pitch in
+    // the chord's safe set, never above the -21 dB ceiling.
+    int unsafe = 0, loud = 0, silentTonal = 0;
+    const double ceiling = pow(10.0, (-21.0 + 0.5) / 20.0);
+    for (int id = 0; id < SND_COUNT; id++)
+        for (int c = 0; c < 4; c++)
+            for (int corner = 0; corner < 4; corner++) {
+                SoundPalette p;
+                SoundAxes ax; ax.positive = (corner & 1) ? 1.0f : -1.0f; ax.activity = 0.5f; ax.mechanical = (corner & 2) ? 1.0f : 0.0f;
+                p.SetAxes(ax);
+                AmbientScene sc; sc.machines = 1; sc.musicBlockCount = 1; sc.musicBlockKey[0] = 3;
+                p.SetScene(sc);
+                std::vector<float> warm(512);
+                p.Render(warm.data(), 512, chordT[c], true);
+                SoundCue cue; cue.id = (SoundId)id; cue.material = MAT_STONE; cue.slot = c * 3; cue.strength = 1;
+                p.Play(cue);
+                if (id == SND_SLIDE) { RenderPalette(p, chordT[c], 0.5); p.Release(SND_SLIDE); }
+                std::vector<float> out = RenderPalette(p, chordT[c] + 0.0116, 5.0);
+                MusicHarmony h; MusicHarmonyAt(chordT[c], &h);
+                double scale = h.masterGain * 0.78, peak = 0;
+                for (float v : out) peak = std::max(peak, (double)fabs(v) / scale);
+                if (peak > ceiling) { loud++; printf("  loud: %s %.1f dB\n", SoundName((SoundId)id), 20 * log10(peak)); }
+                SoundPalette::NoteLog log[64];
+                int n = p.RecentNotes(log, 64);
+                for (int i = 0; i < n; i++)
+                    if (!InSafeSet(log[i].chord, log[i].anchor, log[i].hz)) { unsafe++; printf("  unsafe: %s %.1f Hz\n", SoundName(log[i].id), log[i].hz); }
+                (void)silentTonal;
+            }
+    CHECK(unsafe == 0);
+    CHECK(loud == 0);
+
+    // Gestures: a run of Sets climbs the ladder, a run of Takes falls.
+    {
+        SoundPalette p;
+        SoundAxes ax; ax.positive = 0.5f; p.SetAxes(ax);
+        std::vector<float> buf(512);
+        double t = chordT[0];
+        p.Render(buf.data(), 512, t, true);
+        std::vector<double> hz;
+        for (int i = 0; i < 4; i++) {
+            SoundCue c; c.id = SND_SET; p.Play(c);
+            SoundPalette::NoteLog log[64]; int n = p.RecentNotes(log, 64);
+            hz.push_back(log[n - 1].hz);
+            for (int k = 0; k < 26; k++) { t += 512 / 44100.0; p.Render(buf.data(), 512, t, true); } // ~0.3 s
+        }
+        CHECK(hz[1] > hz[0] && hz[2] > hz[1] && hz[3] > hz[2]);
+        for (int k = 0; k < 400; k++) { t += 512 / 44100.0; p.Render(buf.data(), 512, t, true); } // the gesture ends
+        std::vector<double> down;
+        for (int i = 0; i < 3; i++) {
+            SoundCue c; c.id = SND_TAKE; p.Play(c);
+            SoundPalette::NoteLog log[64]; int n = p.RecentNotes(log, 64);
+            down.push_back(log[n - 2].hz); // each Take logs two notes; the first is its ladder step
+            for (int k = 0; k < 26; k++) { t += 512 / 44100.0; p.Render(buf.data(), 512, t, true); }
+        }
+        CHECK(down[1] < down[0] && down[2] < down[1]);
+    }
+    // Merge: two onsets inside 30 ms are one sound, not a flam.
+    {
+        SoundPalette p;
+        std::vector<float> buf(512);
+        p.Render(buf.data(), 512, chordT[0], true);
+        SoundCue c; c.id = SND_SLOT; c.slot = 4;
+        p.Play(c);
+        int before = p.ActiveVoices();
+        p.Play(c);
+        CHECK(p.ActiveVoices() == before);
+    }
+    // Determinism: the same inputs render the same samples.
+    {
+        SoundPalette a, b;
+        AmbientScene sc; sc.plants = 1; sc.water = 0.5f;
+        SoundAxes ax; ax.activity = 0.8f; ax.positive = 0.6f; ax.mechanical = 0.1f;
+        for (SoundPalette* p : { &a, &b }) { p->SetAxes(ax); p->SetScene(sc); p->SetAmbientEnabled(true); }
+        SoundCue c; c.id = SND_UNVEIL;
+        a.Play(c); b.Play(c);
+        CHECK(RenderPalette(a, 700, 12) == RenderPalette(b, 700, 12));
+    }
+    // Density: calm spends far less of the ambient budget than busy, and
+    // stays within 1 event per 4 bars (plus the occasional rare colour).
+    {
+        int counts[2];
+        for (int k = 0; k < 2; k++) {
+            SoundPalette p;
+            AmbientScene sc; sc.plants = 1; sc.water = 0.4f; sc.machines = 0.5f;
+            SoundAxes ax; ax.activity = k ? 1.0f : 0.0f; ax.positive = 0.5f; ax.mechanical = 0.3f;
+            p.SetAxes(ax); p.SetScene(sc); p.SetAmbientEnabled(true);
+            RenderPalette(p, 1300, 128.0); // 66 bars at 124 BPM
+            counts[k] = p.ScheduledAmbientEvents();
+        }
+        CHECK(counts[0] >= 8 && counts[0] <= 66 / 4 + 4);
+        CHECK(counts[1] > counts[0] * 3);
+    }
+    // Pausing fades everything to silence.
+    {
+        SoundPalette p;
+        std::vector<float> buf(512);
+        p.Render(buf.data(), 512, chordT[1], true);
+        SoundCue c; c.id = SND_BLOOM; p.Play(c);
+        RenderPalette(p, chordT[1], 1.0);
+        p.FadeOut(0.3f);
+        std::vector<float> out = RenderPalette(p, chordT[1] + 1, 1.0);
+        float tail = 0;
+        for (size_t i = out.size() / 2; i < out.size(); i++) tail = std::max(tail, fabsf(out[i]));
+        CHECK(tail == 0.0f);
+        CHECK(p.ActiveVoices() == 0);
+    }
+}
+
+static void TestSoundscape() {
+    printf("soundscape axes\n");
+    World w;
+    ResetWorldState(w);
+    Stream(w, 8, 8, 300);
+    int ground = TerrainHeight(8, 8);
+    auto settle = [&](Soundscape& s, int seconds) {
+        for (int f = 0; f < seconds * 60; f++) {
+            s.CensusStep(w, 8, ground + 1, 8);
+            SoundscapeInput in; in.dt = 1.0f / 60; in.musicSection = MUSIC_MORNING;
+            s.Update(in);
+        }
+    };
+    Soundscape wild;
+    settle(wild, 30);
+    CHECK(wild.HaveCensus());
+    CHECK(wild.Axes().mechanical < 0.2f);   // open land reads organic
+    CHECK(wild.Axes().positive > 0.2f);
+    // A works yard: machines and tubes around the player.
+    for (int x = -6; x <= 6; x += 2)
+        for (int z = -6; z <= 6; z += 2) { w.Set(8 + x, ground + 1, 8 + z, BLOCK_MACHINE); w.Set(8 + x, ground + 2, 8 + z, BLOCK_TUBE); }
+    Soundscape yard;
+    settle(yard, 30);
+    CHECK(yard.Axes().mechanical > 0.7f);
+    CHECK(yard.Scene().machines > 0.9f);
+    // Dark ground: flesh blocks drag positive down, and the first sight is an omen.
+    for (int x = -8; x <= 8; x++)
+        for (int z = 10; z <= 14; z++) w.Set(8 + x, ground, 8 + z - 20, BLOCK_CORRUPTED_FLESH);
+    Soundscape dark;
+    settle(dark, 40);
+    CHECK(dark.Axes().positive < -0.3f);
+    SoundId found[8];
+    int n = dark.TakeDiscoveries(found, 8);
+    bool omen = false;
+    for (int i = 0; i < n; i++) omen = omen || found[i] == SND_OMEN;
+    CHECK(omen);
+    // Materials.
+    CHECK(BlockSoundMaterial(BLOCK_STONE) == MAT_STONE);
+    CHECK(BlockSoundMaterial(BLOCK_FERN_FROND) == MAT_PLANT);
+    CHECK(BlockSoundClass(BLOCK_MACHINE) == SC_MECHANICAL);
+    CHECK(BlockSoundClass(BLOCK_GENESIS_SOIL) == SC_GENESIS);
+}
+
 int main() {
     TestVtex();
     TestBlockTextures();
@@ -1142,6 +1360,9 @@ int main() {
     TestSky();
     TestTheLine();
     TestEssence();
+    TestMusicHarmony();
+    TestSoundPalette();
+    TestSoundscape();
     printf("\n%d checks, %d failed\n", g_checks, g_failures);
     return g_failures ? 1 : 0;
 }

@@ -20,6 +20,7 @@
 #include "world.h"
 #include "render.h"
 #include "audio.h"
+#include "worldsound.h"
 #include "persist.h"
 #include "game.h"
 #include "profiler.h"
@@ -192,6 +193,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
                     ProcessScheduledUpdates(g_world);
                 }
                 UpdateLine(g_line, g_lineTuning, g_player.x, g_player.y, g_player.z, FIXED_DT);
+                WorldSoundTick(FIXED_DT); // footfalls, landings, slides, The Line passing
                 g_essence.Update(g_player.x, g_player.z); // discovery (Part XIX)
 
                 accumulator -= FIXED_DT;
@@ -204,6 +206,12 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
         if (g_menuScreen == MenuScreen::None) {
             ProfScope prof(PROF_MUSIC);
             RefillMusicQueueIfNeeded();
+        }
+        if (IsInGame()) {
+            // The soundscape census and the world sound palette's queue
+            // (UI sounds still play in the library and map).
+            ProfScope prof(PROF_SOUND);
+            WorldSoundFrame(dt, g_menuScreen == MenuScreen::None);
         }
         {
             ProfScope prof(PROF_MESH);

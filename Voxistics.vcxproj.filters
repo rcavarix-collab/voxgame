@@ -39,6 +39,15 @@
     <ClCompile Include="music_synth.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="sfx_synth.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="soundscape.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="worldsound.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="profiler.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -129,6 +138,18 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="musiclevel.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="synth_kit.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="sfx_synth.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="soundscape.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="worldsound.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="library.h">

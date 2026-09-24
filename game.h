@@ -57,6 +57,8 @@ void ApplyFullscreen(bool on);
 
 // Autosaves every few minutes of actual play; called once per frame.
 void TickAutosave(float dt);
+// True while a world is loaded (in play or in its menus), not at the title.
+bool IsInGame();
 
 // A transient centred message (save/load confirmations, startup problems).
 void ShowToast(const std::string& message, float seconds);

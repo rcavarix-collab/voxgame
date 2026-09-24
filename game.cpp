@@ -9,6 +9,7 @@
 #include "world.h"
 #include "render.h"
 #include "audio.h"
+#include "worldsound.h"
 #include "persist.h"
 #include "profiler.h"
 #include "theline.h"
@@ -150,8 +151,10 @@ static void PickAndAct(bool breakBlock) {
         // The world floor stays: nothing exists below it, so a hole there
         // would drop the player into an endless void.
         if (hy <= Y_MIN) return;
-        if (g_world.Get(hx, hy, hz) == BLOCK_ATTRACTOR) g_essence.RemoveAttractor(hx, hy, hz);
+        BlockID taken = g_world.Get(hx, hy, hz);
+        if (taken == BLOCK_ATTRACTOR) g_essence.RemoveAttractor(hx, hy, hz);
         LiveEdit(g_world, hx, hy, hz, BLOCK_AIR);
+        WorldSoundBreak(taken);
     } else {
         // Refuse a placement that would overlap the player's own box --
         // it would only trap them (or, with physics' unstick rule, pop
@@ -160,7 +163,7 @@ static void PickAndAct(bool breakBlock) {
         bool overlapsPlayer = px + 1 > p.x - PLAYER_HALFW && px < p.x + PLAYER_HALFW
                            && py + 1 > p.y && py < p.y + PlayerHeight(p)
                            && pz + 1 > p.z - PLAYER_HALFW && pz < p.z + PLAYER_HALFW;
-        if (overlapsPlayer) return;
+        if (overlapsPlayer) { WorldSoundCue(SND_CANT); return; }
         BlockID toPlace = g_hotbar[g_player.hotbarIndex];
         // The state byte, by the block's placement rule (blocks.h).
         BlockFace look = fabsf(f.x) > fabsf(f.z) ? (f.x > 0 ? FACE_POS_X : FACE_NEG_X)
@@ -190,6 +193,7 @@ static void PickAndAct(bool breakBlock) {
         }
         LiveEdit(g_world, px, py, pz, toPlace, state);
         if (toPlace == BLOCK_ATTRACTOR) g_essence.AddAttractor(px, py, pz);
+        WorldSoundPlace(toPlace);
     }
 }
 
@@ -284,8 +288,8 @@ enum DisplayRow { DROW_SHOW_FPS = 0, DROW_SHOW_PROFILER = 1, DROW_FULLSCREEN = 2
 // (Section 10) playing the procedural ambient track. Separate channels
 // now even though Music is the only one with anything to play yet, so a
 // future SFX channel is one more slider, not a remix of this one.
-static const SubmenuLayout AUDIO_LAYOUT    = { 380.0f, 56.0f, 12.0f, 70.0f, 20.0f, 4 };
-enum AudioRow { AROW_MASTER_VOLUME = 0, AROW_MUSIC_VOLUME = 1, AROW_RESET = 2, AROW_BACK = 3 };
+static const SubmenuLayout AUDIO_LAYOUT    = { 380.0f, 56.0f, 12.0f, 70.0f, 20.0f, 5 };
+enum AudioRow { AROW_MASTER_VOLUME = 0, AROW_MUSIC_VOLUME = 1, AROW_WORLD_VOLUME = 2, AROW_RESET = 3, AROW_BACK = 4 };
 
 // Accessibility: a real, working slice rather than every idea discussed
 // -- a field-of-view slider (motion/vestibular comfort: neither wider
@@ -405,7 +409,7 @@ static void ResetGraphicsSettings() {
     g_lastPlayerChunkX = INT32_MIN; g_lastPlayerChunkZ = INT32_MIN; // force a rescan at the new radius
 }
 static void ResetDisplaySettings() { g_showFPS = false; g_showProfiler = false; if (g_fullscreen) { g_fullscreen = false; ApplyFullscreen(false); } }
-static void ResetAudioSettings() { g_masterVolume = 1.0f; g_musicVolume = 1.0f; ApplyAudioVolumes(); }
+static void ResetAudioSettings() { g_masterVolume = 1.0f; g_musicVolume = 1.0f; g_worldVolume = 1.0f; ApplyAudioVolumes(); }
 static void ResetAccessibilitySettings() {
     g_fov = 45.0f;
     g_toggleMovement = false;
@@ -417,7 +421,7 @@ static void ResetAccessibilitySettings() {
 // A handful of settings are sliders rather than toggles/buttons. One
 // small generic slider system (value/range/row-rect all looked up by
 // ID) instead of one-off X-sensitivity-shaped code repeated per slider.
-enum SliderId { SLIDER_NONE = -1, SLIDER_SENS_X = 0, SLIDER_SENS_Y = 1, SLIDER_RENDER_DIST = 2, SLIDER_MASTER_VOLUME = 3, SLIDER_MUSIC_VOLUME = 4, SLIDER_FOV = 5, SLIDER_MUSIC_INTENSITY = 6 };
+enum SliderId { SLIDER_NONE = -1, SLIDER_SENS_X = 0, SLIDER_SENS_Y = 1, SLIDER_RENDER_DIST = 2, SLIDER_MASTER_VOLUME = 3, SLIDER_MUSIC_VOLUME = 4, SLIDER_FOV = 5, SLIDER_MUSIC_INTENSITY = 6, SLIDER_WORLD_VOLUME = 7 };
 static int g_draggingSlider = SLIDER_NONE;
 
 struct SliderRange { float minV, maxV; };
@@ -425,7 +429,7 @@ static SliderRange GetSliderRange(int id) {
     switch (id) {
     case SLIDER_SENS_X: case SLIDER_SENS_Y: return { SENS_MIN, SENS_MAX };
     case SLIDER_RENDER_DIST: return { 1.0f, 8.0f };
-    case SLIDER_MASTER_VOLUME: case SLIDER_MUSIC_VOLUME: return { 0.0f, 1.0f };
+    case SLIDER_MASTER_VOLUME: case SLIDER_MUSIC_VOLUME: case SLIDER_WORLD_VOLUME: return { 0.0f, 1.0f };
     case SLIDER_FOV: return { 45.0f, 100.0f };
     case SLIDER_MUSIC_INTENSITY: return { 0.0f, 1.0f };
     default: return { 0.0f, 1.0f };
@@ -440,6 +444,7 @@ static UIRect GetSliderRowRect(int id) {
     case SLIDER_RENDER_DIST: return SubmenuRowRect(GRAPHICS_LAYOUT, GROW_RENDER_DIST);
     case SLIDER_MASTER_VOLUME: return SubmenuRowRect(AUDIO_LAYOUT, AROW_MASTER_VOLUME);
     case SLIDER_MUSIC_VOLUME: return SubmenuRowRect(AUDIO_LAYOUT, AROW_MUSIC_VOLUME);
+    case SLIDER_WORLD_VOLUME: return SubmenuRowRect(AUDIO_LAYOUT, AROW_WORLD_VOLUME);
     case SLIDER_FOV: return SubmenuRowRect(ACCESSIBILITY_LAYOUT, ARROW_FOV);
     case SLIDER_MUSIC_INTENSITY: return SubmenuRowRect(ACCESSIBILITY_LAYOUT, ARROW_MUSIC_INTENSITY);
     default: return { 0, 0, 0, 0 };
@@ -452,6 +457,7 @@ static float GetSliderValue(int id) {
     case SLIDER_RENDER_DIST: return (float)g_loadRadius;
     case SLIDER_MASTER_VOLUME: return g_masterVolume;
     case SLIDER_MUSIC_VOLUME: return g_musicVolume;
+    case SLIDER_WORLD_VOLUME: return g_worldVolume;
     case SLIDER_FOV: return g_fov;
     case SLIDER_MUSIC_INTENSITY: return g_musicIntensity;
     default: return 0.0f;
@@ -471,6 +477,7 @@ static void SetSliderValue(int id, float v) {
     }
     case SLIDER_MASTER_VOLUME: g_masterVolume = v; ApplyAudioVolumes(); break;
     case SLIDER_MUSIC_VOLUME: g_musicVolume = v; ApplyAudioVolumes(); break;
+    case SLIDER_WORLD_VOLUME: g_worldVolume = v; ApplyAudioVolumes(); break;
     case SLIDER_FOV: g_fov = v; break;
     case SLIDER_MUSIC_INTENSITY: g_musicIntensity = v; break;
     }
@@ -483,6 +490,7 @@ static std::string GetSliderLabel(int id) {
     case SLIDER_RENDER_DIST: snprintf(buf, sizeof(buf), "RENDER DISTANCE: %d CHUNKS", g_loadRadius); break;
     case SLIDER_MASTER_VOLUME: snprintf(buf, sizeof(buf), "MASTER VOLUME: %d%%", (int)(g_masterVolume * 100.0f + 0.5f)); break;
     case SLIDER_MUSIC_VOLUME: snprintf(buf, sizeof(buf), "MUSIC VOLUME: %d%%", (int)(g_musicVolume * 100.0f + 0.5f)); break;
+    case SLIDER_WORLD_VOLUME: snprintf(buf, sizeof(buf), "WORLD SOUNDS: %d%%", (int)(g_worldVolume * 100.0f + 0.5f)); break;
     case SLIDER_FOV: snprintf(buf, sizeof(buf), "FIELD OF VIEW: %d DEG", (int)(g_fov + 0.5f)); break;
     case SLIDER_MUSIC_INTENSITY: snprintf(buf, sizeof(buf), "MUSIC INTENSITY: %d%%", (int)(g_musicIntensity * 100.0f + 0.5f)); break;
     default: buf[0] = 0;
@@ -599,6 +607,7 @@ void UpdateDebugTimeScrub(float frameSeconds) {
 
 static void DoSave() {
     bool ok = SaveGame(g_world, g_player, g_currentSlot);
+    if (ok) WorldSoundCue(SND_SEALED);
     g_toastMessage = ok ? "GAME SAVED" : "SAVE FAILED";
     g_toastTimer = 2.0f;
 }
@@ -613,6 +622,7 @@ static void AutosaveNow(bool announce) {
     if (announce || !ok) ShowToast(ok ? "AUTOSAVED" : "AUTOSAVE FAILED", ok ? 1.5f : 3.0f);
     g_autosaveTimer = 0.0f;
 }
+bool IsInGame() { return g_gameState == GameState::InGame; }
 void TickAutosave(float dt) {
     if (g_gameState != GameState::InGame || g_menuScreen != MenuScreen::None) return;
     g_autosaveTimer += dt;
@@ -685,6 +695,7 @@ static void HandleDisplayClick(int mx, int my) {
 static void HandleAudioClick(int mx, int my) {
     if (PointInRect(mx, my, GetSliderHitRect(SubmenuRowRect(AUDIO_LAYOUT, AROW_MASTER_VOLUME)))) { BeginSliderDrag(SLIDER_MASTER_VOLUME, mx); return; }
     if (PointInRect(mx, my, GetSliderHitRect(SubmenuRowRect(AUDIO_LAYOUT, AROW_MUSIC_VOLUME)))) { BeginSliderDrag(SLIDER_MUSIC_VOLUME, mx); return; }
+    if (PointInRect(mx, my, GetSliderHitRect(SubmenuRowRect(AUDIO_LAYOUT, AROW_WORLD_VOLUME)))) { BeginSliderDrag(SLIDER_WORLD_VOLUME, mx); return; }
     if (PointInRect(mx, my, SubmenuRowRect(AUDIO_LAYOUT, AROW_RESET))) { ResetAudioSettings(); SaveSettings(); return; }
     if (PointInRect(mx, my, SubmenuRowRect(AUDIO_LAYOUT, AROW_BACK))) { g_menuScreen = MenuScreen::OptionsHub; return; }
 }
@@ -744,6 +755,7 @@ static void ResetWorldForNewGame() {
 // Shared tail end of both New Game and Load Game: leave the slot
 // picker, mark a real game as running, and hand control to the player.
 static void EnterGameplay() {
+    WorldSoundReset(); // a fresh session: discoveries start over
     g_gameState = GameState::InGame;
     g_autosaveTimer = 0.0f;
     g_menuScreen = MenuScreen::None;
@@ -843,8 +855,11 @@ static void OpenLibrary() {
     g_menuScreen = MenuScreen::Library;
     ReleaseMouseForMenu();
     StopMusicPlayback();
+    WorldSoundCue(SND_LIBRARY_OPEN);
 }
-static void CloseLibrary() {
+// `quiet`: a pick already made its own sound (Drop).
+static void CloseLibrary(bool quiet = false) {
+    if (!quiet) WorldSoundCue(SND_LIBRARY_CLOSE);
     g_libGesture = LibraryGesture();
     g_menuScreen = MenuScreen::None;
     CaptureMouseForPlay();
@@ -862,11 +877,13 @@ static void LibraryMouseUp(int mx, int my) {
     if (r.outcome == LibraryOutcome::Select) {
         g_hotbar[g_player.hotbarIndex] = g_placeableList.ids[r.entry];
         SaveSettings();
-        CloseLibrary();
+        WorldSoundCue(SND_DROP, g_player.hotbarIndex, 0.0f);
+        CloseLibrary(true);
     } else if (r.outcome == LibraryOutcome::Assign) {
         g_hotbar[r.slot] = g_placeableList.ids[r.entry];
         g_player.hotbarIndex = r.slot;
         SaveSettings();
+        WorldSoundCue(SND_DROP, r.slot, 1.0f);
     }
 }
 
@@ -889,6 +906,7 @@ static void FireBoundAction(int code) {
             g_menuScreen = MenuScreen::Pause;
             ReleaseMouseForMenu();
             StopMusicPlayback();
+            FadeWorldSounds(0.3f); // pause is silence: time stopped
         } else if (g_menuScreen == MenuScreen::Pause) {
             g_menuScreen = MenuScreen::None;
             CaptureMouseForPlay();
@@ -986,7 +1004,11 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             g_mapCamera.centerZ += (g_mouseY - g_mapDragY) / g_mapCamera.scale; // screen down = world -Z
             g_mapDragX = g_mouseX; g_mapDragY = g_mouseY;
         }
-        if (g_menuScreen == MenuScreen::Library) LibraryMove(g_libGesture, (float)g_mouseX, (float)g_mouseY);
+        if (g_menuScreen == MenuScreen::Library) {
+            bool wasDragging = g_libGesture.dragging;
+            LibraryMove(g_libGesture, (float)g_mouseX, (float)g_mouseY);
+            if (g_libGesture.dragging && !wasDragging) WorldSoundCue(SND_PICK);
+        }
         return 0;
     case WM_MOUSEWHEEL:
         if (g_menuScreen == MenuScreen::Map) {
@@ -1006,6 +1028,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         if (g_menuScreen == MenuScreen::None && g_gameState == GameState::InGame) {
             int step = GET_WHEEL_DELTA_WPARAM(wParam) > 0 ? -1 : 1;
             g_player.hotbarIndex = (g_player.hotbarIndex + step + HOTBAR_SLOTS) % HOTBAR_SLOTS;
+            WorldSoundCue(SND_SLOT, g_player.hotbarIndex);
         }
         return 0;
     case WM_LBUTTONDOWN: {
@@ -1081,7 +1104,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             }
         }
         if (wParam >= '0' && wParam <= '9' && (g_menuScreen == MenuScreen::None || g_menuScreen == MenuScreen::Library)) {
-            g_player.hotbarIndex = wParam == '0' ? 9 : (int)(wParam - '1'); // 1-9, then 0 for the tenth
+            int slot = wParam == '0' ? 9 : (int)(wParam - '1'); // 1-9, then 0 for the tenth
+            if (slot != g_player.hotbarIndex) WorldSoundCue(SND_SLOT, slot);
+            g_player.hotbarIndex = slot;
             return 0;
         }
         // Toggle-to-move (Accessibility, Section 11): genuine presses only --
@@ -1447,6 +1472,7 @@ void RenderUIPass() {
 
         drawSliderRow(SubmenuRowRect(AUDIO_LAYOUT, AROW_MASTER_VOLUME), SLIDER_MASTER_VOLUME);
         drawSliderRow(SubmenuRowRect(AUDIO_LAYOUT, AROW_MUSIC_VOLUME), SLIDER_MUSIC_VOLUME);
+        drawSliderRow(SubmenuRowRect(AUDIO_LAYOUT, AROW_WORLD_VOLUME), SLIDER_WORLD_VOLUME);
         drawRowButton(SubmenuRowRect(AUDIO_LAYOUT, AROW_RESET), "RESET TO DEFAULT");
         drawRowButton(SubmenuRowRect(AUDIO_LAYOUT, AROW_BACK), "BACK");
     } else if (g_menuScreen == MenuScreen::Accessibility) {
@@ -1504,6 +1530,21 @@ void RenderUIPass() {
             snprintf(buf, sizeof(buf), "%-15s %6lld %6lld", ProfCounterName((ProfCounter)i),
                      (long long)r.counters[i], (long long)r.countersMax[i]);
             lines.push_back(buf);
+        }
+        // The world sound palette's three axes (docs/SOUND_PALETTE.md 3).
+        if (g_gameState == GameState::InGame) {
+            SoundAxes ax = WorldSoundAxes();
+            auto bar = [](float v01) {
+                std::string b(11, '-');
+                int i = (int)(v01 * 10.0f + 0.5f);
+                b[i < 0 ? 0 : i > 10 ? 10 : i] = '#';
+                return b;
+            };
+            lines.push_back("");
+            lines.push_back("SOUNDSCAPE");
+            lines.push_back("  NEGATIVE " + bar(0.5f + 0.5f * ax.positive) + " POSITIVE");
+            lines.push_back("  CALM     " + bar(ax.activity) + " ACTIVE");
+            lines.push_back("  ORGANIC  " + bar(ax.mechanical) + " MECHANICAL");
         }
         float x = 12.0f, y = g_showFPS ? 44.0f : 12.0f;
         float w = 0;

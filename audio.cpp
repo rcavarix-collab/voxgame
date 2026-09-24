@@ -70,6 +70,22 @@ static MusicGlow g_musicGlow;         // the slow, flash-safe swell the block sh
 static int g_levelSlot = -1;          // pool slot last seen playing
 static double g_levelSlotStart = 0;   // when it started, seconds (QPC)
 static float g_levelSmoothed = 0;
+// The music time each pooled chunk starts at, so the palette can ask what's
+// audible now (AudibleMusicTime).
+static double g_chunkStartTime[MUSIC_POOL_SIZE] = {};
+// The soundscape colour the track leans toward (docs/SOUND_PALETTE.md 6).
+static MusicColour g_musicColour;
+
+// ---- World sound palette: a second voice on small buffers -----------
+static IXAudio2SourceVoice* g_worldVoice = nullptr;
+static SoundPalette* g_palette = nullptr;
+static const int WORLD_BUFFER_SAMPLES = 512;   // 11.6 ms
+static const int WORLD_QUEUE = 3;              // ~35 ms ahead: latency + slack for a slow frame
+static const int WORLD_POOL = WORLD_QUEUE + 2;
+static int16_t (*g_worldPool)[WORLD_BUFFER_SAMPLES] = nullptr;
+static int g_worldPoolNext = 0;
+static bool g_worldIdle = true;                 // nothing sounding: no buffers rendered
+
 // Set after Stop+Flush: the flush only takes effect on the audio
 // thread's next processing pass, so no pool slot may be rewritten until
 // BuffersQueued has actually reached zero.
@@ -77,6 +93,7 @@ static bool g_musicNeedsDrain = false;
 
 void ApplyAudioVolumes() {
     if (g_musicVoice) g_musicVoice->SetVolume(g_masterVolume * g_musicVolume);
+    if (g_worldVoice) g_worldVoice->SetVolume(g_masterVolume * g_worldVolume);
 }
 
 static UINT32 QueuedMusicBuffers() {
@@ -103,8 +120,9 @@ static void WaitForMusicDrain() {
 static void SubmitOneMusicChunk() {
     int16_t* chunk = g_musicPool[g_musicPoolNext];
     g_musicPoolNext = (g_musicPoolNext + 1) % MUSIC_POOL_SIZE;
-    GenerateMusicChunk(g_nextChunkStartTime, MUSIC_CHUNK_SAMPLES, (double)g_musicIntensity, &g_musicState, chunk);
+    GenerateMusicChunk(g_nextChunkStartTime, MUSIC_CHUNK_SAMPLES, (double)g_musicIntensity, &g_musicState, chunk, &g_musicColour);
     int slot = (int)(chunk - g_musicPool[0]) / MUSIC_CHUNK_SAMPLES;
+    g_chunkStartTime[slot] = g_nextChunkStartTime;
     MeasureMusicLevels(g_levelMeter, chunk, MUSIC_CHUNK_SAMPLES, LEVEL_STEPS, MUSIC_SAMPLE_RATE, g_chunkLevels[slot]);
     g_nextChunkStartTime += (double)MUSIC_CHUNK_SAMPLES / MUSIC_SAMPLE_RATE;
     XAUDIO2_BUFFER buf = {};
@@ -154,6 +172,31 @@ void RefillMusicQueueIfNeeded() {
     if (QueuedMusicBuffers() < (UINT32)MUSIC_LOOKAHEAD_CHUNKS) SubmitOneMusicChunk();
 }
 
+static double NowSeconds() {
+    LARGE_INTEGER f, n; QueryPerformanceFrequency(&f); QueryPerformanceCounter(&n);
+    return (double)n.QuadPart / (double)f.QuadPart;
+}
+// The pool slot XAudio2 is playing now and when it started (first seen),
+// shared by the music level and the audible-time readback. -1: none.
+static int PlayingSlot(double now, UINT32 queued) {
+    if (queued == 0) return -1;
+    // Pool slots are used in order, so the oldest still-queued buffer --
+    // the one playing -- is `queued` slots behind the next free one.
+    int slot = (g_musicPoolNext - (int)queued + MUSIC_POOL_SIZE) % MUSIC_POOL_SIZE;
+    if (slot != g_levelSlot) { g_levelSlot = slot; g_levelSlotStart = now; }
+    return slot;
+}
+
+double AudibleMusicTime() {
+    if (!g_musicVoice || g_nextChunkStartTime < 0.0 || !g_musicPool) return g_dayTimeSeconds;
+    double now = NowSeconds();
+    int slot = PlayingSlot(now, QueuedMusicBuffers());
+    if (slot < 0) return g_dayTimeSeconds;
+    double into = now - g_levelSlotStart;
+    double chunk = (double)MUSIC_CHUNK_SAMPLES / MUSIC_SAMPLE_RATE;
+    return g_chunkStartTime[slot] + (into < 0 ? 0 : into > chunk ? chunk : into);
+}
+
 float CurrentMusicLevel() {
     // Silent (title, menus, paused): the glow resets; it swells back in
     // from dark when the music starts again.
@@ -161,8 +204,7 @@ float CurrentMusicLevel() {
         g_levelSmoothed = 0; g_levelSlot = -1; g_musicGlow = MusicGlow(); g_levelLastNow = 0;
         return 0.0f;
     }
-    LARGE_INTEGER f, n; QueryPerformanceFrequency(&f); QueryPerformanceCounter(&n);
-    double now = (double)n.QuadPart / (double)f.QuadPart;
+    double now = NowSeconds();
     double dt = g_levelLastNow > 0 ? now - g_levelLastNow : 0.0;
     g_levelLastNow = now;
     float step = (float)(dt < 0.25 ? dt : 0.25);
@@ -170,10 +212,7 @@ float CurrentMusicLevel() {
     // photosensitivity), the same at any frame rate.
     UINT32 queued = QueuedMusicBuffers();
     if (queued == 0) return g_levelSmoothed = MusicGlowStep(g_musicGlow, 0.0f, step); // starved: fade out gently
-    // Pool slots are used in order, so the oldest still-queued buffer --
-    // the one playing -- is `queued` slots behind the next free one.
-    int slot = (g_musicPoolNext - (int)queued + MUSIC_POOL_SIZE) % MUSIC_POOL_SIZE;
-    if (slot != g_levelSlot) { g_levelSlot = slot; g_levelSlotStart = now; }
+    int slot = PlayingSlot(now, queued);
     int q = (int)((now - g_levelSlotStart) * MUSIC_SAMPLE_RATE / (MUSIC_CHUNK_SAMPLES / LEVEL_STEPS));
     q = q < 0 ? 0 : (q >= LEVEL_STEPS ? LEVEL_STEPS - 1 : q);
     g_levelSmoothed = MusicGlowStep(g_musicGlow, g_chunkLevels[slot][q], step);
@@ -199,6 +238,14 @@ bool InitAudio() {
 
     if (FAILED(g_xaudio2->CreateSourceVoice(&g_musicVoice, &wfx))) return false;
     g_musicPool = new int16_t[MUSIC_POOL_SIZE][MUSIC_CHUNK_SAMPLES];
+    // The palette's voice is optional: without it the game just has music.
+    if (SUCCEEDED(g_xaudio2->CreateSourceVoice(&g_worldVoice, &wfx))) {
+        g_worldPool = new int16_t[WORLD_POOL][WORLD_BUFFER_SAMPLES];
+        g_palette = new SoundPalette();
+        g_worldVoice->Start();
+    } else {
+        g_worldVoice = nullptr;
+    }
     ApplyAudioVolumes();
     // Deliberately not started here -- the title screen is silent by
     // design (Section 13); playback only begins via StartMusicPlayback().
@@ -206,10 +253,74 @@ bool InitAudio() {
 }
 
 void ShutdownAudio() {
+    if (g_worldVoice) { g_worldVoice->Stop(); g_worldVoice->DestroyVoice(); g_worldVoice = nullptr; }
+    delete[] g_worldPool; g_worldPool = nullptr;
+    delete g_palette; g_palette = nullptr;
     if (g_musicVoice) { g_musicVoice->Stop(); g_musicVoice->DestroyVoice(); g_musicVoice = nullptr; }
     if (g_masteringVoice) { g_masteringVoice->DestroyVoice(); g_masteringVoice = nullptr; }
     if (g_xaudio2) { g_xaudio2->Release(); g_xaudio2 = nullptr; }
     // DestroyVoice is synchronous, so nothing can still be reading these.
     delete[] g_musicPool;
     g_musicPool = nullptr;
+}
+
+// ---------------------------------------------------------------------
+// World sound palette (docs/SOUND_PALETTE.md)
+// ---------------------------------------------------------------------
+
+static UINT32 QueuedWorldBuffers() {
+    XAUDIO2_VOICE_STATE vs;
+    g_worldVoice->GetState(&vs, XAUDIO2_VOICE_NOSAMPLESPLAYED);
+    return vs.BuffersQueued;
+}
+
+// Tops the palette's queue up to WORLD_QUEUE buffers. Each buffer is
+// rendered for the music time it will be heard at: what's audible now plus
+// what's already queued ahead of it.
+static void PumpWorldSound() {
+    if (!g_worldVoice || !g_palette) return;
+    UINT32 queued = QueuedWorldBuffers();
+    if (g_worldIdle && g_palette->Silent()) return; // nothing to say: render nothing
+    bool running = g_nextChunkStartTime >= 0.0;
+    double t = AudibleMusicTime() + (double)queued * WORLD_BUFFER_SAMPLES / MUSIC_SAMPLE_RATE;
+    float buf[WORLD_BUFFER_SAMPLES];
+    while (queued < (UINT32)WORLD_QUEUE) {
+        g_palette->Render(buf, WORLD_BUFFER_SAMPLES, t, running);
+        int16_t* out = g_worldPool[g_worldPoolNext];
+        g_worldPoolNext = (g_worldPoolNext + 1) % WORLD_POOL;
+        for (int i = 0; i < WORLD_BUFFER_SAMPLES; i++) {
+            float v = buf[i] > 1.0f ? 1.0f : buf[i] < -1.0f ? -1.0f : buf[i];
+            out[i] = (int16_t)(v * 32767.0f);
+        }
+        XAUDIO2_BUFFER xb = {};
+        xb.AudioBytes = WORLD_BUFFER_SAMPLES * sizeof(int16_t);
+        xb.pAudioData = (const BYTE*)out;
+        g_worldVoice->SubmitSourceBuffer(&xb);
+        queued++;
+        if (running) t += (double)WORLD_BUFFER_SAMPLES / MUSIC_SAMPLE_RATE;
+    }
+    g_worldIdle = g_palette->Silent();
+}
+
+void PlayWorldSound(const SoundCue& cue) {
+    if (!g_palette) return;
+    g_palette->Play(cue);
+    g_worldIdle = false;
+    PumpWorldSound(); // start it now, not next frame
+}
+void ReleaseWorldSound(SoundId id) { if (g_palette) g_palette->Release(id); }
+void FadeWorldSounds(float seconds) { if (g_palette) { g_palette->FadeOut(seconds); g_palette->SetAmbientEnabled(false); } }
+
+void UpdateWorldSound(const SoundAxes& axes, const AmbientScene& scene, bool playing) {
+    g_musicColour.positive = axes.positive;
+    g_musicColour.activity = axes.activity;
+    g_musicColour.mechanical = axes.mechanical;
+    if (!g_palette) return;
+    g_palette->SetAxes(axes);
+    g_palette->SetScene(scene);
+    g_palette->SetIntensity(g_musicIntensity);
+    bool live = playing && g_nextChunkStartTime >= 0.0;
+    g_palette->SetAmbientEnabled(live);
+    if (live) g_worldIdle = false; // the scheduler may place something this bar
+    PumpWorldSound();
 }
