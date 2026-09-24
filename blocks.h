@@ -112,6 +112,10 @@ enum BlockID : uint8_t {
     BLOCK_ORE_HOPPER,
     BLOCK_WOOD_STRUT,
     BLOCK_LATTICE_STRUT,
+    BLOCK_GLOWCAP,
+    BLOCK_MOSS_CANOPY,
+    BLOCK_FERN_COIL,
+    BLOCK_SPROUT_COIL,
     BLOCK_COUNT
 };
 
@@ -149,6 +153,9 @@ enum BlockShape : uint8_t {
     SHAPE_VENT,          // a column flaring at the top
     SHAPE_HOPPER,        // an open inverted frustum that catches what falls in
     SHAPE_STRUT,         // an X-brace in the plane facing the player
+    // Landmarks: distinctive, meant to be placed deliberately and sparingly
+    SHAPE_CANOPY_CAP,    // a stalk under a broad faceted cap
+    SHAPE_COIL_STALK,    // a stem curling over at the top, like a fern's head
     SHAPE_COUNT
 };
 
@@ -337,6 +344,11 @@ inline const BlockDef g_blocks[BLOCK_COUNT] = {
     { "ore_hopper",            true,  true,  true,  false, false, SHAPE_HOPPER,        PLACE_PLAIN,        GLOW_NONE,  false, TEX("foundation", nullptr, nullptr, nullptr, nullptr) },
     { "wood_strut",            true,  true,  true,  false, false, SHAPE_STRUT,         PLACE_FACE_PLAYER,  GLOW_NONE,  false, TEX("wood", nullptr, nullptr, nullptr, nullptr) },
     { "lattice_strut",         true,  true,  true,  false, false, SHAPE_STRUT,         PLACE_FACE_PLAYER,  GLOW_NONE,  false, TEX("custodian_lattice", nullptr, nullptr, nullptr, nullptr) },
+    // Landmarks (4.15): deliberate, low-frequency shapes -- not scatter.
+    { "glowcap",               true,  true,  true,  false, false, SHAPE_CANOPY_CAP,    PLACE_CLICKED_AXIS, GLOW_PULSE, false, TEX("pulsing_membrane", nullptr, nullptr, nullptr, nullptr) },
+    { "moss_canopy",           true,  true,  true,  false, false, SHAPE_CANOPY_CAP,    PLACE_CLICKED_AXIS, GLOW_NONE,  false, TEX(nullptr, "moss", "log_top", "log_bark", nullptr) },
+    { "fern_coil",             true,  true,  true,  false, false, SHAPE_COIL_STALK,    PLACE_CLICKED_AXIS, GLOW_NONE,  false, TEX("meadow_grass", nullptr, nullptr, nullptr, nullptr) },
+    { "sprout_coil",           true,  true,  true,  false, false, SHAPE_COIL_STALK,    PLACE_CLICKED_AXIS, GLOW_NONE,  false, TEX("seedling_sprout", nullptr, nullptr, nullptr, nullptr) },
 };
 #undef TEX
 

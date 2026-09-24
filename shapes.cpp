@@ -312,6 +312,14 @@ Canon BuildCanon(BlockShape shape) {
         AddHull(c, p); p.clear();
         for (int z : { 3, 5 }) { p.push_back({ 8, 0, z }); p.push_back({ 7, 0, z }); p.push_back({ 0, 7, z }); p.push_back({ 0, 8, z }); p.push_back({ 1, 8, z }); p.push_back({ 8, 1, z }); }
         AddHull(c, p); break;
+    case SHAPE_CANOPY_CAP:    // a stalk, and a broad cap overhanging it (its underside shows)
+        Ring(p, 0, 4, 4, 2, 1); Ring(p, 5, 4, 4, 2, 1); AddHull(c, p); p.clear();
+        Ring(p, 4, 4, 4, 4, 2); Ring(p, 6, 4, 4, 4, 2); Ring(p, 8, 4, 4, 2, 1); AddHull(c, p); break;
+    case SHAPE_COIL_STALK:    // a square stem rising, then curling over toward +Z and back in
+        Box(p, 3, 0, 3, 5, 6, 5); AddHull(c, p); p.clear();
+        Box(p, 3, 6, 3, 5, 8, 6); AddHull(c, p); p.clear();
+        Box(p, 3, 5, 6, 5, 8, 8); AddHull(c, p); p.clear();
+        Box(p, 3, 3, 5, 5, 5, 7); AddHull(c, p); break;
     default: break;
     }
     return c;
