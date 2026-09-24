@@ -21,7 +21,7 @@ enum ProfSection {
     PROF_MESH,      // chunk mesh rebuilds + GPU uploads
     PROF_SHADOW,    // shadow map re-render (only when stale)
     PROF_WORLD,     // sky + world draw submission (CPU side)
-    PROF_POST,      // post pass (outlines, SSAO)
+    PROF_POST,      // post pass (outlines, SSAO, bloom)
     PROF_UI,        // UI build + draw submission
     PROF_PRESENT,   // Present(): mostly vsync wait, not work
     PROF_COUNT

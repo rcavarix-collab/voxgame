@@ -33,9 +33,9 @@ extern int g_keyBindings[ACT_COUNT];
 extern float g_sensitivityMultX, g_sensitivityMultY;
 extern bool g_invertX, g_invertY;
 extern bool g_showFPS;
-extern bool g_fullscreen;
-// Graphics effects (Section 4.8), each independently toggleable.
-extern bool g_shadows, g_postEdges, g_postSSAO; // borderless fullscreen on the window's monitor (Display settings / F11)
+extern bool g_fullscreen; // borderless fullscreen on the window's monitor (Display settings / F11)
+// Graphics effects (Sections 4.8, 4.10), each independently toggleable.
+extern bool g_shadows, g_postEdges, g_postSSAO, g_bloom;
 extern float g_masterVolume;
 extern float g_musicVolume;
 extern float g_fov; // degrees, vertical

@@ -79,6 +79,17 @@ static ID3D11PixelShader* g_postPS = nullptr;
 static ID3D11Buffer* g_postCB = nullptr;
 static ID3D11SamplerState* g_pointClampSampler = nullptr;
 static bool g_postAvailable = false;
+// Bloom (Section 4.10): two quarter-resolution targets ping-ponged by a
+// downsample and a separable blur, composited by the post pass.
+static ID3D11RenderTargetView* g_bloomRTV[2] = { nullptr, nullptr };
+static ID3D11ShaderResourceView* g_bloomSRV[2] = { nullptr, nullptr };
+static int g_bloomW = 0, g_bloomH = 0;
+static ID3D11PixelShader* g_bloomDownPS = nullptr;
+static ID3D11PixelShader* g_bloomBlurPS = nullptr;
+static ID3D11Buffer* g_bloomCB = nullptr;
+static ID3D11SamplerState* g_linearClampSampler = nullptr;
+static bool g_bloomAvailable = false;
+static const float BLOOM_STRENGTH = 2.0f; // screen-blended, so it brightens but never clips
 // Debug lines.
 struct DebugVertex { float x, y, z, r, g, b, a; };
 static const UINT DEBUG_VB_CAPACITY = 128;
@@ -268,10 +279,12 @@ static const char* g_debugShaderSrc =
 // from SV_VertexID, so it needs no vertex buffer.
 static const char* g_postShaderSrc =
     "cbuffer PostCB : register(b0) { float4 p0; float4 p1; };\n"
-    // p0: x outlines on, y SSAO on, z near plane, w far plane; p1: x 1/width, y 1/height, z proj[1][1], w unused
+    // p0: x outlines on, y SSAO on, z near plane, w far plane; p1: x 1/width, y 1/height, z proj[1][1], w bloom strength (0 = off)
     "Texture2D sceneTex : register(t0);\n"
     "Texture2D<float> depthTex : register(t1);\n"
+    "Texture2D bloomTex : register(t2);\n"
     "SamplerState pointSamp : register(s0);\n"
+    "SamplerState linearSamp : register(s1);\n"
     "struct VSOut { float4 pos:SV_POSITION; float2 uv:TEXCOORD0; };\n"
     "VSOut VSMain(uint id : SV_VertexID) {\n"
     "    VSOut o;\n"
@@ -284,10 +297,16 @@ static const char* g_postShaderSrc =
     "    float z = depthTex.SampleLevel(pointSamp, uv, 0);\n"
     "    return p0.z * p0.w / (p0.w - z * (p0.w - p0.z));\n"
     "}\n"
+    "float3 Bloom(float3 c, float2 uv) {\n"
+    // Screen blend: glow brightens without ever clipping to flat white.
+    "    if (p1.w <= 0.0f) return c;\n"
+    "    float3 b = bloomTex.SampleLevel(linearSamp, uv, 0).rgb * p1.w;\n"
+    "    return 1.0f - (1.0f - c) * (1.0f - saturate(b));\n"
+    "}\n"
     "float4 PSMain(VSOut i) : SV_TARGET {\n"
     "    float3 c = sceneTex.SampleLevel(pointSamp, i.uv, 0).rgb;\n"
     "    float d = LinDepth(i.uv);\n"
-    "    if (d > p0.w * 0.98f) return float4(c, 1.0f);\n"          // sky: nothing to shade
+    "    if (d > p0.w * 0.98f) return float4(Bloom(c, i.uv), 1.0f);\n" // sky: nothing to shade, but the sun glows
     "    float2 px = p1.xy;\n"
     "    float l = LinDepth(i.uv - float2(px.x, 0.0f)), r = LinDepth(i.uv + float2(px.x, 0.0f));\n"
     "    float u = LinDepth(i.uv - float2(0.0f, px.y)), dn = LinDepth(i.uv + float2(0.0f, px.y));\n"
@@ -316,6 +335,36 @@ static const char* g_postShaderSrc =
     "        }\n"
     "        c *= 1.0f - 0.55f * occ / 12.0f;\n"
     "    }\n"
+    "    return float4(Bloom(c, i.uv), 1.0f);\n"
+    "}\n";
+
+// Bloom (Section 4.10), at quarter resolution, drawn with the post pass's
+// full-screen triangle. Only what the scene marks as glowing (its alpha:
+// reactive blocks, the sun's disc) blooms -- no brightness threshold, so
+// a sunlit wall never smears.
+// Downsample: 4 bilinear taps = a 4x4 box of the full-res scene.
+static const char* g_bloomDownShaderSrc =
+    "cbuffer BloomCB : register(b0) { float4 step; };\n" // xy: one full-res texel
+    "Texture2D sceneTex : register(t0);\n"
+    "SamplerState linearSamp : register(s1);\n"
+    "struct VSOut { float4 pos:SV_POSITION; float2 uv:TEXCOORD0; };\n"
+    "float3 Tap(float2 uv) { float4 s = sceneTex.SampleLevel(linearSamp, uv, 0); return s.rgb * s.a; }\n"
+    "float4 PSMain(VSOut i) : SV_TARGET {\n"
+    "    float2 o = step.xy;\n"
+    "    return float4(0.25f * (Tap(i.uv + float2(-o.x, -o.y)) + Tap(i.uv + float2(o.x, -o.y))\n"
+    "                         + Tap(i.uv + float2(-o.x,  o.y)) + Tap(i.uv + float2(o.x,  o.y))), 1.0f);\n"
+    "}\n";
+// Separable 9-tap Gaussian in 5 bilinear fetches, along step.xy.
+static const char* g_bloomBlurShaderSrc =
+    "cbuffer BloomCB : register(b0) { float4 step; };\n" // xy: texel step along the blur direction
+    "Texture2D srcTex : register(t0);\n"
+    "SamplerState linearSamp : register(s1);\n"
+    "struct VSOut { float4 pos:SV_POSITION; float2 uv:TEXCOORD0; };\n"
+    "float4 PSMain(VSOut i) : SV_TARGET {\n"
+    "    float2 d1 = step.xy * 1.3846154f, d2 = step.xy * 3.2307692f;\n"
+    "    float3 c = srcTex.SampleLevel(linearSamp, i.uv, 0).rgb * 0.2270270f\n"
+    "             + (srcTex.SampleLevel(linearSamp, i.uv + d1, 0).rgb + srcTex.SampleLevel(linearSamp, i.uv - d1, 0).rgb) * 0.3162162f\n"
+    "             + (srcTex.SampleLevel(linearSamp, i.uv + d2, 0).rgb + srcTex.SampleLevel(linearSamp, i.uv - d2, 0).rgb) * 0.0702703f;\n"
     "    return float4(c, 1.0f);\n"
     "}\n";
 
@@ -421,7 +470,9 @@ static const char* g_skyShaderSrc =
     "    float3 cloudLit = fAmbientUp.rgb * 1.1f + fSunColor.rgb * (0.30f + 0.55f * pow(saturate(mu), 4.0f)) + fMoonColor.rgb * 0.8f;\n"
     "    cloudLit *= lerp(1.0f, 0.72f, smoothstep(fFog.w + 0.12f, fFog.w + 0.35f, cloudN));\n"
     "    col = lerp(col, cloudLit, cloud * 0.92f);\n"
-    "    return float4(ToDisplay(col), saturate(sunDisc * (1.0f - cloud)));\n"
+    // Glow mask for bloom: the disc, plus a softer halo around it.
+    "    float sunGlow = saturate(sunDisc + 0.5f * smoothstep(0.985f, 0.9996f, mu) * params.y * above);\n"
+    "    return float4(ToDisplay(col), sunGlow * (1.0f - cloud));\n"
     "}\n";
 
 // Emits one cube face (4 verts + 6 indices) for the given corners.
@@ -647,6 +698,43 @@ static void UpdateShadowMap(World& w, Vec3 eye, Vec3 sun) {
 
 static void DrawLineDebug(const Mat4& viewProj, Vec3 player); // below InitD3D, beside its pipeline
 
+// Bloom (Section 4.10): the scene's glow (rgb * alpha) down to quarter
+// resolution, then blurred three times, each pass twice as wide as the
+// last, for a soft core with a long falloff. Leaves the result in
+// g_bloomSRV[0]. Six quarter-res passes plus one downsample: a fixed cost
+// set by the window.
+// Expects the post pass's VS, samplers and depth state already bound.
+static void RenderBloom() {
+    D3D11_VIEWPORT vp = {};
+    vp.Width = (float)g_bloomW; vp.Height = (float)g_bloomH; vp.MaxDepth = 1;
+    g_context->RSSetViewports(1, &vp);
+    g_context->PSSetConstantBuffers(0, 1, &g_bloomCB);
+    ID3D11ShaderResourceView* none = nullptr;
+    auto pass = [&](ID3D11PixelShader* ps, ID3D11ShaderResourceView* src, int dst, float sx, float sy) {
+        D3D11_MAPPED_SUBRESOURCE mapped;
+        g_context->Map(g_bloomCB, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
+        float step[4] = { sx, sy, 0, 0 };
+        memcpy(mapped.pData, step, sizeof(step));
+        g_context->Unmap(g_bloomCB, 0);
+        g_context->PSSetShaderResources(0, 1, &none);     // dst may still be bound as the last source
+        g_context->OMSetRenderTargets(1, &g_bloomRTV[dst], nullptr);
+        g_context->PSSetShader(ps, nullptr, 0);
+        g_context->PSSetShaderResources(0, 1, &src);
+        g_context->Draw(3, 0);
+    };
+    float bx = 1.0f / g_bloomW, by = 1.0f / g_bloomH;
+    pass(g_bloomDownPS, g_sceneSRV, 0, 1.0f / g_screenW, 1.0f / g_screenH);
+    pass(g_bloomBlurPS, g_bloomSRV[0], 1, bx, 0);
+    pass(g_bloomBlurPS, g_bloomSRV[1], 0, 0, by);
+    pass(g_bloomBlurPS, g_bloomSRV[0], 1, 2 * bx, 0);
+    pass(g_bloomBlurPS, g_bloomSRV[1], 0, 0, 2 * by);
+    pass(g_bloomBlurPS, g_bloomSRV[0], 1, 4 * bx, 0);
+    pass(g_bloomBlurPS, g_bloomSRV[1], 0, 0, 4 * by);
+    g_context->PSSetShaderResources(0, 1, &none);
+    vp.Width = (float)g_screenW; vp.Height = (float)g_screenH;
+    g_context->RSSetViewports(1, &vp);
+}
+
 void RenderScene(World& w, const Mat4& view, const Mat4& proj, Vec3 eye, Vec3 forward, Vec3 up, float dayTime) {
     SkyState sky = ComputeSky(dayTime);
     bool shadows = g_shadows && g_shadowsAvailable && sky.sunLight > 0.001f;
@@ -681,7 +769,8 @@ void RenderScene(World& w, const Mat4& view, const Mat4& proj, Vec3 eye, Vec3 fo
     int64_t worldStart = ProfNow();
     // With no post effect on, draw straight to the backbuffer: the post
     // path costs nothing at all while it's switched off.
-    bool post = (g_postEdges || g_postSSAO) && g_postAvailable;
+    bool bloom = g_bloom && g_bloomAvailable && g_bloomRTV[0] && g_bloomRTV[1];
+    bool post = (g_postEdges || g_postSSAO || bloom) && g_postAvailable;
     ID3D11RenderTargetView* target = post ? g_sceneRTV : g_rtv;
     ID3D11ShaderResourceView* nulls[2] = { nullptr, nullptr };
     g_context->PSSetShaderResources(0, 2, nulls); // last frame's post inputs
@@ -773,26 +862,29 @@ void RenderScene(World& w, const Mat4& view, const Mat4& proj, Vec3 eye, Vec3 fo
     // Post pass: scene + depth in, backbuffer out.
     if (post) {
         ProfScope prof(PROF_POST);
+        g_context->VSSetShader(g_postVS, nullptr, 0);
+        g_context->IASetInputLayout(nullptr);
+        g_context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        g_context->OMSetDepthStencilState(g_uiDepthState, 0);
+        ID3D11SamplerState* postSamplers[2] = { g_pointClampSampler, g_linearClampSampler };
+        g_context->PSSetSamplers(0, 2, postSamplers);
+        if (bloom) RenderBloom();
         g_context->OMSetRenderTargets(1, &g_rtv, nullptr);
         struct { float p0[4]; float p1[4]; } cb = {
             { g_postEdges ? 1.0f : 0.0f, g_postSSAO ? 1.0f : 0.0f, 0.1f, 500.0f }, // near/far: main.cpp's projection
-            { 1.0f / g_screenW, 1.0f / g_screenH, proj.m[1][1], 0.0f },
+            { 1.0f / g_screenW, 1.0f / g_screenH, proj.m[1][1], bloom ? BLOOM_STRENGTH : 0.0f },
         };
         D3D11_MAPPED_SUBRESOURCE mapped;
         g_context->Map(g_postCB, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
         memcpy(mapped.pData, &cb, sizeof(cb));
         g_context->Unmap(g_postCB, 0);
-        g_context->VSSetShader(g_postVS, nullptr, 0);
         g_context->PSSetShader(g_postPS, nullptr, 0);
-        g_context->IASetInputLayout(nullptr);
-        g_context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         g_context->PSSetConstantBuffers(0, 1, &g_postCB);
-        g_context->PSSetSamplers(0, 1, &g_pointClampSampler);
-        ID3D11ShaderResourceView* srvs[2] = { g_sceneSRV, g_depthSRV };
-        g_context->PSSetShaderResources(0, 2, srvs);
-        g_context->OMSetDepthStencilState(g_uiDepthState, 0);
+        ID3D11ShaderResourceView* srvs[3] = { g_sceneSRV, g_depthSRV, bloom ? g_bloomSRV[0] : nullptr };
+        g_context->PSSetShaderResources(0, 3, srvs);
         g_context->Draw(3, 0);
-        g_context->PSSetShaderResources(0, 2, nulls);
+        ID3D11ShaderResourceView* nulls3[3] = { nullptr, nullptr, nullptr };
+        g_context->PSSetShaderResources(0, 3, nulls3);
         g_context->OMSetDepthStencilState(g_depthState, 0);
     }
 }
@@ -899,6 +991,19 @@ static void CreateSizeDependentTargets() {
     g_device->CreateShaderResourceView(sceneTex, nullptr, &g_sceneSRV);
     sceneTex->Release();
 
+    // Bloom's quarter-resolution ping-pong pair.
+    g_bloomW = std::max(1, g_screenW / 4); g_bloomH = std::max(1, g_screenH / 4);
+    D3D11_TEXTURE2D_DESC bloomDesc = sceneDesc;
+    bloomDesc.Width = g_bloomW; bloomDesc.Height = g_bloomH;
+    bloomDesc.Format = DXGI_FORMAT_R11G11B10_FLOAT; // float: three blur passes over dim halos would band in 8 bits
+    for (int i = 0; i < 2; i++) {
+        ID3D11Texture2D* bt = nullptr;
+        if (FAILED(g_device->CreateTexture2D(&bloomDesc, nullptr, &bt))) continue;
+        g_device->CreateRenderTargetView(bt, nullptr, &g_bloomRTV[i]);
+        g_device->CreateShaderResourceView(bt, nullptr, &g_bloomSRV[i]);
+        bt->Release();
+    }
+
     D3D11_VIEWPORT vp = {};
     vp.Width = (float)g_screenW; vp.Height = (float)g_screenH;
     vp.MinDepth = 0; vp.MaxDepth = 1;
@@ -916,6 +1021,10 @@ void ResizeRenderTargets(int w, int h) {
     if (g_depthSRV) { g_depthSRV->Release(); g_depthSRV = nullptr; }
     if (g_sceneRTV) { g_sceneRTV->Release(); g_sceneRTV = nullptr; }
     if (g_sceneSRV) { g_sceneSRV->Release(); g_sceneSRV = nullptr; }
+    for (int i = 0; i < 2; i++) {
+        if (g_bloomRTV[i]) { g_bloomRTV[i]->Release(); g_bloomRTV[i] = nullptr; }
+        if (g_bloomSRV[i]) { g_bloomSRV[i]->Release(); g_bloomSRV[i] = nullptr; }
+    }
     g_swapChain->ResizeBuffers(0, (UINT)w, (UINT)h, DXGI_FORMAT_UNKNOWN, 0);
     CreateSizeDependentTargets();
 }
@@ -1162,7 +1271,18 @@ bool InitD3D(HWND hwnd) {
         ps.AddressU = ps.AddressV = ps.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
         ps.MaxLOD = D3D11_FLOAT32_MAX;
         g_device->CreateSamplerState(&ps, &g_pointClampSampler);
-        g_postAvailable = g_postVS && g_postPS && g_postCB && g_pointClampSampler;
+        ps.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+        g_device->CreateSamplerState(&ps, &g_linearClampSampler);
+        g_postAvailable = g_postVS && g_postPS && g_postCB && g_pointClampSampler && g_linearClampSampler;
+
+        // Bloom (Section 4.10) rides on the post pass.
+        ID3DBlob* bd = CompileShader(g_bloomDownShaderSrc, "PSMain", "ps_4_0");
+        ID3DBlob* bb = CompileShader(g_bloomBlurShaderSrc, "PSMain", "ps_4_0");
+        if (bd) { g_device->CreatePixelShader(bd->GetBufferPointer(), bd->GetBufferSize(), nullptr, &g_bloomDownPS); bd->Release(); }
+        if (bb) { g_device->CreatePixelShader(bb->GetBufferPointer(), bb->GetBufferSize(), nullptr, &g_bloomBlurPS); bb->Release(); }
+        pb.ByteWidth = 4 * sizeof(float);
+        g_device->CreateBuffer(&pb, nullptr, &g_bloomCB);
+        g_bloomAvailable = g_postAvailable && g_bloomDownPS && g_bloomBlurPS && g_bloomCB;
     }
 
     // --- Debug line pipeline (optional).
