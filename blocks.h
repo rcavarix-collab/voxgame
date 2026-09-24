@@ -120,6 +120,8 @@ enum BlockID : uint8_t {
     BLOCK_PULSE_HARVESTER,
     BLOCK_PULSE_PIPE,
     BLOCK_PULSE_STORE,
+    BLOCK_PULSE_PIPE_CW,   // twisted pipes: they give pulse a clockwise or anticlockwise spin
+    BLOCK_PULSE_PIPE_CCW,
     BLOCK_COUNT
 };
 
@@ -356,9 +358,11 @@ inline const BlockDef g_blocks[BLOCK_COUNT] = {
     { "fern_coil",             true,  true,  true,  false, false, SHAPE_COIL_STALK,    PLACE_CLICKED_AXIS, GLOW_NONE,  false, TEX("meadow_grass", nullptr, nullptr, nullptr, nullptr) },
     { "sprout_coil",           true,  true,  true,  false, false, SHAPE_COIL_STALK,    PLACE_CLICKED_AXIS, GLOW_NONE,  false, TEX("seedling_sprout", nullptr, nullptr, nullptr, nullptr) },
     // Pulse logistics (Part VI): a harvester gathers pulse on the beat, pipes carry it, stores keep count.
-    { "pulse_harvester",       true,  true,  true,  false, true,  SHAPE_CUBE,          PLACE_PLAIN,        GLOW_NONE,  false, TEX("machine", "star_forge", nullptr, nullptr, nullptr) },
-    { "pulse_pipe",            true,  true,  true,  false, false, SHAPE_PULSE_PIPE,    PLACE_CLICKED_AXIS, GLOW_NONE,  false, TEX("tube", nullptr, nullptr, nullptr, nullptr) },
-    { "pulse_store",           true,  true,  true,  false, true,  SHAPE_CUBE,          PLACE_PLAIN,        GLOW_NONE,  false, TEX("custodian_lattice", "dawn_light", nullptr, nullptr, nullptr) },
+    { "pulse_harvester",       true,  true,  true,  false, true,  SHAPE_CUBE,          PLACE_PLAIN,        GLOW_NONE,  false, TEX("pulse_harvester_side", "pulse_harvester_top", "pulse_plate", nullptr, nullptr) },
+    { "pulse_pipe",            true,  true,  true,  false, false, SHAPE_PULSE_PIPE,    PLACE_CLICKED_AXIS, GLOW_NONE,  false, TEX("pulse_pipe", nullptr, nullptr, nullptr, nullptr) },
+    { "pulse_store",           true,  true,  true,  false, true,  SHAPE_CUBE,          PLACE_PLAIN,        GLOW_NONE,  false, TEX("pulse_store_side", "pulse_store_top", "pulse_plate", nullptr, nullptr) },
+    { "pulse_pipe_cw",         true,  true,  true,  false, false, SHAPE_PULSE_PIPE,    PLACE_CLICKED_AXIS, GLOW_NONE,  false, TEX("pulse_pipe_cw", nullptr, nullptr, nullptr, nullptr) },
+    { "pulse_pipe_ccw",        true,  true,  true,  false, false, SHAPE_PULSE_PIPE,    PLACE_CLICKED_AXIS, GLOW_NONE,  false, TEX("pulse_pipe_ccw", nullptr, nullptr, nullptr, nullptr) },
 };
 #undef TEX
 
@@ -370,9 +374,14 @@ static inline bool BlockIsCard(BlockID id) { return g_blocks[id].shape == SHAPE_
 static inline bool ShapeIsProp(int s) { return s >= SHAPE_SWELL_MOUND && s < SHAPE_PULSE_PIPE; }
 // Pulse logistics (Part VI): what a pulse pipe joins -- other pipes, and
 // any face of a harvester, store, chest or machine (no face rules yet).
+static inline bool BlockIsPulsePipe(BlockID id) { return id == BLOCK_PULSE_PIPE || id == BLOCK_PULSE_PIPE_CW || id == BLOCK_PULSE_PIPE_CCW; }
 static inline bool BlockJoinsPipe(BlockID id) {
-    return id == BLOCK_PULSE_PIPE || id == BLOCK_PULSE_HARVESTER || id == BLOCK_PULSE_STORE || id == BLOCK_CHEST || id == BLOCK_MACHINE;
+    return BlockIsPulsePipe(id) || id == BLOCK_PULSE_HARVESTER || id == BLOCK_PULSE_STORE || id == BLOCK_CHEST || id == BLOCK_MACHINE;
 }
+// A pipe's twist, and the spin it gives pulse passing through: +1
+// clockwise (seen from behind, as it travels; a right-handed screw), -1
+// anticlockwise, 0 a plain pipe (which leaves pulse without spin).
+static inline int PipeTwist(BlockID id) { return id == BLOCK_PULSE_PIPE_CW ? 1 : id == BLOCK_PULSE_PIPE_CCW ? -1 : 0; }
 // A full cube you can't see through: hides the faces beside it and
 // darkens AO. Glass is a full cube but not opaque.
 static inline bool BlockOpaqueCube(BlockID id) { return BlockFullCube(id) && !g_blocks[id].translucent; }

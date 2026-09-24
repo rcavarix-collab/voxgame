@@ -147,7 +147,7 @@ static void TestBlockTextures() {
     BlockTextureSet t;
     BuildBlockTextures(none, t);
     CHECK(t.warnings.empty());
-    CHECK(t.layerCount == 14 + 43); // 14 procedural (foundation .. crystal) + 43 more names only the generated art provides (magenta without it)
+    CHECK(t.layerCount == 14 + 51); // 14 procedural (foundation .. crystal) + 51 more names only the generated art provides (magenta without it)
 
     // The natural materials' art in the repo loads cleanly and covers
     // every natural block (no magenta fallback), with seamless wrap.
@@ -161,6 +161,17 @@ static void TestBlockTextures() {
             VtexSet nat; ParseVtex(text, "natural.vtex", nat);
             CHECK(nat.errors.empty() && nat.textures.size() == 46 && nat.blocks.size() == 44);
             for (auto& tx : nat.textures) CHECK(tx.size == 32 && !tx.height.empty()); // one density for everything (32), all with relief
+            // ...with the pulse-logistics set beside it (industry.vtex, Part VI).
+            FILE* fi = fopen("../assets/textures/industry.vtex", "rb");
+            CHECK(fi != nullptr);
+            if (fi) {
+                std::string itext;
+                while ((got = fread(buf, 1, sizeof buf, fi)) > 0) itext.append(buf, got);
+                fclose(fi);
+                size_t before = nat.textures.size();
+                ParseVtex(itext, "industry.vtex", nat);
+                CHECK(nat.errors.empty() && nat.textures.size() == before + 8);
+            }
             BlockTextureSet nt; BuildBlockTextures(nat, nt);
             CHECK(nt.warnings.empty());
             for (auto& w : nt.warnings) printf("    %s\n", w.c_str());
@@ -1016,9 +1027,9 @@ static void TestPulse() {
     printf("pulse logistics\n");
     const float dt = 1.0f / 60.0f;
     PulseTuning t;
-    // Runs `seconds` of play at 120 bpm (two beats a second).
+    // Runs `seconds` of play (a harvester gathers two a second).
     auto run = [&](PulseSystem& p, World& w, float seconds, double& beats) {
-        for (int i = 0; i < (int)(seconds * 60); i++) { beats += 2.0 * dt; p.Tick(w, t, beats, dt); }
+        for (int i = 0; i < (int)(seconds * 60); i++) { beats += dt; p.Tick(w, t, dt); }
     };
     auto place = [](World& w, PulseSystem& p, int x, int y, int z, BlockID id, uint8_t st = 0) { w.Set(x, y, z, id, st); p.OnPlaced(x, y, z, id); };
 
@@ -1028,31 +1039,61 @@ static void TestPulse() {
         ShapePoly polys[MAX_SHAPE_POLYS];
         uint8_t run = (1u << FACE_POS_X) | (1u << FACE_NEG_X), bend = (1u << FACE_POS_X) | (1u << FACE_POS_Y);
         CHECK(PipePolys(run, 0, polys) == 4);   // one seamless tube: no end faces where it joins on
-        CHECK(PipePolys(bend, 0, polys) == 14); // node + two arms, no arm face against the node
+        CHECK(PipePolys(bend, 0, polys) == 12); // a low-poly elbow: six walls, three pieces a side
         CHECK(PipeMouths(run, 0) == 0 && PipeMouths(bend, 0) == 0);
         CHECK(PipeMouths(1u << FACE_NEG_Z, 0) == (1u << FACE_POS_Z));
         CHECK(PipeMouths(0, FACE_POS_Y) == ((1u << FACE_POS_Y) | (1u << FACE_NEG_Y)));
         CHECK(PipePolys(1u << FACE_NEG_Z, 0, polys) == 10); // bar + collar
         uint8_t all = 63;
-        CHECK(PipePolys(all, 0, polys) == 30);
+        CHECK(PipePolys(all, 0, polys) == 20);  // a tube through, four branches off its sides
+        // Every elbow orientation stays on the grid, inside the cell, and
+        // turns through a slanted length.
+        for (int fa = 0; fa < FACE_COUNT; fa++)
+            for (int fb = 0; fb < FACE_COUNT; fb++) {
+                if (fa / 2 == fb / 2) continue;
+                int np = PipePolys((uint8_t)((1u << fa) | (1u << fb)), 0, polys), slanted = 0;
+                bool inside = true;
+                for (int k = 0; k < np; k++) {
+                    if (polys[k].shade >= 6) slanted++;
+                    for (int j = 0; j < polys[k].count; j++) inside = inside && polys[k].v[j].x <= 8 && polys[k].v[j].y <= 8 && polys[k].v[j].z <= 8;
+                }
+                CHECK(np == 12 && slanted == 2 && inside);
+            }
         // No doubled faces: no two polygons of any pipe overlap in the
         // same plane (facing either way).
         bool doubled = false;
+        for (int twist = -1; twist <= 1; twist++)
         for (int mask = 0; mask < 64; mask++)
             for (int st = 0; st < FACE_COUNT; st++) {
-                int np = PipePolys((uint8_t)mask, (uint8_t)st, polys);
+                int np = PipePolys((uint8_t)mask, (uint8_t)st, polys, twist);
                 CHECK(np <= MAX_SHAPE_POLYS);
                 for (int a = 0; a < np; a++)
                     for (int b = a + 1; b < np; b++) {
                         const ShapePoly& A = polys[a]; const ShapePoly& B = polys[b];
+                        if (A.shade >= 6 || B.shade >= 6) continue; // slanted facets: not in an axis plane
                         if (A.texFace / 2 != B.texFace / 2) continue; // same axis, either facing: back-to-back flickers too
                         int ax = A.texFace / 2; // 0 x, 1 y, 2 z
                         auto coord = [&](const ShapeVertex& v, int k) { return k == 0 ? v.x : k == 1 ? v.y : v.z; };
                         if (coord(A.v[0], ax) != coord(B.v[0], ax)) continue;
                         int u = (ax + 1) % 3, w = (ax + 2) % 3;
-                        auto lo = [&](const ShapePoly& p, int k) { int m = 99; for (int i = 0; i < p.count; i++) m = std::min(m, (int)coord(p.v[i], k)); return m; };
-                        auto hi = [&](const ShapePoly& p, int k) { int m = -1; for (int i = 0; i < p.count; i++) m = std::max(m, (int)coord(p.v[i], k)); return m; };
-                        if (lo(A, u) < hi(B, u) && lo(B, u) < hi(A, u) && lo(A, w) < hi(B, w) && lo(B, w) < hi(A, w)) doubled = true;
+                        // Sample the plane finely: a point strictly inside both is a doubled face.
+                        auto inside = [&](const ShapePoly& p, float pu, float pw) {
+                            int sign = 0;
+                            for (int i = 0; i < p.count; i++) {
+                                const ShapeVertex& e0 = p.v[i]; const ShapeVertex& e1 = p.v[(i + 1) % p.count];
+                                float c = (coord(e1, u) - coord(e0, u)) * (pw - coord(e0, w)) - (coord(e1, w) - coord(e0, w)) * (pu - coord(e0, u));
+                                if (fabsf(c) < 1e-6f) return false;
+                                int sg = c > 0 ? 1 : -1;
+                                if (sign && sg != sign) return false;
+                                sign = sg;
+                            }
+                            return true;
+                        };
+                        for (int iu = 0; iu < 32 && !doubled; iu++)
+                            for (int iw = 0; iw < 32 && !doubled; iw++) {
+                                float pu = (iu + 0.37f) / 4.0f, pw = (iw + 0.61f) / 4.0f;
+                                if (inside(A, pu, pw) && inside(B, pu, pw)) doubled = true;
+                            }
                     }
             }
         CHECK(!doubled);
@@ -1066,7 +1107,7 @@ static void TestPulse() {
         place(w, p, 4, 10, 0, BLOCK_PULSE_STORE);
         run(p, w, 10.0f, beats);
         int got = PulseStored(w, 4, 10, 0);
-        printf("    10 s at 120 bpm: gathered %lld, stored %d, in pipes %d, lost %lld\n", p.gathered, got, p.InFlight(), p.lost);
+        printf("    10 s: gathered %lld, stored %d, in pipes %d, lost %lld\n", p.gathered, got, p.InFlight(), p.lost);
         CHECK(p.gathered >= 19 && p.gathered <= 21);
         CHECK(got >= 17 && got + p.InFlight() == (int)p.gathered && p.lost == 0);
         CHECK(PulseStored(w, 0, 10, 0) == 0); // nothing held back
@@ -1119,8 +1160,8 @@ static void TestPulse() {
         CHECK(p.caught >= 30 && a >= 14 && b >= 14 && p.lost == 0);
     }
 
-    // Outlets take turns: two stores on one network fill evenly, and a
-    // full store is skipped; with nowhere left, the harvester holds a few.
+    // Outlets take turns: a store and a machine on one network share evenly;
+    // a full machine is skipped; storage holds without limit (for now).
     {
         World w; PulseSystem p; double beats = 0;
         place(w, p, 0, 10, 0, BLOCK_PULSE_HARVESTER);
@@ -1132,11 +1173,86 @@ static void TestPulse() {
         printf("    shared: store %d, machine %d\n", s, m);
         CHECK(abs(s - m) <= 2 && s > 15);
         run(p, w, 150.0f, beats);
-        m = PulseStored(w, 4, 10, 0); s = PulseStored(w, 2, 11, 0);
-        CHECK(m == PulseCapacity(BLOCK_MACHINE) && s > 200);
-        run(p, w, 60.0f, beats);
-        CHECK(PulseStored(w, 2, 11, 0) == PulseCapacity(BLOCK_PULSE_STORE));
-        CHECK(PulseStored(w, 0, 10, 0) == PulseCapacity(BLOCK_PULSE_HARVESTER) && p.InFlight() == 0 && p.lost == 0);
+        CHECK(PulseStored(w, 4, 10, 0) == PulseCapacity(BLOCK_MACHINE) && PulseStored(w, 2, 11, 0) > 250);
+        CHECK(p.lost == 0 && PulseStored(w, 0, 10, 0) <= 1);
+        // With only the (full) machine to go to, the harvester holds a few
+        // (what was already on its way to the store is lost with it).
+        w.Set(2, 11, 0, BLOCK_AIR);
+        run(p, w, 20.0f, beats);
+        long long lostThen = p.lost;
+        run(p, w, 10.0f, beats);
+        printf("    store gone: harvester holds %d, %d moving, %lld lost\n", PulseStored(w, 0, 10, 0), p.InFlight(), p.lost);
+        CHECK(PulseStored(w, 0, 10, 0) == PulseCapacity(BLOCK_PULSE_HARVESTER) && p.InFlight() == 0 && p.lost == lostThen && lostThen <= 2);
+    }
+
+    // Spin: a pulse takes it from the last pipe it went through, and the
+    // store counts each kind.
+    {
+        World w; PulseSystem p; double beats = 0;
+        place(w, p, 0, 10, 0, BLOCK_PULSE_HARVESTER);
+        place(w, p, 1, 10, 0, BLOCK_PULSE_PIPE, FACE_POS_X);
+        place(w, p, 2, 10, 0, BLOCK_PULSE_PIPE_CW, FACE_POS_X);
+        place(w, p, 3, 10, 0, BLOCK_PULSE_STORE);
+        place(w, p, 0, 10, 2, BLOCK_PULSE_HARVESTER);
+        place(w, p, 1, 10, 2, BLOCK_PULSE_PIPE_CCW, FACE_POS_X);
+        place(w, p, 2, 10, 2, BLOCK_PULSE_PIPE, FACE_POS_X);          // ...and then a plain one takes it away
+        place(w, p, 3, 10, 2, BLOCK_PULSE_STORE);
+        place(w, p, 0, 10, 4, BLOCK_PULSE_HARVESTER);
+        place(w, p, 1, 10, 4, BLOCK_PULSE_PIPE_CCW, FACE_POS_X);       // an anticlockwise one, left open...
+        place(w, p, 8, 10, 4, BLOCK_PULSE_PIPE, FACE_POS_X);          // ...caught by a plain pipe: the air keeps the spin, the pipe takes it
+        place(w, p, 9, 10, 4, BLOCK_PULSE_STORE);
+        place(w, p, 0, 10, 6, BLOCK_PULSE_HARVESTER);
+        place(w, p, 1, 10, 6, BLOCK_PULSE_PIPE_CCW, FACE_POS_X);
+        place(w, p, 8, 10, 6, BLOCK_PULSE_PIPE_CCW, FACE_POS_X);      // caught by a twisted one: anticlockwise
+        place(w, p, 9, 10, 6, BLOCK_PULSE_STORE);
+        run(p, w, 10.0f, beats);
+        PulseCounts a = PulseHeld(w, 3, 10, 0), b = PulseHeld(w, 3, 10, 2), c = PulseHeld(w, 9, 10, 4), d = PulseHeld(w, 9, 10, 6);
+        printf("    spin: cw store %d/%d/%d, plain-after-ccw %d/%d/%d, caught plain %d/%d/%d, caught ccw %d/%d/%d\n",
+               a.n[0], a.n[1], a.n[2], b.n[0], b.n[1], b.n[2], c.n[0], c.n[1], c.n[2], d.n[0], d.n[1], d.n[2]);
+        CHECK(a.n[1] > 15 && a.n[0] == 0 && a.n[2] == 0);
+        CHECK(b.n[0] > 15 && b.n[1] == 0 && b.n[2] == 0);
+        CHECK(c.n[0] > 10 && c.n[2] == 0);
+        CHECK(d.n[2] > 10 && d.n[0] == 0);
+        // Flying pulses show their spin (the corkscrew is drawn from it).
+        std::vector<PulseView> v; p.Views(v);
+        bool spun = false; for (auto& pv : v) if (pv.flying && pv.spin == -1) spun = true;
+        CHECK(spun);
+    }
+
+    // The Line bends time: a harvester where time runs 5x gathers 5x.
+    {
+        World w; PulseSystem p;
+        place(w, p, 0, 10, 0, BLOCK_PULSE_HARVESTER);
+        place(w, p, 1, 10, 0, BLOCK_PULSE_STORE);
+        for (int i = 0; i < 600; i++) p.Tick(w, t, dt, [](int, int, int) { return 5.0f; });
+        printf("    at 5x time: %lld gathered in 10 s\n", p.gathered);
+        CHECK(p.gathered >= 98 && p.gathered <= 101 && PulseStored(w, 1, 10, 0) >= 97);
+        LineState L; LineTuning lt; L.pivotX = 0; L.pivotZ = 0; L.theta = 0; // along +X through the origin
+        CHECK(LineTimeRateAt(L, lt, 50.0f, 0.5f) > 25.0f && LineTimeRateAt(L, lt, 50.0f, 60.0f) < 1.01f);
+    }
+
+    // Twisted pipes: a raised thread winds round a run, one turn a block;
+    // the two hands are mirror images, not the same mesh.
+    {
+        ShapePoly cw[MAX_SHAPE_POLYS], ccw[MAX_SHAPE_POLYS];
+        uint8_t run2 = (1u << FACE_POS_X) | (1u << FACE_NEG_X);
+        int ncw = PipePolys(run2, 0, cw, 1), nccw = PipePolys(run2, 0, ccw, -1);
+        CHECK(ncw == 4 + 4 * 6 && nccw == ncw);
+        bool same = true;
+        for (int i = 0; i < ncw && same; i++) {
+            bool found = false;
+            for (int j = 0; j < nccw && !found; j++) {
+                bool all = true;
+                for (int k = 0; k < cw[i].count; k++) {
+                    bool hit = false;
+                    for (int m = 0; m < ccw[j].count; m++) hit = hit || (cw[i].v[k].x == ccw[j].v[m].x && cw[i].v[k].y == ccw[j].v[m].y && cw[i].v[k].z == ccw[j].v[m].z);
+                    all = all && hit;
+                }
+                found = all;
+            }
+            same = found;
+        }
+        CHECK(!same);
     }
 
     // A harvester in a chunk that returns from storage is found again.

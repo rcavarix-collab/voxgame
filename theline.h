@@ -102,6 +102,14 @@ struct LineState {
 // One simulation tick for a player at (x, y, z).
 void UpdateLine(LineState& s, const LineTuning& t, float x, float y, float z, float dt);
 
+// How strongly the line reaches a place (x, z) right now, 0..1: the same
+// order-of-magnitude falloff as the player feels standing still there.
+float LineIntensityAt(const LineState& s, const LineTuning& t, float x, float z);
+// How fast time runs at a place because of the line: the rate the sky
+// races at (1 far away, up to 1 + skyRace on the line). Pulse harvesters
+// gather at it (Part VI).
+float LineTimeRateAt(const LineState& s, const LineTuning& t, float x, float z);
+
 // Forget everything (new game).
 void ResetLine(LineState& s);
 

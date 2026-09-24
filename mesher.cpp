@@ -120,7 +120,7 @@ void BuildChunkMesh(World& w, const ChunkCoord& cc, const Chunk& c,
                     if (g_blocks[id].shape == SHAPE_PULSE_PIPE) {
                         BlockID nb[FACE_COUNT];
                         for (int f = 0; f < FACE_COUNT; f++) nb[f] = blockAt(px + kFaces[f].nx, py + kFaces[f].ny, pz + kFaces[f].nz);
-                        np = PipePolys(PipeJoinMask(nb), c.state[li], polys);
+                        np = PipePolys(PipeJoinMask(nb), c.state[li], polys, PipeTwist(id));
                     } else {
                         np = ShapePolys(g_blocks[id].shape, c.state[li], polys, variant);
                     }

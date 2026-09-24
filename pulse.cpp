@@ -29,7 +29,9 @@ uint8_t JoinedAt(World& w, const PulseCell& c) {
     return PipeJoinMask(nb);
 }
 
-// The data record: a version byte, then the count (little-endian u32).
+// The data record: a version byte, then the counts (little-endian u32):
+// v1 one count (no spin: saved before twisted pipes), v2 three (none,
+// clockwise, anticlockwise).
 std::vector<uint8_t>* Record(World& w, int x, int y, int z, bool create) {
     if (y < Y_MIN || y > Y_MAX) return nullptr;
     ChunkCoord cc = World::ToChunk(x, y, z);
@@ -53,42 +55,66 @@ std::vector<uint8_t>* Record(World& w, int x, int y, int z, bool create) {
 
 int PulseCapacity(BlockID id) {
     switch (id) {
-    case BLOCK_PULSE_STORE: return 256;
-    case BLOCK_CHEST: return 64;
+    case BLOCK_PULSE_STORE:                 // storage: without limit, for now (owner)
+    case BLOCK_CHEST: return PULSE_UNLIMITED;
     case BLOCK_MACHINE: return 32;          // a buffer, until pulse has a use
     case BLOCK_PULSE_HARVESTER: return 8;   // what it holds when nothing will take it
     default: return 0;
     }
 }
 
-int PulseStored(World& w, int x, int y, int z) {
+PulseCounts PulseHeld(World& w, int x, int y, int z) {
+    PulseCounts c;
     std::vector<uint8_t>* r = Record(w, x, y, z, false);
-    if (!r || r->size() < 5 || (*r)[0] != 1) return 0;
-    return (int)((*r)[1] | ((*r)[2] << 8) | ((*r)[3] << 16) | ((uint32_t)(*r)[4] << 24));
+    if (!r || r->empty()) return c;
+    int kinds = (*r)[0] == 1 ? 1 : (*r)[0] == 2 ? 3 : 0;
+    for (int k = 0; k < kinds && r->size() >= (size_t)(1 + 4 * (k + 1)); k++) {
+        const uint8_t* p = r->data() + 1 + 4 * k;
+        c.n[k] = (int)(p[0] | (p[1] << 8) | (p[2] << 16) | ((uint32_t)p[3] << 24));
+    }
+    return c;
 }
 
-void SetPulseStored(World& w, int x, int y, int z, int count) {
+int PulseStored(World& w, int x, int y, int z) { return PulseHeld(w, x, y, z).Total(); }
+
+void SetPulseHeld(World& w, int x, int y, int z, const PulseCounts& c) {
     std::vector<uint8_t>* r = Record(w, x, y, z, true);
     if (!r) return;
-    uint32_t n = count < 0 ? 0u : (uint32_t)count;
-    r->assign({ 1, (uint8_t)n, (uint8_t)(n >> 8), (uint8_t)(n >> 16), (uint8_t)(n >> 24) });
+    r->assign(13, 0);
+    (*r)[0] = 2;
+    for (int k = 0; k < 3; k++) {
+        uint32_t n = c.n[k] < 0 ? 0u : (uint32_t)c.n[k];
+        for (int b = 0; b < 4; b++) (*r)[1 + 4 * k + b] = (uint8_t)(n >> (8 * b));
+    }
     ChunkCoord cc = World::ToChunk(x, y, z);
-    if (Chunk* c = w.FindChunk(cc)) c->modified = true;
+    if (Chunk* ch = w.FindChunk(cc)) ch->modified = true;
 }
+
+namespace {
+// One more pulse of this spin into a block, if there's room.
+bool Deposit(World& w, const PulseCell& at, int spin) {
+    BlockID b = w.Get(at.x, at.y, at.z);
+    PulseCounts c = PulseHeld(w, at.x, at.y, at.z);
+    if (c.Total() >= PulseCapacity(b)) return false;
+    c.n[SpinIndex(spin)]++;
+    SetPulseHeld(w, at.x, at.y, at.z, c);
+    return true;
+}
+} // namespace
 
 void PulseSystem::Reset() {
     *this = PulseSystem();
 }
 
 void PulseSystem::OnPlaced(int x, int y, int z, BlockID id) {
-    if (id == BLOCK_PULSE_HARVESTER) m_harvesters.insert({ x, y, z });
+    if (id == BLOCK_PULSE_HARVESTER) m_harvesters.emplace(PulseCell{ x, y, z }, 0.0f);
 }
 
 void PulseSystem::OnChunkArrived(const ChunkCoord& cc, const Chunk& c) {
     for (int i = 0; i < CHUNK_CELLS; i++) {
         if (c.blocks[i] != BLOCK_PULSE_HARVESTER) continue;
         int lx = i % CHUNK_SIZE, lz = (i / CHUNK_SIZE) % CHUNK_SIZE, ly = i / (CHUNK_SIZE * CHUNK_SIZE);
-        m_harvesters.insert({ cc.x * CHUNK_SIZE + lx, cc.y * CHUNK_SIZE + ly, cc.z * CHUNK_SIZE + lz });
+        m_harvesters.emplace(PulseCell{ cc.x * CHUNK_SIZE + lx, cc.y * CHUNK_SIZE + ly, cc.z * CHUNK_SIZE + lz }, 0.0f);
     }
 }
 
@@ -98,7 +124,7 @@ int PulseSystem::NetworkAt(World& w, const PulseTuning& t, const PulseCell& pipe
     if (w.edits != m_seenEdits) { m_pipeNet.clear(); m_nets.clear(); m_seenEdits = w.edits; }
     auto it = m_pipeNet.find(pipe);
     if (it != m_pipeNet.end()) return it->second;
-    if (w.Get(pipe.x, pipe.y, pipe.z) != BLOCK_PULSE_PIPE) return -1;
+    if (!BlockIsPulsePipe(w.Get(pipe.x, pipe.y, pipe.z))) return -1;
     int id = (int)m_nets.size();
     m_nets.emplace_back();
     Network& net = m_nets.back();
@@ -111,7 +137,7 @@ int PulseSystem::NetworkAt(World& w, const PulseTuning& t, const PulseCell& pipe
         for (int f = 0; f < FACE_COUNT; f++) {
             PulseCell n = Step(c, f);
             nb[f] = w.Get(n.x, n.y, n.z);
-            if (nb[f] == BLOCK_PULSE_PIPE) {
+            if (BlockIsPulsePipe(nb[f])) {
                 if (m_pipeNet.count(n) || (int)(net.pipes.size() + open.size()) >= t.maxNetworkCells) continue;
                 m_pipeNet[n] = id;
                 open.push_back(n);
@@ -212,13 +238,14 @@ bool PulseSystem::StepFlying(World& w, const PulseTuning& t, Moving& m, float dt
     m.cell = c;
     if (c.y < Y_MIN || c.y > Y_MAX) { lost++; return false; }
     BlockID b = w.Get(c.x, c.y, c.z);
-    if (b == BLOCK_PULSE_PIPE) {
+    if (BlockIsPulsePipe(b)) {
         // Caught only by a mouth facing it; the side of a pipe is a wall.
         int facing = m.face ^ 1; // the pipe's face the pulse arrives through
         if (PipeMouths(JoinedAt(w, c), w.GetState(c.x, c.y, c.z)) & (1u << facing)) {
             Moving next;
             if (Route(w, t, c, nullptr, facing, next)) {
                 next.age = m.age;
+                next.spin = m.spin;
                 m = std::move(next);
                 caught++;
                 return true;
@@ -232,36 +259,35 @@ bool PulseSystem::StepFlying(World& w, const PulseTuning& t, Moving& m, float dt
 }
 
 bool PulseSystem::StepPiped(World& w, const PulseTuning& t, Moving& m, float dt) {
-    float before = m.along;
     m.along += t.pipeSpeed * dt;
     int last = (int)m.path.size() - 1;
     // Each pipe it enters must still be there; if one's gone, it leaks out
-    // of the break, flying on the way it was going.
-    for (int k = (int)floorf(before) + 1; k <= (int)floorf(m.along) && k <= last; k++) {
+    // of the break, flying on the way it was going. Each one it passes
+    // gives it that pipe's spin (a plain pipe takes it away).
+    for (int k = m.checked + 1; k <= (int)floorf(m.along) && k <= last; k++) {
+        m.checked = k;
         if (k < m.pipesFrom || k > m.pipesTo) continue;
         const PulseCell& c = m.path[k];
-        if (w.Get(c.x, c.y, c.z) != BLOCK_PULSE_PIPE) {
-            int face = FaceBetween(m.path[k - 1 < 0 ? 0 : k - 1], c);
-            if (k == 0 || face < 0) { Unreserve(m); lost++; return false; }
-            Fly(m, m.path[k - 1], face);
-            return true;
-        }
+        BlockID here = w.Get(c.x, c.y, c.z);
+        if (BlockIsPulsePipe(here)) { m.spin = PipeTwist(here); continue; }
+        int face = k > 0 ? FaceBetween(m.path[k - 1], c) : -1;
+        if (face < 0) { Unreserve(m); lost++; return false; }
+        Fly(m, m.path[k - 1], face);
+        return true;
     }
     if (m.along < (float)last) return true;
     if (m.toMouth) { Fly(m, m.path[last], m.face); return true; }
     // At the store: in, if there's still room; otherwise on to wherever
     // else will have it.
     Unreserve(m);
-    BlockID b = w.Get(m.target.x, m.target.y, m.target.z);
-    int have = PulseStored(w, m.target.x, m.target.y, m.target.z);
-    if (IsStore(b) && have < PulseCapacity(b)) {
-        SetPulseStored(w, m.target.x, m.target.y, m.target.z, have + 1);
+    if (IsStore(w.Get(m.target.x, m.target.y, m.target.z)) && Deposit(w, m.target, m.spin)) {
         delivered++;
         return false;
     }
     Moving next;
     if (m.pipesTo >= m.pipesFrom && Route(w, t, m.path[m.pipesTo], nullptr, -1, next)) {
         next.age = m.age;
+        next.spin = m.spin;
         m = std::move(next);
         return true;
     }
@@ -269,48 +295,47 @@ bool PulseSystem::StepPiped(World& w, const PulseTuning& t, Moving& m, float dt)
     return false;
 }
 
-void PulseSystem::Tick(World& w, const PulseTuning& t, double beats, float dt) {
-    // Whole beats since last time (the day's clock wrapping round counts as one).
-    int due = 0;
-    if (m_haveBeat) {
-        due = beats < m_lastBeat ? 1 : (int)(floor(beats) - floor(m_lastBeat));
-        if (due > t.maxPerBeat) due = t.maxPerBeat;
-    }
-    m_lastBeat = beats; m_haveBeat = true;
-
-    for (int beat = 0; beat < due; beat++) {
-        for (auto it = m_harvesters.begin(); it != m_harvesters.end();) {
-            const PulseCell h = *it;
-            BlockID here = w.Get(h.x, h.y, h.z);
-            if (here != BLOCK_PULSE_HARVESTER) {
-                // Broken, or its chunk has gone (it'll be found again on return).
-                it = m_harvesters.erase(it);
-                continue;
-            }
-            ++it;
-            int stored = PulseStored(w, h.x, h.y, h.z);
+void PulseSystem::Tick(World& w, const PulseTuning& t, float dt, TimeRateFn timeRate) {
+    for (auto it = m_harvesters.begin(); it != m_harvesters.end();) {
+        const PulseCell h = it->first;
+        if (w.Get(h.x, h.y, h.z) != BLOCK_PULSE_HARVESTER) {
+            // Broken, or its chunk has gone (it'll be found again on return).
+            it = m_harvesters.erase(it);
+            continue;
+        }
+        // A steady rate, sped up where The Line bends time.
+        float rate = t.gatherPerSecond * (timeRate ? timeRate(h.x, h.y, h.z) : 1.0f);
+        float& progress = it->second;
+        progress += rate * dt;
+        ++it;
+        if (progress < 1.0f) continue;
+        int due = (int)progress;
+        progress -= (float)due;
+        int stored = PulseStored(w, h.x, h.y, h.z);
+        for (int g = 0; g < due; g++) {
+            // Freshly gathered pulse has no spin; a harvester holds only that.
             if (stored < PulseCapacity(BLOCK_PULSE_HARVESTER)) { stored++; gathered++; }
-            // Gives up to two a beat, so a backlog drains once there's room.
+            // Gives up to two for each it gathers, so a backlog drains once there's room.
             for (int give = 0; give < 2 && stored > 0 && (int)m_moving.size() < t.maxInFlight; give++) {
                 bool sent = false;
                 for (int k = 0; k < FACE_COUNT && !sent; k++) {
                     int f = (int)((m_turn + k) % FACE_COUNT);
                     PulseCell n = Step(h, f);
                     BlockID b = w.Get(n.x, n.y, n.z);
-                    if (b == BLOCK_PULSE_PIPE) {
+                    if (BlockIsPulsePipe(b)) {
                         Moving m;
                         if (Route(w, t, n, &h, -1, m)) { m_moving.push_back(std::move(m)); sent = true; }
                     } else if (IsStore(b)) { // a store right beside it: straight in
-                        int have = PulseStored(w, n.x, n.y, n.z);
-                        if (have < PulseCapacity(b)) { SetPulseStored(w, n.x, n.y, n.z, have + 1); delivered++; sent = true; }
+                        if (Deposit(w, n, 0)) { delivered++; sent = true; }
                     }
                 }
                 m_turn++;
                 if (!sent) break;
                 stored--;
             }
-            SetPulseStored(w, h.x, h.y, h.z, stored);
         }
+        PulseCounts held; held.n[0] = stored;
+        SetPulseHeld(w, h.x, h.y, h.z, held);
     }
 
     for (size_t i = 0; i < m_moving.size();) {
@@ -327,9 +352,14 @@ void PulseSystem::Views(std::vector<PulseView>& out) const {
     out.clear();
     for (const Moving& m : m_moving) {
         float fadeIn = m.age / 0.15f; fadeIn = fadeIn > 1 ? 1 : fadeIn;
+        PulseView pv = {};
+        pv.spin = m.spin; pv.age = m.age;
         if (m.flying) {
             float fadeOut = (g_pulseTuning.flyRange - m.flown) / 4.0f; fadeOut = fadeOut > 1 ? 1 : (fadeOut < 0 ? 0 : fadeOut);
-            out.push_back({ m.px, m.py, m.pz, fadeIn * fadeOut });
+            pv.x = m.px; pv.y = m.py; pv.z = m.pz; pv.alpha = fadeIn * fadeOut;
+            pv.dx = (float)kDir[m.face][0]; pv.dy = (float)kDir[m.face][1]; pv.dz = (float)kDir[m.face][2];
+            pv.flying = true; pv.flown = m.flown;
+            out.push_back(pv);
             continue;
         }
         if (m.path.empty()) continue;
@@ -339,6 +369,10 @@ void PulseSystem::Views(std::vector<PulseView>& out) const {
         float f = m.along - (float)i; f = f < 0 ? 0 : (f > 1 ? 1 : f);
         const PulseCell& a = m.path[i];
         const PulseCell& b = m.path[j];
-        out.push_back({ a.x + 0.5f + (b.x - a.x) * f, a.y + 0.5f + (b.y - a.y) * f, a.z + 0.5f + (b.z - a.z) * f, fadeIn });
+        pv.x = a.x + 0.5f + (b.x - a.x) * f; pv.y = a.y + 0.5f + (b.y - a.y) * f; pv.z = a.z + 0.5f + (b.z - a.z) * f;
+        pv.alpha = fadeIn;
+        pv.dx = (float)(b.x - a.x); pv.dy = (float)(b.y - a.y); pv.dz = (float)(b.z - a.z);
+        if (i == j) { pv.dx = 1; pv.dy = 0; pv.dz = 0; }
+        out.push_back(pv);
     }
 }

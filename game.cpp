@@ -146,6 +146,7 @@ float g_toastTimer = 0.0f; // seconds remaining; drawn by RenderUIPass
 float g_fpsTimer = 0.0f;
 int g_fpsFrameCount = 0, g_fpsDisplay = 0; // updated once/sec, shown when Display Settings' FPS counter is on
 
+static void OpenStore(int x, int y, int z);
 static void PickAndAct(bool breakBlock) {
     Vec3 f, r, u;
     GetCameraVectors(g_player, f, r, u);
@@ -164,6 +165,8 @@ static void PickAndAct(bool breakBlock) {
         LiveEdit(g_world, hx, hy, hz, BLOCK_AIR);
         WorldSoundBreak(taken, hx, hy, hz);
     } else {
+        // Using a block that holds pulse opens it (crouch to place against it instead).
+        if (PulseCapacity(g_world.Get(hx, hy, hz)) > 0 && !g_player.crouching) { OpenStore(hx, hy, hz); return; }
         // Refuse a placement that would overlap the player's own box --
         // it would only trap them (or, with physics' unstick rule, pop
         // them up on top of it).
@@ -935,6 +938,23 @@ static void LibraryMouseUp(int mx, int my) {
     }
 }
 
+// ---- A store's contents (Part VI): the pulse it holds, one slot per
+// spin, each a heap of beads that grows with the amount -- a feel, not a
+// number. Place-button on a store opens it; Esc, E or the place button
+// again closes it.
+static int g_storeX, g_storeY, g_storeZ;
+static void OpenStore(int x, int y, int z) {
+    g_storeX = x; g_storeY = y; g_storeZ = z;
+    g_menuScreen = MenuScreen::Store;
+    ReleaseMouseForMenu();
+    WorldSoundCue(SND_LIBRARY_OPEN);
+}
+static void CloseStore() {
+    WorldSoundCue(SND_LIBRARY_CLOSE);
+    g_menuScreen = MenuScreen::None;
+    CaptureMouseForPlay();
+}
+
 static bool IsSettingsSubmenu(MenuScreen s) {
     return s == MenuScreen::LookSettings || s == MenuScreen::Graphics || s == MenuScreen::Display
         || s == MenuScreen::Audio || s == MenuScreen::Accessibility || s == MenuScreen::Keybindings;
@@ -963,6 +983,8 @@ static void FireBoundAction(int code) {
             CloseMap();
         } else if (g_menuScreen == MenuScreen::Library) {
             CloseLibrary();
+        } else if (g_menuScreen == MenuScreen::Store) {
+            CloseStore();
         } else if (g_menuScreen == MenuScreen::OptionsHub) {
             g_menuScreen = g_optionsReturnScreen;
         } else if (IsSettingsSubmenu(g_menuScreen)) {
@@ -978,6 +1000,7 @@ static void FireBoundAction(int code) {
         else if (g_menuScreen == MenuScreen::Map) CloseMap();
         return;
     }
+    if (g_menuScreen == MenuScreen::Store && (code == g_keyBindings[ACT_LIBRARY] || code == g_keyBindings[ACT_PLACE])) { CloseStore(); return; }
     if (code == g_keyBindings[ACT_LIBRARY]) {
         if (g_menuScreen == MenuScreen::None) OpenLibrary();
         else if (g_menuScreen == MenuScreen::Library) CloseLibrary();
@@ -1475,6 +1498,66 @@ void RenderUIPass() {
         }
     }
 
+    // A store's contents (Part VI): one slot per spin -- none, clockwise,
+    // anticlockwise -- each a heap of beads in that pulse's colour that
+    // grows with the amount (one more bead each time it doubles), marked
+    // with a swirl turning its way. No numbers: the heap is the reading.
+    if (g_menuScreen == MenuScreen::Store) {
+        BlockID sb = g_world.Get(g_storeX, g_storeY, g_storeZ);
+        if (PulseCapacity(sb) <= 0) { g_menuScreen = MenuScreen::None; CaptureMouseForPlay(); } // it's gone
+        PulseCounts held = PulseHeld(g_world, g_storeX, g_storeY, g_storeZ);
+        const float slotW = 150.0f, gap = 24.0f, pw = 3 * slotW + 4 * gap, ph = 250.0f;
+        float px0 = (g_screenW - pw) / 2.0f, py0 = (g_screenH - ph) / 2.0f;
+        UIDrawRect(glyphVerts, px0, py0, px0 + pw, py0 + ph, 0.10f, 0.10f, 0.13f, 0.95f);
+        std::string title = g_blocks[sb].name;
+        for (char& ch : title) ch = ch == '_' ? ' ' : (char)toupper((unsigned char)ch);
+        UIDrawText(glyphVerts, title, px0 + (pw - UITextWidth(title, 1.0f)) / 2.0f, py0 + 14.0f, 1.0f, 0.95f, 0.92f, 0.85f, 1.0f);
+        const float colours[3][3] = { { 1.0f, 0.80f, 0.36f }, { 0.22f, 0.42f, 1.0f }, { 1.0f, 0.20f, 0.18f } }; // plain, clockwise, anticlockwise: as in the pipes
+        auto bead = [&](float cx, float cy, float r, const float* c, float a) {
+            // A faceted bead, like the ones in the pipes: a diamond, lit from above.
+            const int rows = 6;
+            for (int k = 0; k < rows; k++) {
+                float y0 = cy - r + k * (2 * r / rows), y1 = y0 + 2 * r / rows;
+                float mid = (y0 + y1) * 0.5f - cy;
+                float half = r - fabsf(mid);
+                float shade = k < rows / 2 ? 1.0f : 0.72f;
+                UIDrawRect(glyphVerts, cx - half, y0, cx + half, y1, c[0] * shade, c[1] * shade, c[2] * shade, a);
+            }
+            UIDrawRect(glyphVerts, cx - r * 0.35f, cy - r * 0.55f, cx - r * 0.05f, cy - r * 0.25f, 1, 1, 1, 0.7f * a); // a glint
+        };
+        for (int k = 0; k < 3; k++) {
+            float sx0 = px0 + gap + k * (slotW + gap), sy0 = py0 + 56.0f, sy1 = sy0 + slotW;
+            int n = held.n[k];
+            UIDrawRect(glyphVerts, sx0, sy0, sx0 + slotW, sy1, n ? 0.16f : 0.12f, n ? 0.16f : 0.12f, n ? 0.19f : 0.14f, 0.95f);
+            const float* c = colours[k];
+            // The swirl: a small spiral of dots turning the pulse's way, ending in a larger one.
+            if (k > 0) {
+                float cx = sx0 + slotW - 26.0f, cy = sy0 + 24.0f, dir = k == 1 ? 1.0f : -1.0f;
+                for (int i = 0; i <= 12; i++) {
+                    float th = i / 12.0f * 5.0f, rr = 3.0f + i * 1.1f, d = i == 12 ? 3.5f : 1.8f;
+                    float x = cx + dir * cosf(th - 1.57f) * rr, y = cy + sinf(th - 1.57f) * rr;
+                    UIDrawRect(glyphVerts, x - d, y - d, x + d, y + d, c[0], c[1], c[2], n ? 0.95f : 0.35f);
+                }
+            }
+            if (n <= 0) continue;
+            int beads = 1;
+            for (int v = n; v > 1 && beads < 12; v >>= 1) beads++;
+            // A heap: rows of 4, 3, 3, 2 from the bottom.
+            const int rowCap[4] = { 4, 3, 3, 2 };
+            const float r = 11.0f;
+            int placed = 0;
+            for (int row = 0; row < 4 && placed < beads; row++) {
+                int inRow = std::min(rowCap[row], beads - placed);
+                float y = sy1 - 18.0f - row * (1.55f * r);
+                float x0 = sx0 + slotW / 2.0f - (inRow - 1) * r;
+                for (int i = 0; i < inRow; i++) bead(x0 + i * 2.0f * r, y, r, c, 1.0f);
+                placed += inRow;
+            }
+        }
+        std::string hint = "ESC TO CLOSE";
+        UIDrawText(glyphVerts, hint, px0 + (pw - UITextWidth(hint, 0.6f)) / 2.0f, py0 + ph - 26.0f, 0.6f, 0.7f, 0.7f, 0.8f, 0.9f);
+    }
+
     // Essence network map (Part XIX): the draw list is plain coloured
     // triangles plus label requests, batched through the same white-texel
     // quads and crisp text every menu uses.
@@ -1677,7 +1760,8 @@ void RenderUIPass() {
             if (Raycast(g_world, g_player.x, g_player.y + g_player.eyeHeight, g_player.z, f.x, f.y, f.z, 6.0f, hx, hy, hz, px, py, pz)) {
                 BlockID b = g_world.Get(hx, hy, hz);
                 if (PulseCapacity(b) > 0) {
-                    snprintf(buf, sizeof(buf), "  HOLDS %d OF %d", PulseStored(g_world, hx, hy, hz), PulseCapacity(b));
+                    PulseCounts h = PulseHeld(g_world, hx, hy, hz);
+                    snprintf(buf, sizeof(buf), "  HOLDS %d PLAIN %d CW %d CCW", h.n[0], h.n[1], h.n[2]);
                     lines.push_back(buf);
                 }
             }

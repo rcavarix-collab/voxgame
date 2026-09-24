@@ -1848,11 +1848,14 @@ static void DrawLineDebug(const Mat4& viewProj, Vec3 player) {
     g_context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 }
 
-// Pulses on their way (Part VI): each a small octahedron of warm light,
-// sized by how visible it is (fading in at a harvester, out at the end of
-// a flight) -- the pipeline is opaque, and its alpha is the bloom's glow
-// mask, so they glow. Only the nearest few hundred within 48 blocks are
-// drawn: one small upload and one draw call.
+// Pulses on their way (Part VI): each a small octahedron in its spin's
+// colour (plain yellow-amber, clockwise blue, anticlockwise red), sized by how
+// visible it is (fading in at a harvester, out at the end of a flight).
+// A spun bead turns about the way it's going; through the air a spun pulse
+// is a corkscrew comet -- its bead circles close about the straight line
+// it really travels, trailing a fading tail -- and a plain one a straight
+// comet. The pipeline is opaque, and its alpha is the bloom's glow mask, so
+// they glow. Only those within 48 blocks: one small upload, one draw.
 static void DrawPulses(const Mat4& viewProj, Vec3 eye) {
     if (!g_debugVS || !g_debugPS || !g_debugLayout || !g_pulseVB || !g_debugCB) return;
     static std::vector<PulseView> views;
@@ -1860,20 +1863,57 @@ static void DrawPulses(const Mat4& viewProj, Vec3 eye) {
     g_pulse.Views(views);
     if (views.empty()) return;
     v.clear();
-    const float r0 = 0.17f; // a bead a little fatter than the pipe, so it shows sliding through
+    const float colour[3][3] = { { 1.0f, 0.82f, 0.40f }, { 0.22f, 0.42f, 1.0f }, { 1.0f, 0.20f, 0.18f } };
+    const float kSpinRate = 2.5f * 6.2831853f;  // turns a second, as rad/s
+    const float kHelix = 0.16f;                 // how far the corkscrew strays from the line: just enough to notice
+    auto octa = [&](float px, float py, float pz, float r, const float* dir, float angle, const float* c) {
+        if (v.size() + 24 > PULSE_VB_CAPACITY || r < 0.01f) return;
+        // A frame along the travel direction, turned by `angle` about it.
+        float ax = dir[0], ay = dir[1], az = dir[2];
+        float ux = fabsf(ay) < 0.9f ? 0.0f : 1.0f, uy = fabsf(ay) < 0.9f ? 1.0f : 0.0f, uz = 0.0f; // not parallel to dir
+        float bx = ay * uz - az * uy, by = az * ux - ax * uz, bz = ax * uy - ay * ux;   // b = dir x u
+        float bl = sqrtf(bx * bx + by * by + bz * bz); bx /= bl; by /= bl; bz /= bl;
+        float cx = by * az - bz * ay, cy = bz * ax - bx * az, cz = bx * ay - by * ax;   // c = b x dir
+        float ca = cosf(angle), sa = sinf(angle);
+        float p1[3] = { bx * ca + cx * sa, by * ca + cy * sa, bz * ca + cz * sa };
+        float p2[3] = { cx * ca - bx * sa, cy * ca - by * sa, cz * ca - bz * sa };
+        const float tip[6][3] = { { ax * r * 1.3f, ay * r * 1.3f, az * r * 1.3f }, { -ax * r * 1.3f, -ay * r * 1.3f, -az * r * 1.3f },
+                                  { p1[0] * r, p1[1] * r, p1[2] * r }, { -p1[0] * r, -p1[1] * r, -p1[2] * r },
+                                  { p2[0] * r, p2[1] * r, p2[2] * r }, { -p2[0] * r, -p2[1] * r, -p2[2] * r } };
+        const int faces[8][3] = { { 2, 0, 4 }, { 2, 4, 1 }, { 2, 1, 5 }, { 2, 5, 0 }, { 3, 4, 0 }, { 3, 1, 4 }, { 3, 5, 1 }, { 3, 0, 5 } };
+        for (int f = 0; f < 8; f++) {
+            float shade = f < 4 ? 1.0f : 0.72f; // two facets brighter than the rest: the turning shows
+            for (int k = 0; k < 3; k++) {
+                const float* t = tip[faces[f][k]];
+                v.push_back({ px + t[0], py + t[1], pz + t[2], c[0] * shade, c[1] * shade, c[2] * shade, 1.0f });
+            }
+        }
+    };
     for (const PulseView& p : views) {
         float dx = p.x - eye.x, dy = p.y - eye.y, dz = p.z - eye.z;
         if (dx * dx + dy * dy + dz * dz > 48.0f * 48.0f || p.alpha <= 0.01f) continue;
-        if (v.size() + 24 > PULSE_VB_CAPACITY) break;
-        float r = r0 * p.alpha;
-        const float tip[6][3] = { { r, 0, 0 }, { -r, 0, 0 }, { 0, r, 0 }, { 0, -r, 0 }, { 0, 0, r }, { 0, 0, -r } };
-        const int faces[8][3] = { { 2, 0, 4 }, { 2, 4, 1 }, { 2, 1, 5 }, { 2, 5, 0 }, { 3, 4, 0 }, { 3, 1, 4 }, { 3, 5, 1 }, { 3, 0, 5 } };
-        for (int f = 0; f < 8; f++) {
-            float shade = f < 4 ? 1.0f : 0.8f; // upper facets a touch brighter, so it reads as a solid
-            for (int k = 0; k < 3; k++) {
-                const float* t = tip[faces[f][k]];
-                v.push_back({ p.x + t[0], p.y + t[1], p.z + t[2], 1.0f * shade, 0.86f * shade, 0.52f * shade, 1.0f });
-            }
+        const float* c = colour[p.spin > 0 ? 1 : p.spin < 0 ? 2 : 0];
+        float dir[3] = { p.dx, p.dy, p.dz };
+        float angle = p.spin * kSpinRate * p.age;
+        const float r0 = 0.17f; // a bead a little fatter than the pipe, so it shows sliding through
+        if (!p.flying) { octa(p.x, p.y, p.z, r0 * p.alpha, dir, angle, c); continue; }
+        // In the air: the bead and a tail of smaller ones behind it, back
+        // along the path it came (never behind the mouth it left).
+        float ux = fabsf(dir[1]) < 0.9f ? 0.0f : 1.0f, uy = fabsf(dir[1]) < 0.9f ? 1.0f : 0.0f;
+        float bx = dir[1] * 0.0f - dir[2] * uy, by = dir[2] * ux - dir[0] * 0.0f, bz = dir[0] * uy - dir[1] * ux;
+        float bl = sqrtf(bx * bx + by * by + bz * bz); bx /= bl; by /= bl; bz /= bl;
+        float cx = by * dir[2] - bz * dir[1], cy = bz * dir[0] - bx * dir[2], cz = bx * dir[1] - by * dir[0];
+        const float speed = g_pulseTuning.flySpeed, step = 0.035f;
+        for (int k = 0; k < 7; k++) {
+            float back = speed * step * k;
+            if (back > p.flown) break;
+            float th = p.spin * kSpinRate * (p.age - step * k);
+            float o = p.spin ? kHelix : 0.0f;
+            float px = p.x - dir[0] * back + (bx * cosf(th) + cx * sinf(th)) * o;
+            float py = p.y - dir[1] * back + (by * cosf(th) + cy * sinf(th)) * o;
+            float pz = p.z - dir[2] * back + (bz * cosf(th) + cz * sinf(th)) * o;
+            float fade = 1.0f - k / 7.0f;
+            octa(px, py, pz, r0 * p.alpha * (k == 0 ? 1.0f : 0.55f * fade), dir, angle, c);
         }
     }
     if (v.empty()) return;

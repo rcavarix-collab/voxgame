@@ -45,8 +45,10 @@ int ShapeBoxes(BlockShape shape, uint8_t state, ShapeBox* out);
 // A pulse pipe (Part VI) with `joined` = the faces (bit f = BlockFace f)
 // whose neighbour it joins: a straight bar for a run, a node with arms
 // for a bend or junction. A pipe joined on one side (or none: then along
-// its placed axis) is an open end, and its mouth gets a collar.
-int PipePolys(uint8_t joined, uint8_t state, ShapePoly* out);
+// its placed axis) is an open end, and its mouth gets a collar. A
+// twisted pipe (`twist` +1 clockwise, -1 anticlockwise: PipeTwist) wears
+// a raised thread winding round its straight runs, that way.
+int PipePolys(uint8_t joined, uint8_t state, ShapePoly* out, int twist = 0);
 // Which of a pipe's six faces open onto something it joins.
 static inline uint8_t PipeJoinMask(const BlockID neighbour[FACE_COUNT]) {
     uint8_t m = 0;

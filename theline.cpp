@@ -238,3 +238,16 @@ void RestoreLine(LineState& s, const LineTuning& t, const LineSaveData& d) {
     RefreshTarget(s, t);
     MovePivot(s, t, 0.0f); // first placement: straight onto the target
 }
+
+float LineIntensityAt(const LineState& s, const LineTuning& t, float x, float z) {
+    float ux = cosf(s.theta), uz = sinf(s.theta);
+    float rx = x - s.pivotX, rz = z - s.pivotZ;
+    float dist = fabsf(rx * (-uz) + rz * ux);
+    float still = expf(0.5f * (logf(t.decadeAgainst) + logf(t.decadeWith))); // the still-standing falloff
+    return powf(10.0f, -Staircase(dist / still, t.stepSharpness));
+}
+
+float LineTimeRateAt(const LineState& s, const LineTuning& t, float x, float z) {
+    float i = LineIntensityAt(s, t, x, z);
+    return 1.0f + t.skyRace * sqrtf(i > 0 ? i : 0.0f);
+}

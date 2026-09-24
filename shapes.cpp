@@ -529,49 +529,199 @@ int ShapePolys(BlockShape shape, uint8_t state, ShapePoly* out, int variant) {
     }
 }
 
-int PipePolys(uint8_t joined, uint8_t state, ShapePoly* out) {
-    // Built from boxes, but never lazily intersected: every face that would
-    // lie against another part (an arm's end on the node, a bar's end in its
-    // collar) or against what the pipe joins (the next pipe carries the
-    // tube on; a block covers it) is left out, so there are no doubled,
-    // flickering faces and a run is one seamless tube.
+namespace {
+
+// Pipe geometry is authored in one canonical orientation and turned into
+// place by a signed axis permutation (a rotation: images of +X, +Y, +Z),
+// so every vertex stays on the 1/8 grid. Each polygon carries its own
+// texture coordinates: u runs along the pipe (so the metal's grain and the
+// seam at each block's edge follow every run and bend), v across it.
+const int kAxisDir[FACE_COUNT][3] = { { 1, 0, 0 }, { -1, 0, 0 }, { 0, 1, 0 }, { 0, -1, 0 }, { 0, 0, 1 }, { 0, 0, -1 } };
+
+int FaceOfDir(int x, int y, int z) {
+    for (int f = 0; f < FACE_COUNT; f++) if (kAxisDir[f][0] == x && kAxisDir[f][1] == y && kAxisDir[f][2] == z) return f;
+    return -1;
+}
+
+struct PipeFrame {
+    int ax[3]; // the faces +X, +Y, +Z of the canonical pipe become
+    static PipeFrame Of(int fx, int fy) {
+        PipeFrame r; r.ax[0] = fx; r.ax[1] = fy;
+        const int* a = kAxisDir[fx]; const int* b = kAxisDir[fy];
+        r.ax[2] = FaceOfDir(a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]);
+        return r;
+    }
+    ShapeVertex Map(int x, int y, int z, int u, int v) const {
+        int c[3] = { x - 4, y - 4, z - 4 }, o[3] = { 4, 4, 4 };
+        for (int i = 0; i < 3; i++)
+            for (int k = 0; k < 3; k++) o[k] += c[i] * kAxisDir[ax[i]][k];
+        return { (uint8_t)o[0], (uint8_t)o[1], (uint8_t)o[2], (uint8_t)u, (uint8_t)v };
+    }
+    // The world face a canonical face (0-5) becomes.
+    int MapFace(int f) const { int img = ax[f / 2]; return (f & 1) ? (img ^ 1) : img; }
+};
+
+struct PipeBuilder {
+    ShapePoly* out; int n = 0;
+    // A quad from canonical corners (x, y, z, u, v), facing canonical face
+    // `face` (0-5), or -1 for a slanted facet (lit by its true normal).
+    // Wound the way the mesher's cubes are: the cross product of the first
+    // two edges points out along `nrm`.
+    void Quad(const PipeFrame& fr, const int q[4][5], int face, int nx, int ny, int nz) {
+        ShapePoly p = {};
+        p.count = 4;
+        for (int k = 0; k < 4; k++) p.v[k] = fr.Map(q[k][0], q[k][1], q[k][2], q[k][3], q[k][4]);
+        int e1[3] = { q[1][0] - q[0][0], q[1][1] - q[0][1], q[1][2] - q[0][2] };
+        int e2[3] = { q[2][0] - q[0][0], q[2][1] - q[0][1], q[2][2] - q[0][2] };
+        int cr[3] = { e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0] };
+        if (cr[0] * nx + cr[1] * ny + cr[2] * nz < 0) { std::swap(p.v[1], p.v[3]); }
+        if (face >= 0) { p.texFace = (uint8_t)fr.MapFace(face); p.shade = p.texFace; }
+        else { p.texFace = (uint8_t)fr.MapFace(FACE_POS_Z); p.shade = SHADE_SLOPE_UP; } // the shader derives the facet's own normal
+        p.boundary = -1;
+        out[n++] = p;
+    }
+    void Tri(const PipeFrame& fr, const int q[3][5], int face) {
+        ShapePoly p = {};
+        p.count = 3;
+        for (int k = 0; k < 3; k++) p.v[k] = fr.Map(q[k][0], q[k][1], q[k][2], q[k][3], q[k][4]);
+        // Outward: away from the tube's axis (canonical y = z = 4).
+        int cy = q[0][1] + q[1][1] + q[2][1] - 12, cz = q[0][2] + q[1][2] + q[2][2] - 12;
+        int e1[3] = { q[1][0] - q[0][0], q[1][1] - q[0][1], q[1][2] - q[0][2] };
+        int e2[3] = { q[2][0] - q[0][0], q[2][1] - q[0][1], q[2][2] - q[0][2] };
+        int cr1 = e1[2] * e2[0] - e1[0] * e2[2], cr2 = e1[0] * e2[1] - e1[1] * e2[0];
+        if (cr1 * cy + cr2 * cz < 0) std::swap(p.v[1], p.v[2]);
+        if (face >= 0) { p.texFace = (uint8_t)fr.MapFace(face); p.shade = p.texFace; }
+        else { p.texFace = (uint8_t)fr.MapFace(FACE_POS_Z); p.shade = SHADE_SLOPE_UP; }
+        p.boundary = -1;
+        out[n++] = p;
+    }
+    // A box in canonical space, leaving out the faces in `skip`; every
+    // vertex gets the same texture spot (u, v), so it wears one colour of
+    // the pipe's texture -- the thread takes the joint ring's accent.
+    void Box(const PipeFrame& fr, int x0, int y0, int z0, int x1, int y1, int z1, uint8_t skip, int u, int v) {
+        const int q[FACE_COUNT][4][3] = {
+            { { x1, y0, z0 }, { x1, y1, z0 }, { x1, y1, z1 }, { x1, y0, z1 } }, // +X
+            { { x0, y0, z0 }, { x0, y1, z0 }, { x0, y1, z1 }, { x0, y0, z1 } }, // -X
+            { { x0, y1, z0 }, { x1, y1, z0 }, { x1, y1, z1 }, { x0, y1, z1 } }, // +Y
+            { { x0, y0, z0 }, { x1, y0, z0 }, { x1, y0, z1 }, { x0, y0, z1 } }, // -Y
+            { { x0, y0, z1 }, { x1, y0, z1 }, { x1, y1, z1 }, { x0, y1, z1 } }, // +Z
+            { { x0, y0, z0 }, { x1, y0, z0 }, { x1, y1, z0 }, { x0, y1, z0 } }, // -Z
+        };
+        for (int f = 0; f < FACE_COUNT; f++) {
+            if (skip & (1u << f)) continue;
+            int quad[4][5];
+            for (int k = 0; k < 4; k++) { quad[k][0] = q[f][k][0]; quad[k][1] = q[f][k][1]; quad[k][2] = q[f][k][2]; quad[k][3] = u; quad[k][4] = v; }
+            const int* d = kAxisDir[f];
+            Quad(fr, quad, f, d[0], d[1], d[2]);
+        }
+    }
+    // A threaded length along canonical +X, x 0..8: the plain tube, with a
+    // thread of beads set into its four edges, stepping a quarter turn round
+    // every quarter block -- one full turn per block, so it runs on unbroken
+    // into the next twisted pipe. `h` +1 winds it right-handed (clockwise,
+    // seen from behind as pulse travels), -1 the other way: the two are true
+    // mirror images. Each bead sits half sunk in its edge; none of its faces
+    // lies in the tube's planes (they're at 2, 4 and 6; the tube's at 3 and
+    // 5), so nothing doubles up.
+    void Threaded(const PipeFrame& fr, int h) {
+        Tube(fr, 0, 8);
+        const int edge[4][2] = { { 3, 3 }, { 5, 3 }, { 5, 5 }, { 3, 5 } }; // (y, z), in turning order round +X (right hand)
+        for (int q = 0; q < 4; q++) {
+            const int* e = edge[h > 0 ? q : (4 - q) % 4];
+            Box(fr, q * 2, e[0] - 1, e[1] - 1, q * 2 + 1, e[0] + 1, e[1] + 1, 0, 0, 3);
+        }
+    }
+    // A straight length of tube along canonical +X from x0 to x1 (section
+    // 3..5), with no end faces: its ends always meet something.
+    void Tube(const PipeFrame& fr, int x0, int x1) {
+        // v runs the same way round on every face -- the right-handed turn
+        // about +X (-Z, then +Y, then +Z, then -Y) -- so a slanting stripe in
+        // the texture winds one way all round the tube, as the thread does.
+        const int ny[4][5] = { { x0, 3, 3, x0, 5 }, { x1, 3, 3, x1, 5 }, { x1, 3, 5, x1, 3 }, { x0, 3, 5, x0, 3 } }; // -Y: round is -z
+        const int py[4][5] = { { x0, 5, 3, x0, 3 }, { x1, 5, 3, x1, 3 }, { x1, 5, 5, x1, 5 }, { x0, 5, 5, x0, 5 } }; // +Y: round is +z
+        const int nz[4][5] = { { x0, 3, 3, x0, 3 }, { x1, 3, 3, x1, 3 }, { x1, 5, 3, x1, 5 }, { x0, 5, 3, x0, 5 } }; // -Z: round is +y
+        const int pz[4][5] = { { x0, 3, 5, x0, 5 }, { x1, 3, 5, x1, 5 }, { x1, 5, 5, x1, 3 }, { x0, 5, 5, x0, 3 } }; // +Z: round is -y
+        Quad(fr, ny, FACE_NEG_Y, 0, -1, 0); Quad(fr, py, FACE_POS_Y, 0, 1, 0);
+        Quad(fr, nz, FACE_NEG_Z, 0, 0, -1); Quad(fr, pz, FACE_POS_Z, 0, 0, 1);
+    }
+    // A low-poly elbow from canonical +X round to +Y: the tube turns through
+    // one 45-degree length, so each meeting is a diagonal seam rather than a
+    // cube corner. Outer wall (8,3) (6,3) (3,6) (3,8); inner wall (8,5)
+    // (7,5) (5,7) (5,8); the turning length is as wide as the tube.
+    void Elbow(const PipeFrame& fr) {
+        // Walls, extruded across z 3..5 (v = z).
+        const int o1[4][5] = { { 8, 3, 3, 8, 3 }, { 6, 3, 3, 6, 3 }, { 6, 3, 5, 6, 5 }, { 8, 3, 5, 8, 5 } };
+        const int o2[4][5] = { { 6, 3, 3, 6, 3 }, { 3, 6, 3, 6, 3 }, { 3, 6, 5, 6, 5 }, { 6, 3, 5, 6, 5 } };
+        const int o3[4][5] = { { 3, 6, 3, 6, 3 }, { 3, 8, 3, 8, 3 }, { 3, 8, 5, 8, 5 }, { 3, 6, 5, 6, 5 } };
+        const int i1[4][5] = { { 8, 5, 3, 8, 3 }, { 7, 5, 3, 7, 3 }, { 7, 5, 5, 7, 5 }, { 8, 5, 5, 8, 5 } };
+        const int i2[4][5] = { { 7, 5, 3, 7, 3 }, { 5, 7, 3, 7, 3 }, { 5, 7, 5, 7, 5 }, { 7, 5, 5, 7, 5 } };
+        const int i3[4][5] = { { 5, 7, 3, 7, 3 }, { 5, 8, 3, 8, 3 }, { 5, 8, 5, 8, 5 }, { 5, 7, 5, 7, 5 } };
+        Quad(fr, o1, FACE_NEG_Y, 0, -1, 0); Quad(fr, o2, -1, -1, -1, 0); Quad(fr, o3, FACE_NEG_X, -1, 0, 0);
+        Quad(fr, i1, FACE_POS_Y, 0, 1, 0);  Quad(fr, i2, -1, 1, 1, 0);   Quad(fr, i3, FACE_POS_X, 1, 0, 0);
+        // The flat sides (z = 3 and z = 5), in three pieces split along the
+        // seams: u along each length, v across it.
+        for (int z : { 3, 5 }) {
+            int nzv = z == 5 ? 1 : -1, face = z == 5 ? FACE_POS_Z : FACE_NEG_Z;
+            const int s1[4][5] = { { 8, 3, z, 8, 3 }, { 8, 5, z, 8, 5 }, { 7, 5, z, 7, 5 }, { 6, 3, z, 6, 3 } };
+            const int s2[4][5] = { { 6, 3, z, 6, 3 }, { 7, 5, z, 7, 5 }, { 5, 7, z, 7, 5 }, { 3, 6, z, 6, 3 } };
+            const int s3[4][5] = { { 3, 6, z, 6, 3 }, { 5, 7, z, 7, 5 }, { 5, 8, z, 8, 5 }, { 3, 8, z, 8, 3 } };
+            Quad(fr, s1, face, 0, 0, nzv); Quad(fr, s2, face, 0, 0, nzv); Quad(fr, s3, face, 0, 0, nzv);
+        }
+    }
+};
+
+// A frame whose +X points along face f (any perpendicular +Y will do).
+PipeFrame AlongFace(int f) {
+    int side = (f / 2 == 1) ? FACE_POS_Z : FACE_POS_Y;
+    return PipeFrame::Of(f, side);
+}
+
+} // namespace
+
+int PipePolys(uint8_t joined, uint8_t state, ShapePoly* out, int twist) {
+    // Never lazily intersected boxes: nothing lies against anything else
+    // (no arm face on the pipe it joins, no end faces where the tube goes
+    // on or into a block), so there are no doubled, flickering faces.
+    //   - a run: one tube, end to end;
+    //   - a bend: a low-poly elbow, seams on the diagonals;
+    //   - a T or cross: a tube straight through, the branches meeting its side;
+    //   - three ways at right angles with no straight pair: a small knuckle
+    //     the size of the tube, the arms leaving its faces.
     uint8_t mouths = PipeMouths(joined, state);
     uint8_t ends = (uint8_t)(joined | mouths);
-    int n = 0;
-    auto box = [&](int x0, int y0, int z0, int x1, int y1, int z1, uint8_t skip) {
+    PipeBuilder b{ out };
+    auto has = [&](int f) { return (ends & (1u << f)) != 0; };
+    int count = 0;
+    for (int f = 0; f < FACE_COUNT; f++) count += has(f);
+    int through = -1; // an axis with both ends
+    for (int a = 0; a < 3 && through < 0; a++) if (has(a * 2) && has(a * 2 + 1)) through = a;
+
+    if (count == 2 && through < 0) {
+        int fa = -1, fb = -1;
+        for (int f = 0; f < FACE_COUNT; f++) if (has(f)) { if (fa < 0) fa = f; else fb = f; }
+        b.Elbow(PipeFrame::Of(fa, fb));
+    } else if (through >= 0 && count == 2 && twist != 0 && mouths == 0) {
+        b.Threaded(AlongFace(through * 2), twist); // a twisted pipe's runs carry its thread (not at open ends: the collar goes there)
+    } else if (through >= 0) {
+        b.Tube(AlongFace(through * 2), 0, 8);
+        for (int f = 0; f < FACE_COUNT; f++) if (has(f) && f / 2 != through) b.Tube(AlongFace(f), 5, 8);
+    } else if (count > 0) {
+        // The knuckle: its faces where no arm leaves.
         ShapePoly six[FACE_COUNT];
-        int m = BoxFaces(ShapeBox{ (uint8_t)x0, (uint8_t)y0, (uint8_t)z0, (uint8_t)x1, (uint8_t)y1, (uint8_t)z1 }, six);
-        for (int k = 0; k < m; k++) if (!(skip & (1u << six[k].texFace))) out[n++] = six[k];
-    };
-    auto bit = [](int f) { return (uint8_t)(1u << f); };
-    // A straight run: one bar, end to end, open only where it's a mouth
-    // (and there the collar is the end).
-    bool straight = false;
-    for (int axis = 0; axis < 3 && !straight; axis++) {
-        uint8_t pair = (uint8_t)(3u << (axis * 2));
-        if (ends != pair) continue;
-        straight = true;
-        uint8_t skip = pair; // both ends: joined onward, or inside a collar
-        if (axis == 0) box(0, 3, 3, 8, 5, 5, skip);
-        else if (axis == 1) box(3, 0, 3, 5, 8, 5, skip);
-        else box(3, 3, 0, 5, 5, 8, skip);
+        int m = BoxFaces(ShapeBox{ 3, 3, 3, 5, 5, 5 }, six);
+        for (int k = 0; k < m; k++) if (!has(six[k].texFace)) out[b.n++] = six[k];
+        for (int f = 0; f < FACE_COUNT; f++) if (has(f)) b.Tube(AlongFace(f), 5, 8);
     }
-    if (!straight) {
-        box(2, 2, 2, 6, 6, 6, 0); // the node a bend or junction turns in
-        // Arms: no face on the node, none at the far end (joined, or in a collar).
-        if (ends & bit(FACE_POS_X)) box(6, 3, 3, 8, 5, 5, bit(FACE_POS_X) | bit(FACE_NEG_X));
-        if (ends & bit(FACE_NEG_X)) box(0, 3, 3, 2, 5, 5, bit(FACE_POS_X) | bit(FACE_NEG_X));
-        if (ends & bit(FACE_POS_Y)) box(3, 6, 3, 5, 8, 5, bit(FACE_POS_Y) | bit(FACE_NEG_Y));
-        if (ends & bit(FACE_NEG_Y)) box(3, 0, 3, 5, 2, 5, bit(FACE_POS_Y) | bit(FACE_NEG_Y));
-        if (ends & bit(FACE_POS_Z)) box(3, 3, 6, 5, 5, 8, bit(FACE_POS_Z) | bit(FACE_NEG_Z));
-        if (ends & bit(FACE_NEG_Z)) box(3, 3, 0, 5, 5, 2, bit(FACE_POS_Z) | bit(FACE_NEG_Z));
-    }
+    int n = b.n;
     // A collar round each open mouth, so an open end reads as one.
-    if (mouths & bit(FACE_POS_X)) box(7, 2, 2, 8, 6, 6, 0);
-    if (mouths & bit(FACE_NEG_X)) box(0, 2, 2, 1, 6, 6, 0);
-    if (mouths & bit(FACE_POS_Y)) box(2, 7, 2, 6, 8, 6, 0);
-    if (mouths & bit(FACE_NEG_Y)) box(2, 0, 2, 6, 1, 6, 0);
-    if (mouths & bit(FACE_POS_Z)) box(2, 2, 7, 6, 6, 8, 0);
-    if (mouths & bit(FACE_NEG_Z)) box(2, 2, 0, 6, 6, 1, 0);
+    auto collar = [&](int x0, int y0, int z0, int x1, int y1, int z1) {
+        n += BoxFaces(ShapeBox{ (uint8_t)x0, (uint8_t)y0, (uint8_t)z0, (uint8_t)x1, (uint8_t)y1, (uint8_t)z1 }, out + n);
+    };
+    if (mouths & (1u << FACE_POS_X)) collar(7, 2, 2, 8, 6, 6);
+    if (mouths & (1u << FACE_NEG_X)) collar(0, 2, 2, 1, 6, 6);
+    if (mouths & (1u << FACE_POS_Y)) collar(2, 7, 2, 6, 8, 6);
+    if (mouths & (1u << FACE_NEG_Y)) collar(2, 0, 2, 6, 1, 6);
+    if (mouths & (1u << FACE_POS_Z)) collar(2, 2, 7, 6, 6, 8);
+    if (mouths & (1u << FACE_NEG_Z)) collar(2, 2, 0, 6, 6, 1);
     return n;
 }
