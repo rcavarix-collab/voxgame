@@ -42,6 +42,27 @@ static inline Vec3 Normalize(Vec3 a) {
     return { a.x / len, a.y / len, a.z / len };
 }
 
+// ---------------------------------------------------------------------
+// The compass (DESIGN.md 2.2). The world's cardinal directions, which
+// everything that has a direction is defined against: the sun rises in the
+// east and sets in the west, passing overhead (sky.h -- the world sits on
+// its equator); the celestial pole lies on the northern horizon; the
+// essence map shows north up and east to the right. A player's yaw of 0
+// faces north, and yaw grows turning toward the east.
+// ---------------------------------------------------------------------
+static const Vec3 kEast  = {  1.0f, 0.0f,  0.0f };
+static const Vec3 kWest  = { -1.0f, 0.0f,  0.0f };
+static const Vec3 kNorth = {  0.0f, 0.0f,  1.0f };
+static const Vec3 kSouth = {  0.0f, 0.0f, -1.0f };
+static const Vec3 kUp    = {  0.0f, 1.0f,  0.0f };
+// The nearest of the eight compass points to a view yaw (debug readouts).
+static inline const char* CompassPoint(float yaw) {
+    static const char* names[8] = { "NORTH", "NORTH-EAST", "EAST", "SOUTH-EAST", "SOUTH", "SOUTH-WEST", "WEST", "NORTH-WEST" };
+    float turns = yaw / 6.2831853f;
+    turns -= floorf(turns);
+    return names[(int)(turns * 8.0f + 0.5f) & 7];
+}
+
 // Row-major 4x4, row-vector convention (v' = v * M), matching the HLSL
 // cbuffers (declared row_major) so no transpose is needed between CPU
 // and GPU layouts.

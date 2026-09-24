@@ -34,18 +34,20 @@ static inline SkyState ComputeSky(float dayTime) {
     const float PI = 3.14159265f;
     float t = fmodf(dayTime, DAY_LENGTH_SECONDS);
     if (t < 0) t += DAY_LENGTH_SECONDS;
-    // Sun angle along its arc: 0 at sunrise (east, +X), pi at sunset
-    // (west), carrying on below the horizon through the night.
+    // Sun angle along its arc: 0 at sunrise (due east), pi at sunset
+    // (due west), carrying on below the horizon through the night.
     float a = t < SUNSET_SECONDS ? PI * (t - SUNRISE_SECONDS) / (SUNSET_SECONDS - SUNRISE_SECONDS)
                                  : PI + PI * (t - SUNSET_SECONDS) / (DAY_LENGTH_SECONDS - SUNSET_SECONDS);
     SkyState s;
-    // Tilted toward -Z (south): it peaks ~60 degrees up, so even noon
-    // shadows stretch out from under things rather than hiding beneath them.
-    s.sunDir = Normalize({ cosf(a), sinf(a), -0.6f * sinf(a) });
+    // As at the equator (owner's call: the sky reads more plainly): the sun
+    // rises due east, passes straight overhead and sets due west, its whole
+    // path in one vertical plane. Noon shadows fall straight down.
+    s.sunDir = Normalize(kEast * cosf(a) + kUp * sinf(a));
     // The moon trails the sun by ~140 degrees: up through the night and
-    // into the morning, the way a waning moon lingers after dawn.
+    // into the morning, the way a waning moon lingers after dawn. Its path
+    // leans a few degrees off the sun's, as a real moon's does.
     float m = a - 2.45f;
-    s.moonDir = Normalize({ cosf(m), sinf(m), 0.30f * sinf(m) });
+    s.moonDir = Normalize(kEast * cosf(m) + kUp * sinf(m) + kNorth * (0.09f * sinf(m)));
     float up = SkySmooth(-0.12f, 0.25f, s.sunDir.y);
     s.daylight = NIGHT_LIGHT + (1.0f - NIGHT_LIGHT) * up;
     // Direct sun arrives within a minute or two of sunrise (low, orange,
@@ -54,7 +56,10 @@ static inline SkyState ComputeSky(float dayTime) {
     // night is short), which would turn the last of the fade into a snap.
     s.sunLight = SkySmooth(0.0f, 0.10f, s.sunDir.y);
     s.starsVisible = 1.0f - SkySmooth(-0.20f, 0.05f, s.sunDir.y);
-    s.starAngle = 2.0f * PI * t / DAY_LENGTH_SECONDS;
+    // The whole sky turns as one: the stars ride the same angle as the sun
+    // (slow through the day, quick through the short night), so a star and
+    // the sun never drift against each other; the moon trails at a fixed offset.
+    s.starAngle = a;
     return s;
 }
 
@@ -86,8 +91,9 @@ static inline void AxisAngleMatrix(Vec3 axis, float angle, float m[3][3]) {
 
 // The celestial pole: perpendicular to the sun's path (ComputeSky), so the
 // stars turn about the same axis, in the same sense, as the sun does --
-// the normal east-to-west streaming.
-static inline Vec3 CelestialPole() { return Normalize({ 0.0f, 0.35f, 1.0f }); }
+// the normal east-to-west streaming. At the equator it lies on the
+// northern horizon: every star rises straight up out of the east.
+static inline Vec3 CelestialPole() { return kNorth; }
 
 // ---- Atmosphere: the colours of light at this time of day (Part XIII) ----
 // All linear-light RGB (the shaders tonemap and convert to sRGB at the

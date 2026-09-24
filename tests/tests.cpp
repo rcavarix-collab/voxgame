@@ -889,7 +889,26 @@ static void TestSky() {
     printf("sky model and shadow projection\n");
     SkyState dawn = ComputeSky(0), noon = ComputeSky(1500), dusk = ComputeSky(3000), night = ComputeSky(3300);
     CHECK(fabsf(dawn.sunDir.y) < 1e-4f && dawn.sunDir.x > 0.99f);     // rises in the east (+X)
-    CHECK(noon.sunDir.y > 0.8f && noon.sunDir.y < 0.9f && noon.sunDir.z < 0); // high (~60 degrees), tilted south
+    CHECK(noon.sunDir.y > 0.99f && fabsf(noon.sunDir.z) < 1e-6f);   // straight overhead (the equator)
+    // The compass holds it all together: the sun rises east and sets west,
+    // the pole is north, a player at yaw 0 faces north and turns east.
+    CHECK(Dot(dawn.sunDir, kEast) > 0.999f && Dot(dusk.sunDir, kWest) > 0.999f && Dot(CelestialPole(), kNorth) > 0.999f);
+    // One sky: a star that sits where the sun rose is turned exactly with the
+    // sun at every hour (the star field and the sun share their motion).
+    for (float t = 0; t < 3600; t += 97) {
+        SkyState st = ComputeSky(t);
+        float R[3][3]; AxisAngleMatrix(CelestialPole(), st.starAngle, R);
+        Vec3 star = { R[0][0], R[1][0], R[2][0] }; // R * east
+        CHECK(Dot(star, st.sunDir) > 0.999f);
+    }
+    {
+        Player facing; facing.yaw = 0; facing.pitch = 0;
+        Vec3 fw, rt, upv; GetCameraVectors(facing, fw, rt, upv);
+        CHECK(Dot(fw, kNorth) > 0.999f && Dot(rt, kEast) > 0.999f);
+        CHECK(strcmp(CompassPoint(0.0f), "NORTH") == 0 && strcmp(CompassPoint(1.5708f), "EAST") == 0 &&
+              strcmp(CompassPoint(3.1416f), "SOUTH") == 0 && strcmp(CompassPoint(-1.5708f), "WEST") == 0 &&
+              strcmp(CompassPoint(0.785f), "NORTH-EAST") == 0);
+    }
     CHECK(fabsf(dusk.sunDir.y) < 1e-3f && dusk.sunDir.x < -0.99f);    // sets in the west
     CHECK(night.sunDir.y < -0.8f && night.moonDir.y > 0.3f);          // moon up at night
     CHECK(noon.daylight == 1.0f && fabsf(night.daylight - NIGHT_LIGHT) < 1e-5f);

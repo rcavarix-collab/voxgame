@@ -1669,6 +1669,7 @@ void RenderUIPass() {
                 return b;
             };
             lines.push_back("");
+            lines.push_back(std::string("FACING ") + CompassPoint(g_player.yaw));
             lines.push_back("SOUNDSCAPE");
             lines.push_back("  NEGATIVE " + bar(0.5f + 0.5f * ax.positive) + " POSITIVE");
             lines.push_back("  CALM     " + bar(ax.activity) + " ACTIVE");
