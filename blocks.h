@@ -31,6 +31,15 @@ enum BlockID : uint8_t {
     BLOCK_ATTRACTOR,
     BLOCK_GLASS,
     BLOCK_CRYSTAL,
+    BLOCK_SNOW,
+    BLOCK_SAND,
+    BLOCK_SANDSTONE,
+    BLOCK_CRACKED_EARTH,
+    BLOCK_CLAY,
+    BLOCK_BASALT,
+    BLOCK_MAGMA_ROCK,
+    BLOCK_LOG,
+    BLOCK_MOSS,
     BLOCK_COUNT
 };
 
@@ -136,6 +145,17 @@ inline const BlockDef g_blocks[BLOCK_COUNT] = {
     // See-through blocks (DESIGN.md 4.11): clear glass and a tinted crystal.
     { "glass",              true,  false, true,  false, false, SHAPE_CUBE,         PLACE_PLAIN, GLOW_NONE, true,         TEX("glass", nullptr, nullptr, nullptr, nullptr) },
     { "crystal",            true,  false, true,  false, false, SHAPE_CUBE,         PLACE_PLAIN, GLOW_NONE, true,         TEX("crystal", nullptr, nullptr, nullptr, nullptr) },
+    // Natural materials (art: assets/textures/natural.vtex, made by
+    // tools/natural_textures.py from the art batch's palettes).
+    { "snow",               true,  false, true,  false, false, SHAPE_CUBE,         PLACE_PLAIN, GLOW_NONE, false,        TEX("snow", nullptr, nullptr, nullptr, nullptr) },
+    { "sand",               true,  false, true,  false, false, SHAPE_CUBE,         PLACE_PLAIN, GLOW_NONE, false,        TEX("sand", nullptr, nullptr, nullptr, nullptr) },
+    { "sandstone",          true,  false, true,  false, false, SHAPE_CUBE,         PLACE_PLAIN, GLOW_NONE, false,        TEX(nullptr, "sandstone_top", "sandstone_top", "sandstone_layered", nullptr) },
+    { "cracked_earth",      true,  false, true,  false, false, SHAPE_CUBE,         PLACE_PLAIN, GLOW_NONE, false,        TEX("cracked_earth", nullptr, nullptr, nullptr, nullptr) },
+    { "clay",               true,  false, true,  false, false, SHAPE_CUBE,         PLACE_PLAIN, GLOW_NONE, false,        TEX("clay", nullptr, nullptr, nullptr, nullptr) },
+    { "basalt",             true,  false, true,  false, false, SHAPE_CUBE,         PLACE_PLAIN, GLOW_NONE, false,        TEX("basalt", nullptr, nullptr, nullptr, nullptr) },
+    { "magma_rock",         true,  false, true,  false, false, SHAPE_CUBE,         PLACE_PLAIN, GLOW_NONE, false,        TEX("magma_rock", nullptr, nullptr, nullptr, nullptr) },
+    { "log",                true,  false, true,  false, false, SHAPE_CUBE,         PLACE_PLAIN, GLOW_NONE, false,        TEX(nullptr, "log_top", "log_top", "log_bark", nullptr) },
+    { "moss",               true,  false, true,  false, false, SHAPE_CUBE,         PLACE_PLAIN, GLOW_NONE, false,        TEX("moss", nullptr, nullptr, nullptr, nullptr) },
 };
 #undef TEX
 

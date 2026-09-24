@@ -1114,14 +1114,21 @@ void RenderUIPass() {
     // Every placeable block is a plain textured cube, so all hotbar icons
     // sample the one block atlas and share a single batch (drawn between
     // the HUD and menu glyph runs -- see the end of this function).
+    // More blocks than fit across the window: show a window of slots that
+    // scrolls to keep the selected one in view (the wheel still walks the
+    // whole roster), with a faint arrow at each side that has more.
     const int SLOT = 48, GAP = 4;
     int hotbarN = g_placeableList.count;
-    int totalW = hotbarN * SLOT + (hotbarN - 1) * GAP;
+    int shown = std::max(1, std::min(hotbarN, (g_screenW - 64) / (SLOT + GAP)));
+    int first = std::min(std::max(0, g_player.hotbarIndex - shown / 2), hotbarN - shown);
+    int totalW = shown * SLOT + (shown - 1) * GAP;
     float hbStartX = floorf((g_screenW - totalW) / 2.0f); // whole pixels: icons are point-sampled
     float hbY0 = g_screenH - SLOT - 16.0f;
+    if (first > 0) UIDrawText(glyphVerts, "<", hbStartX - 22.0f, hbY0 + SLOT / 2.0f - UITextHeight(1.0f) / 2.0f, 1.0f, 1, 1, 1, 0.6f);
+    if (first + shown < hotbarN) UIDrawText(glyphVerts, ">", hbStartX + totalW + 10.0f, hbY0 + SLOT / 2.0f - UITextHeight(1.0f) / 2.0f, 1.0f, 1, 1, 1, 0.6f);
     std::vector<UIVertex> iconVerts;
-    for (int i = 0; i < hotbarN; i++) {
-        float x0 = hbStartX + i * (SLOT + GAP), x1 = x0 + SLOT;
+    for (int i = first; i < first + shown; i++) {
+        float x0 = hbStartX + (i - first) * (SLOT + GAP), x1 = x0 + SLOT;
         float y0 = hbY0, y1 = y0 + SLOT;
         bool selected = (i == g_player.hotbarIndex);
         if (selected) UIDrawRect(glyphVerts, x0 - 4, y0 - 4, x1 + 4, y1 + 4, 1.0f, 0.9f, 0.2f, 0.9f);
