@@ -283,6 +283,13 @@ static void TestBlockTextures() {
     CHECK(fm[0] == 0x20 && fm[1] == 0x40 && fm[2] == 0x80 && fm[3] == 255);
 }
 
+// The save checksum (worldfile.cpp keeps its own private), for hand-built files.
+static uint32_t Fnv1a(const uint8_t* data, size_t len) {
+    uint32_t h = 2166136261u;
+    for (size_t i = 0; i < len; i++) { h ^= data[i]; h *= 16777619u; }
+    return h;
+}
+
 static void TestSaveRoundTrip() {
     printf("save format v5 round trip\n");
     World w; ResetWorldState(w);
@@ -304,7 +311,7 @@ static void TestSaveRoundTrip() {
     Player p; p.x = 1.5f; p.y = 13; p.z = 2.5f; p.yaw = 0.7f; p.hotbarIndex = 3;
     std::vector<uint8_t> buf;
     std::vector<PendingUpdate> pend = { { 7, 20, 7, UPD_GRAVITY, 3 }, { -1, 5, 9, UPD_GRAVITY, 0 } };
-    LineSaveData ld; ld.dwell = { { 5, 12.5f }, { -3, 600.0f } }; ld.angMom = -42.5; ld.theta = 1.25f;
+    LineSaveData ld; ld.cells = { { 5.5f, -7.25f, 12.5f }, { -300.0f, 41.0f, 600.0f } }; ld.angMom = -42.5; ld.theta = 1.25f;
     EssenceNetwork::SaveData es; es.discoveredZones = { 42, 7 }; es.attractors = { 1, 13, -5 };
     EncodeSave(p, 1234.5f, g_worldGen, w, g_evictedChunks, pend, ld, es, buf);
     printf("    %zu generated chunks, 2 modified -> %zu bytes\n", generated, buf.size());
@@ -319,7 +326,7 @@ static void TestSaveRoundTrip() {
     CHECK(d.chunks.size() == 2);
     CHECK(d.updates.size() == 2 && d.updates[0].x == 7 && d.updates[0].delay == 3 && d.updates[1].y == 5);
     CHECK(d.essence.discoveredZones.size() == 2 && d.essence.discoveredZones[1] == 7 && d.essence.attractors.size() == 3 && d.essence.attractors[2] == -5);
-    CHECK(d.line.dwell.size() == 2 && d.line.dwell[1].first == -3 && d.line.dwell[1].second == 600.0f && d.line.angMom == -42.5 && d.line.theta == 1.25f);
+    CHECK(d.line.cells.size() == 2 && d.line.cells[1].x == -300.0f && d.line.cells[1].z == 41.0f && d.line.cells[1].seconds == 600.0f && d.line.angMom == -42.5 && d.line.theta == 1.25f);
     for (auto& kv : d.chunks) {
         Chunk* orig = w.FindChunk(kv.first);
         CHECK(orig && orig->modified && ChunksEqual(*orig, *kv.second));
@@ -329,6 +336,33 @@ static void TestSaveRoundTrip() {
     std::vector<uint8_t> broken = buf; broken[buf.size() / 2] ^= 0x40;
     SaveData d2; CHECK(DecodeSave(broken.data(), broken.size(), d2) == DecodeResult::BadChecksum);
     SaveData d3; CHECK(DecodeSave(buf.data(), 20, d3) != DecodeResult::Ok);
+
+    // A v8 file's Line history (32-block cell keys, no positions) still
+    // loads: each cell's time is placed at its centre. Built by swapping
+    // this file's line cells for the v8 layout.
+    {
+        const size_t n = ld.cells.size();
+        // After the cells: angMom (8) theta (4), essence: 2 zones (4 + 16), 1 attractor (4 + 12), checksum (4).
+        size_t after = 8 + 4 + 4 + 16 + 4 + 12 + 4;
+        size_t cellsAt = buf.size() - after - 12 * n;
+        std::vector<uint8_t> v8(buf.begin(), buf.begin() + cellsAt);
+        v8[4] = 8; v8[5] = v8[6] = v8[7] = 0;
+        auto u64 = [&](uint64_t v) { for (int i = 0; i < 8; i++) v8.push_back((uint8_t)(v >> (8 * i))); };
+        auto f32 = [&](float f) { uint32_t u; memcpy(&u, &f, 4); for (int i = 0; i < 4; i++) v8.push_back((uint8_t)(u >> (8 * i))); };
+        u64(((uint64_t)(uint32_t)2 << 32) | (uint32_t)-1); f32(120.0f); // cell (2, -1): centre (80, -16)
+        u64(((uint64_t)(uint32_t)-4 << 32) | (uint32_t)0); f32(30.0f);  // cell (-4, 0): centre (-112, 16)
+        v8.insert(v8.end(), buf.end() - after, buf.end() - 4);
+        uint32_t sum = Fnv1a(v8.data(), v8.size());
+        for (int i = 0; i < 4; i++) v8.push_back((uint8_t)(sum >> (8 * i)));
+        SaveData old;
+        CHECK(DecodeSave(v8.data(), v8.size(), old) == DecodeResult::Ok);
+        CHECK(old.version == 8 && old.line.cells.size() == 2);
+        CHECK(old.line.cells.size() == 2 && old.line.cells[0].x == 80.0f && old.line.cells[0].z == -16.0f && old.line.cells[0].seconds == 120.0f);
+        CHECK(old.line.cells.size() == 2 && old.line.cells[1].x == -112.0f && old.line.cells[1].z == 16.0f);
+        CHECK(old.line.angMom == -42.5 && old.essence.attractors.size() == 3);
+        LineState ls; LineTuning lt; RestoreLine(ls, lt, old.line);
+        CHECK(fabsf(ls.pivotX - 80.0f) < 1e-3f && fabsf(ls.pivotZ + 16.0f) < 1e-3f); // the favourite, at its old centre
+    }
 }
 
 // Writes a v4 file the way the old SaveGame did (every non-air block).
@@ -982,7 +1016,19 @@ static void TestTheLine() {
     LineState s;
     for (int i = 0; i < 3600 * 60 / 10; i++) UpdateLine(s, t, 100.0f, 13.0f, 100.0f, dt * 10); // 1 h at A
     for (int i = 0; i < 60 * 60; i++) UpdateLine(s, t, 900.0f, 13.0f, 100.0f, dt);           // 1 min at B
-    CHECK(fabsf(s.pivotX - 112.0f) < 2.0f && fabsf(s.pivotZ - 112.0f) < 2.0f); // A's cell centre (96..128)
+    CHECK(fabsf(s.pivotX - 100.0f) < 0.5f && fabsf(s.pivotZ - 100.0f) < 0.5f); // A itself, not its cell's centre
+
+    // x and z alike: pottering about an off-centre spot puts the pivot on
+    // that spot, and a spot straddling a cell edge is found on the edge.
+    {
+        LineState p;
+        for (int i = 0; i < 1200 * 6; i++) { float a = i * 0.37f; UpdateLine(p, t, 5.0f + 3.0f * cosf(a), 13.0f, 27.0f + 3.0f * sinf(a * 1.3f), 1.0f / 6.0f); }
+        printf("    off-centre haunt at (5, 27): pivot %.2f, %.2f\n", p.pivotX, p.pivotZ);
+        CHECK(fabsf(p.pivotX - 5.0f) < 1.0f && fabsf(p.pivotZ - 27.0f) < 1.0f);
+        LineState e;
+        for (int i = 0; i < 1200 * 6; i++) UpdateLine(e, t, (i & 1) ? 14.0f : 18.0f, 13.0f, -40.0f, 1.0f / 6.0f); // either side of x = 16
+        CHECK(fabsf(e.pivotX - 16.0f) < 0.5f && fabsf(e.pivotZ + 40.0f) < 0.5f);
+    }
 
     // Two separate haunts: the pivot heads for the one with more time,
     // not the empty ground between them, and travels there rather than
@@ -992,7 +1038,7 @@ static void TestTheLine() {
         for (int i = 0; i < 3600 * 6; i++) UpdateLine(h, t, 16.0f, 13.0f, 16.0f, 1.0f / 6.0f);    // 1 h at A (cell 0,0)
         CHECK(fabsf(h.pivotX - 16.0f) < 0.5f && fabsf(h.pivotZ - 16.0f) < 0.5f);
         for (int i = 0; i < 5400 * 6; i++) UpdateLine(h, t, 1016.0f, 13.0f, 16.0f, 1.0f / 6.0f);  // then 1.5 h at B, 1000 blocks east
-        CHECK(fabsf(h.targetX - 1008.0f) < 1.0f);                     // B's cell centre (992..1024), not the midpoint
+        CHECK(fabsf(h.targetX - 1016.0f) < 1.0f);                     // B, not the midpoint
         CHECK(fabsf(h.pivotX - h.targetX) < 1.0f);                    // arrived by now
         // The trip itself: at most pivotMaxSpeed, so ~500 s for 1000 blocks.
         LineState h2;
@@ -1006,19 +1052,19 @@ static void TestTheLine() {
             if (moved < 0 || moved > t.pivotMaxSpeed / 6.0f + 1e-3f) steady = false;
         }
         printf("    pivot trip: switched after %.0f s at B, then 60 s later at x=%.1f (steady %d)\n", steps / 6.0f, h2.pivotX, (int)steady);
-        CHECK(steady && h2.pivotX > 16.0f && h2.pivotX < 1008.0f);   // under way, toward B, at walking pace
+        CHECK(steady && h2.pivotX > 16.0f && h2.pivotX < 1016.0f);   // under way, toward B, at walking pace
     }
 
-    // Where the player is these days wins: 2 h at A, then 1.8 h at B.
-    // Unfaded, A would still lead; with a 4 h half-life, B has taken over.
+    // Where the player is these days wins: 1 h at A, then 40 min at B.
+    // Unfaded, A would still lead; with a 30 min half-life, B has taken over.
     {
         LineState f;
-        for (int i = 0; i < 7200 * 2; i++) UpdateLine(f, t, 16.0f, 13.0f, 16.0f, 0.5f);
-        for (int i = 0; i < 6480 * 2; i++) UpdateLine(f, t, 1016.0f, 13.0f, 16.0f, 0.5f);
-        CHECK(fabsf(f.targetX - 1008.0f) < 1.0f);
+        for (int i = 0; i < 3600 * 2; i++) UpdateLine(f, t, 16.0f, 13.0f, 16.0f, 0.5f);
+        for (int i = 0; i < 2400 * 2; i++) UpdateLine(f, t, 1016.0f, 13.0f, 16.0f, 0.5f);
+        CHECK(fabsf(f.targetX - 1016.0f) < 1.0f);
         LineSaveData fd = SnapshotLine(f);
         float a = 0, b = 0;
-        for (auto& kv : fd.dwell) { if (kv.second > 1000) (a == 0 ? a : b) = kv.second; }
+        for (auto& c : fd.cells) { if (c.seconds > 300) (a == 0 ? a : b) = c.seconds; }
         printf("    faded hours at the two haunts: %.2f %.2f\n", a / 3600.0f, b / 3600.0f);
     }
 
@@ -1098,7 +1144,28 @@ static void TestTheLine() {
     // Save/restore keeps pivot, spin and angle.
     LineSaveData d = SnapshotLine(s);
     LineState r; RestoreLine(r, t, d);
-    CHECK(fabsf(r.pivotX - s.pivotX) < 1e-3f && fabsf(r.pivotZ - s.pivotZ) < 1e-3f && r.spin == s.spin && r.theta == s.theta);
+    CHECK(fabsf(r.pivotX - s.pivotX) < 1e-2f && fabsf(r.pivotZ - s.pivotZ) < 1e-2f && r.spin == s.spin && r.theta == s.theta);
+
+    // The sky clock. Standing on the line, the sky races ahead -- faster
+    // the closer -- and eases off only as its lead nears the limit; walking
+    // away, it runs slow until it's back in step; far off, it keeps time.
+    {
+        auto rateAt = [&](float dist) { LineState a = settle(dist); return a.skyRate; };
+        float r0 = rateAt(0.0f), r6 = rateAt(6.3f), r12 = rateAt(12.3f), r30 = rateAt(30.0f);
+        printf("    sky rate at 0/6.3/12.3/30 blocks: %.2f %.2f %.2f %.2f\n", r0, r6, r12, r30);
+        CHECK(r0 > 10.0f && r0 > r6 && r6 > r12 && r12 > r30 && r30 > 1.0f && r30 < 1.1f);
+        LineState on2; on2.hasPivot = true; on2.theta = 0;
+        t.turnSeconds = 1e9f; t.pivotMaxSpeed = 0;
+        for (int i = 0; i < 60 * 60; i++) UpdateLine(on2, t, 5.0f, 13.0f, 0.0f, dt); // a minute on the line
+        float lead = on2.skyLead;
+        CHECK(lead > 400.0f && lead < t.skyLeadMax && on2.skyRate > 1.0f);
+        for (int i = 0; i < 60 * 30; i++) UpdateLine(on2, t, 5.0f, 13.0f, 200.0f, dt); // then walk well away
+        printf("    after a minute on the line: %.0f s ahead; 30 s away: rate %.2f, %.0f s ahead\n", lead, on2.skyRate, on2.skyLead);
+        CHECK(on2.skyRate < 0.6f && on2.skyLead < lead);
+        for (int i = 0; i < 3 * 3600; i++) UpdateLine(on2, t, 5.0f, 13.0f, 200.0f, 1.0f);
+        CHECK(on2.skyLead < 5.0f && on2.skyRate > 0.99f && on2.skyRate <= 1.0f);
+        t.turnSeconds = 3600.0f; t.pivotMaxSpeed = LineTuning().pivotMaxSpeed;
+    }
 }
 
 static float TestTextWidth(const std::string& s, float scale) { return (float)s.size() * 8.0f * scale / 0.65f; }

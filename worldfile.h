@@ -22,7 +22,7 @@
 #include <memory>
 #include <unordered_map>
 
-static const uint32_t SAVE_VERSION = 8;
+static const uint32_t SAVE_VERSION = 9;
 
 using ChunkMap = std::unordered_map<ChunkCoord, std::unique_ptr<Chunk>, ChunkCoordHash>;
 

@@ -538,7 +538,7 @@ static const char* g_skyShaderSrc =
     "// uses atmosphere\n"
     "cbuffer SkyCB : register(b0) {\n"
     "    row_major matrix viewProj;\n"
-    "    float4 params;    // x stars visible, y direct-sun amount (disc brightness)\n"
+    "    float4 params;    // x stars visible, y direct-sun amount (disc brightness), z seconds the sky's clock is ahead (The Line)\n"
     "    float4 moon;      // xyz toward the moon, w visibility\n"
     "    float4 ghostMoon; // xyz toward The Line's ghost moon, w strength\n"
     "    float4 starRow0; float4 starRow1; float4 starRow2; // sky direction -> star-field direction\n"
@@ -577,7 +577,7 @@ static const char* g_skyShaderSrc =
     "float CloudNoise(float3 d) {\n"
     "    float2 base = d.xz / (d.y + 0.06f) * 0.45f;\n"                                   // a high sheet: flat, far away
     "    float2 p = float2(dot(base, float2(0.8f, 0.6f)), dot(base, float2(-0.6f, 0.8f)));\n" // into the wind's frame
-    "    p = p * float2(0.6f, 3.2f) + float2(fCamPos.w * 0.004f, 0.0f);\n"                    // long along the wind, thin across; drifting
+    "    p = p * float2(0.6f, 3.2f) + float2((fCamPos.w + params.z) * 0.004f, 0.0f);\n"                    // long along the wind, thin across; drifting
     "    p.y += (Noise2(p * float2(0.7f, 0.25f) + 5.2f) - 0.5f) * 2.4f;\n"                     // warp the streaks into wisps
     "    return 0.5f * Noise2(p) + 0.25f * Noise2(p * 2.07f + 17.1f) + 0.15f * Noise2(p * float2(4.3f, 3.1f) + 5.3f) + 0.1f * Noise2(p * float2(9.1f, 6.7f) + 9.7f);\n"
     "}\n"
@@ -1030,8 +1030,12 @@ void RenderScene(World& w, const Mat4& view, const Mat4& proj, Vec3 eye, Vec3 fo
         // Star field: shown = W * R * star, where R is the normal turning
         // about the pole and W The Line's precession; the shader needs the
         // inverse, (W R)^T = R^T W^T.
+        // The visible sky keeps The Line's clock, which runs ahead of the
+        // day near the line (Part XVIII): stars, moon and clouds read it;
+        // the sun, light and shadows keep the real one.
+        SkyState seen = g_line.skyLead > 0 ? ComputeSky(dayTime + g_line.skyLead) : sky;
         float R[3][3], W[3][3], G[3][3];
-        AxisAngleMatrix(CelestialPole(), sky.starAngle, R);
+        AxisAngleMatrix(CelestialPole(), seen.starAngle, R);
         LineSkyWobble(g_line, g_lineTuning, 1.0f, W);
         LineSkyWobble(g_line, g_lineTuning, g_lineTuning.moonGhostScale, G);
         float M[3][3];
@@ -1040,14 +1044,14 @@ void RenderScene(World& w, const Mat4& view, const Mat4& proj, Vec3 eye, Vec3 fo
                 M[i][j] = 0;
                 for (int k = 0; k < 3; k++) M[i][j] += R[k][i] * W[j][k];
             }
-        Vec3 md = sky.moonDir;
+        Vec3 md = seen.moonDir;
         Vec3 ghost = { G[0][0] * md.x + G[0][1] * md.y + G[0][2] * md.z,
                        G[1][0] * md.x + G[1][1] * md.y + G[1][2] * md.z,
                        G[2][0] * md.x + G[2][1] * md.y + G[2][2] * md.z };
         float moonVis = SkySmooth(-0.03f, 0.05f, md.y) * (1.0f - 0.75f * day);
         struct { Mat4 viewProj; float params[4]; float moon[4]; float ghost[4]; float rows[3][4]; } cb = {
             skyViewProj,
-            { sky.starsVisible, sky.sunLight, 0, 0 },
+            { sky.starsVisible, sky.sunLight, g_line.skyLead, 0 },
             { md.x, md.y, md.z, moonVis },
             { ghost.x, ghost.y, ghost.z, 0.22f * g_line.intensity * moonVis }, // always fainter than the moon
             { { M[0][0], M[0][1], M[0][2], 0 }, { M[1][0], M[1][1], M[1][2], 0 }, { M[2][0], M[2][1], M[2][2], 0 } },

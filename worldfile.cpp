@@ -210,8 +210,8 @@ void EncodeSave(const Player& p, float dayTime, const WorldGenParams& gen,
     for (const PendingUpdate& u : updates) { w.I32(u.x); w.I32(u.y); w.I32(u.z); w.U8(u.kind); w.U32(u.delay); }
 
     // The Line (Part XVIII): only its history -- everything else re-derives.
-    w.U32((uint32_t)line.dwell.size());
-    for (const auto& kv : line.dwell) { w.U64((uint64_t)kv.first); w.F32(kv.second); }
+    w.U32((uint32_t)line.cells.size());
+    for (const LineCellSave& c : line.cells) { w.F32(c.x); w.F32(c.z); w.F32(c.seconds); }
     w.F64(line.angMom);
     w.F32(line.theta);
 
@@ -235,7 +235,8 @@ DecodeResult DecodeSave(const uint8_t* data, size_t size, SaveData& out) {
     out.version = r.U32();
     // v2 embedded preferences, v3 moved them out, v4 added the day clock,
     // v5 added the generator and per-chunk storage, v6 pending updates,
-    // v7 The Line, v8 the essence map's discoveries (Section 7.2).
+    // v7 The Line, v8 the essence map's discoveries, v9 where in each of
+    // The Line's cells the time was spent (Section 7.2).
     if (out.version < 2 || out.version > SAVE_VERSION) return DecodeResult::UnsupportedVersion;
 
     Player& p = out.player;
@@ -301,8 +302,16 @@ DecodeResult DecodeSave(const uint8_t* data, size_t size, SaveData& out) {
         if (out.version >= 7) {
             uint32_t n = r.U32();
             if (!r.ok || n > (r.size - r.pos) / 12) return DecodeResult::Corrupt;
-            out.line.dwell.resize(n);
-            for (auto& kv : out.line.dwell) { kv.first = (long long)r.U64(); kv.second = r.F32(); }
+            out.line.cells.resize(n);
+            for (LineCellSave& c : out.line.cells) {
+                if (out.version >= 9) { c.x = r.F32(); c.z = r.F32(); c.seconds = r.F32(); continue; }
+                // v7/v8: a 32-block cell key and its seconds; the time is
+                // taken to have been spent at the cell's centre.
+                uint64_t key = r.U64();
+                int cx = (int)(uint32_t)(key >> 32), cz = (int)(uint32_t)(key & 0xFFFFFFFFu);
+                c.x = (cx + 0.5f) * 32.0f; c.z = (cz + 0.5f) * 32.0f;
+                c.seconds = r.F32();
+            }
             out.line.angMom = r.F64();
             out.line.theta = r.F32();
             if (!r.ok) return DecodeResult::Truncated;

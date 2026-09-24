@@ -1695,6 +1695,7 @@ void RenderUIPass() {
         snprintf(buf, sizeof(buf), "INTENSITY %.4f", L.intensity); lines.push_back(buf);
         snprintf(buf, sizeof(buf), "SPIN %s  ALIGN %+.2f", L.spin > 0 ? "COUNTERCLOCKWISE" : "CLOCKWISE", L.alignment); lines.push_back(buf);
         snprintf(buf, sizeof(buf), "PIVOT %.0f, %.0f  ANGLE %.0f", L.pivotX, L.pivotZ, L.theta * 57.29578f); lines.push_back(buf);
+        snprintf(buf, sizeof(buf), "SKY CLOCK X%.2f  %.0f S AHEAD", L.skyRate, L.skyLead); lines.push_back(buf);
         const float scale = 0.65f, lineH = UITextHeight(scale);
         float w = 0;
         for (const std::string& l : lines) w = std::max(w, UITextWidth(l, scale));

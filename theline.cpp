@@ -58,26 +58,30 @@ void RefreshTarget(LineState& s, const LineTuning& t) {
     s.spin = (d && d->angMom > t.ccwThreshold) ? 1 : -1;
 }
 
-// The player's pull: their favourite cell, refined toward whichever of
-// its neighbours also hold a lot of time (weights squared, relative to
-// the favourite), so the pivot sits in the middle of the place actually
-// lived in -- never in the empty ground between two separate haunts, the
-// way an average over everywhere would.
+// The player's pull: where in their favourite cell the time was actually
+// spent, refined toward whichever of its neighbours also hold a lot of
+// time (weights squared, relative to the favourite) -- each cell counting
+// at its own time-weighted mean position, not its centre, so the pivot
+// lands on the spot the player keeps coming back to in x and z alike,
+// and never in the empty ground between two separate haunts, the way an
+// average over everywhere would.
 void RefreshPlayerSource(LineState& s, const LineTuning& t) {
+    (void)t;
     if (!s.hasFavourite) return;
     auto fav = s.dwell.find(s.favourite);
-    if (fav == s.dwell.end() || !(fav->second > 0)) return;
-    double best = fav->second;
+    if (fav == s.dwell.end() || !(fav->second.t > 0)) return;
+    double best = fav->second.t;
     int fx, fz; CellOf(s.favourite, fx, fz);
     double sw = 0, sx = 0, sz = 0;
     for (int dz = -1; dz <= 1; dz++)
         for (int dx = -1; dx <= 1; dx++) {
             auto it = s.dwell.find(CellKey(fx + dx, fz + dz));
-            if (it == s.dwell.end()) continue;
-            double w = it->second / best; w *= w;
+            if (it == s.dwell.end() || !(it->second.t > 0)) continue;
+            const DwellCell& c = it->second;
+            double w = c.t / best; w *= w;
             sw += w;
-            sx += w * (fx + dx + 0.5) * t.cellSize;
-            sz += w * (fz + dz + 0.5) * t.cellSize;
+            sx += w * (c.x / c.t);
+            sz += w * (c.z / c.t);
         }
     s.player.weight = best / s.dwellScale;
     s.player.wx = sx / sw * s.player.weight;
@@ -111,13 +115,15 @@ void UpdateLine(LineState& s, const LineTuning& t, float x, float y, float z, fl
     // favourite cell can then only change to the one being added to.
     s.dwellScale *= exp2((double)dt / t.dwellHalfLife);
     if (s.dwellScale > 1e100) { // renormalise, every few thousand hours of play
-        for (auto& kv : s.dwell) kv.second /= s.dwellScale;
+        for (auto& kv : s.dwell) { kv.second.t /= s.dwellScale; kv.second.x /= s.dwellScale; kv.second.z /= s.dwellScale; }
         s.dwellScale = 1.0;
     }
     int cx = (int)floorf(x / t.cellSize), cz = (int)floorf(z / t.cellSize);
     long long key = CellKey(cx, cz);
-    double v = (s.dwell[key] += (double)dt * s.dwellScale);
-    if (!s.hasFavourite || key == s.favourite || v > s.dwell[s.favourite]) { s.favourite = key; s.hasFavourite = true; }
+    DwellCell& cell = s.dwell[key];
+    double w = (double)dt * s.dwellScale;
+    cell.t += w; cell.x += w * x; cell.z += w * z;
+    if (!s.hasFavourite || key == s.favourite || cell.t > s.dwell[s.favourite].t) { s.favourite = key; s.hasFavourite = true; }
     RefreshPlayerSource(s, t);
     RefreshTarget(s, t);
     MovePivot(s, t, dt);
@@ -167,6 +173,17 @@ void UpdateLine(LineState& s, const LineTuning& t, float x, float y, float z, fl
     // rising with intensity.
     s.wobblePhase += s.spin * (t.wobbleRate + t.wobbleRateGain * s.intensity) * dt;
     s.wobblePhase = fmodf(s.wobblePhase, TWO_PI);
+
+    // 6. The sky clock: near the line the visible sky runs ahead, faster
+    // the closer the player is (the square root lets the race build over
+    // the approach rather than only at the last step), easing off as the
+    // lead nears its limit; away from it the sky runs slow, by as much as
+    // it is ahead, until it has fallen back into step with the day.
+    float nearness = sqrtf(s.intensity > 0 ? s.intensity : 0.0f);
+    float fill = s.skyLead / t.skyLeadMax;
+    s.skyRate = 1.0f + t.skyRace * nearness * (1.0f - fill) - t.skyLag * (1.0f - nearness) * fill;
+    s.skyLead += (s.skyRate - 1.0f) * dt;
+    s.skyLead = s.skyLead < 0 ? 0 : (s.skyLead > t.skyLeadMax ? t.skyLeadMax : s.skyLead);
 }
 
 void LineSkyWobble(const LineState& s, const LineTuning& t, float amount, float out[3][3]) {
@@ -181,8 +198,12 @@ void LineSkyWobble(const LineState& s, const LineTuning& t, float amount, float 
 
 LineSaveData SnapshotLine(const LineState& s) {
     LineSaveData d;
-    d.dwell.reserve(s.dwell.size());
-    for (const auto& kv : s.dwell) d.dwell.push_back({ kv.first, (float)(kv.second / s.dwellScale) });
+    d.cells.reserve(s.dwell.size());
+    for (const auto& kv : s.dwell) {
+        const DwellCell& c = kv.second;
+        if (!(c.t > 0)) continue;
+        d.cells.push_back({ (float)(c.x / c.t), (float)(c.z / c.t), (float)(c.t / s.dwellScale) });
+    }
     d.angMom = s.player.angMom;
     d.theta = s.theta;
     return d;
@@ -190,10 +211,14 @@ LineSaveData SnapshotLine(const LineState& s) {
 
 void RestoreLine(LineState& s, const LineTuning& t, const LineSaveData& d) {
     ResetLine(s);
-    for (const auto& kv : d.dwell) {
-        if (!(kv.second > 0)) continue;
-        s.dwell[kv.first] = kv.second;
-        if (!s.hasFavourite || kv.second > s.dwell[s.favourite]) { s.favourite = kv.first; s.hasFavourite = true; }
+    // Cells re-derive from where their time was spent, so a history saved
+    // at another cell size (v7/v8 used 32) folds into this one.
+    for (const LineCellSave& c : d.cells) {
+        if (!(c.seconds > 0) || !std::isfinite(c.x) || !std::isfinite(c.z)) continue;
+        long long key = CellKey((int)floorf(c.x / t.cellSize), (int)floorf(c.z / t.cellSize));
+        DwellCell& cell = s.dwell[key];
+        cell.t += c.seconds; cell.x += (double)c.seconds * c.x; cell.z += (double)c.seconds * c.z;
+        if (!s.hasFavourite || cell.t > s.dwell[s.favourite].t) { s.favourite = key; s.hasFavourite = true; }
     }
     s.player.angMom = d.angMom;
     s.theta = d.theta;

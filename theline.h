@@ -6,14 +6,18 @@
 // spends the most time, which the pivot travels toward as that changes
 // -- clockwise seen from above, unless the player's own movement has been
 // circling the pivot the other way for a good while. Its only intended
-// expression is how
-// things that already move behave (the star field's turning, a ghost
-// of the moon); a debug marker exists purely for testing.
+// expression is how things that already move behave; a debug marker
+// exists purely for testing.
+//
+// That expression is time: near the line the visible sky (stars, moon,
+// clouds) runs ahead of the day clock, racing faster the closer the
+// player is, and once they leave it runs slow until it has fallen back
+// into step. The sun, the light and the shadows keep the real clock.
 //
 // Pure C++, deterministic, tested natively. Only the pivot history (time
-// per 32-block cell, slowly fading), the spin accumulator and the line's
-// angle persist; everything else is derived each tick from the player
-// within loaded space.
+// per 16-block cell and where in it that time was spent, slowly fading),
+// the spin accumulator and the line's angle persist; everything else is
+// derived each tick from the player within loaded space.
 
 #pragma once
 
@@ -24,8 +28,8 @@
 
 // Open parameters (the brief leaves the exact curves to prototyping).
 struct LineTuning {
-    float cellSize = 32.0f;          // pivot-history resolution, blocks
-    float dwellHalfLife = 4.0f * 3600.0f; // seconds of play for time spent somewhere to count half: where you are these days wins over where you once were
+    float cellSize = 16.0f;          // pivot-history resolution, blocks (each cell also keeps where in it the time was spent)
+    float dwellHalfLife = 30.0f * 60.0f; // seconds of play for time spent somewhere to count half: where you are this session wins over where you once were
     float pivotFollow = 60.0f;       // seconds for the pivot to close most of the way to a new favourite place...
     float pivotMaxSpeed = 2.0f;      // ...travelling at most this many blocks per second
     float spinHalfLife = 3.0f * 3600.0f; // seconds of play for the spin memory to halve
@@ -38,8 +42,12 @@ struct LineTuning {
     float decadeAgainst = 3.0f;      // ... moving against it
     float stepSharpness = 0.25f;     // width of each staircase riser, fraction of a decade (1 = smooth)
     float smoothing = 0.5f;          // seconds; intensity low-pass
-    // Sky expression.
-    float starWobble = 0.10f;        // radians of star precession at full intensity
+    // Sky expression: the sky clock (stars, moon, clouds) races ahead near
+    // the line and lags once the player leaves, until it's back in step.
+    float skyRace = 11.0f;           // extra sky seconds per second at full intensity (12x on the line)
+    float skyLeadMax = 900.0f;       // how far ahead the sky can get (a quarter of the day); the race eases as it nears this
+    float skyLag = 0.8f;             // how much slower than the clock the sky runs when it's furthest ahead and the player has left
+    float starWobble = 0.03f;        // radians of star precession at full intensity (faint: time is the expression)
     float moonGhostScale = 0.25f;    // ghost moon amplitude relative to the stars (always < 1)
     float wobbleRate = 0.15f;        // rad/s of precession at zero intensity...
     float wobbleRateGain = 0.6f;     // ...plus this much more at full intensity
@@ -55,11 +63,16 @@ struct PivotSource {
     double angMom = 0;   // decaying net angular momentum about the pivot (top-down, + = counterclockwise)
 };
 
+// Time spent in one cell, and where: t seconds, and the sums of x*dt and
+// z*dt, so x / t is the time-weighted mean position within the cell.
+// All three are stored inflated by dwellScale (see LineState).
+struct DwellCell { double t = 0, x = 0, z = 0; };
+
 struct LineState {
     // Persistent.
-    // Seconds spent per cell, stored inflated by dwellScale so fading
-    // every cell costs nothing: real (faded) seconds = value / dwellScale.
-    std::unordered_map<long long, double> dwell;
+    // Time spent per cell, stored inflated by dwellScale so fading every
+    // cell costs nothing: real (faded) seconds = t / dwellScale.
+    std::unordered_map<long long, DwellCell> dwell;
     PivotSource player;
     float theta = 0.0f;       // line direction angle, radians from +X toward +Z
 
@@ -77,6 +90,8 @@ struct LineState {
     float blocksPerDecade = 6;
     float intensity = 0;      // smoothed 0..1
     float wobblePhase = 0;
+    float skyLead = 0;        // seconds the visible sky is ahead of the day clock (0..skyLeadMax)
+    float skyRate = 1;        // how fast the visible sky is running this tick (1 = with the clock)
     float lastX = 0, lastZ = 0;
     bool hasLast = false;
 };
@@ -98,8 +113,9 @@ static inline Vec3 LineDirection(const LineState& s) { return { cosf(s.theta), 0
 void LineSkyWobble(const LineState& s, const LineTuning& t, float amount, float out[3][3]);
 
 // Save support.
+struct LineCellSave { float x = 0, z = 0, seconds = 0; }; // mean position of the time, faded seconds
 struct LineSaveData {
-    std::vector<std::pair<long long, float>> dwell; // faded seconds per cell
+    std::vector<LineCellSave> cells; // one per cell visited; cells re-derive from x, z
     double angMom = 0;
     float theta = 0;
 };
