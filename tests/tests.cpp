@@ -625,6 +625,44 @@ static void TestTheLine() {
     for (int i = 0; i < 60 * 60; i++) UpdateLine(s, t, 900.0f, 13.0f, 100.0f, dt);           // 1 min at B
     CHECK(fabsf(s.pivotX - 112.0f) < 2.0f && fabsf(s.pivotZ - 112.0f) < 2.0f); // A's cell centre (96..128)
 
+    // Two separate haunts: the pivot heads for the one with more time,
+    // not the empty ground between them, and travels there rather than
+    // jumping.
+    {
+        LineState h;
+        for (int i = 0; i < 3600 * 6; i++) UpdateLine(h, t, 16.0f, 13.0f, 16.0f, 1.0f / 6.0f);    // 1 h at A (cell 0,0)
+        CHECK(fabsf(h.pivotX - 16.0f) < 0.5f && fabsf(h.pivotZ - 16.0f) < 0.5f);
+        for (int i = 0; i < 5400 * 6; i++) UpdateLine(h, t, 1016.0f, 13.0f, 16.0f, 1.0f / 6.0f);  // then 1.5 h at B, 1000 blocks east
+        CHECK(fabsf(h.targetX - 1008.0f) < 1.0f);                     // B's cell centre (992..1024), not the midpoint
+        CHECK(fabsf(h.pivotX - h.targetX) < 1.0f);                    // arrived by now
+        // The trip itself: at most pivotMaxSpeed, so ~500 s for 1000 blocks.
+        LineState h2;
+        for (int i = 0; i < 3600 * 6; i++) UpdateLine(h2, t, 16.0f, 13.0f, 16.0f, 1.0f / 6.0f);
+        bool steady = true; int steps = 0;
+        while (h2.targetX < 500.0f && steps < 100000) { UpdateLine(h2, t, 1016.0f, 13.0f, 16.0f, 1.0f / 6.0f); steps++; }
+        float prev = h2.pivotX;
+        for (int i = 0; i < 60 * 6; i++) {
+            UpdateLine(h2, t, 1016.0f, 13.0f, 16.0f, 1.0f / 6.0f);
+            float moved = h2.pivotX - prev; prev = h2.pivotX;
+            if (moved < 0 || moved > t.pivotMaxSpeed / 6.0f + 1e-3f) steady = false;
+        }
+        printf("    pivot trip: switched after %.0f s at B, then 60 s later at x=%.1f (steady %d)\n", steps / 6.0f, h2.pivotX, (int)steady);
+        CHECK(steady && h2.pivotX > 16.0f && h2.pivotX < 1008.0f);   // under way, toward B, at walking pace
+    }
+
+    // Where the player is these days wins: 2 h at A, then 1.8 h at B.
+    // Unfaded, A would still lead; with a 4 h half-life, B has taken over.
+    {
+        LineState f;
+        for (int i = 0; i < 7200 * 2; i++) UpdateLine(f, t, 16.0f, 13.0f, 16.0f, 0.5f);
+        for (int i = 0; i < 6480 * 2; i++) UpdateLine(f, t, 1016.0f, 13.0f, 16.0f, 0.5f);
+        CHECK(fabsf(f.targetX - 1008.0f) < 1.0f);
+        LineSaveData fd = SnapshotLine(f);
+        float a = 0, b = 0;
+        for (auto& kv : fd.dwell) { if (kv.second > 1000) (a == 0 ? a : b) = kv.second; }
+        printf("    faded hours at the two haunts: %.2f %.2f\n", a / 3600.0f, b / 3600.0f);
+    }
+
     // Spin follows the sense of movement around one's own centre.
     auto circle = [&](int dir) {
         LineState c;
@@ -638,9 +676,18 @@ static void TestTheLine() {
     };
     CHECK(circle(+1) == +1); // angle increasing from +X toward +Z: counterclockwise from above
     CHECK(circle(-1) == -1);
+    // Clockwise by default: standing still, or barely circling the other way.
+    {
+        LineState still;
+        for (int i = 0; i < 600; i++) UpdateLine(still, t, 16.0f, 13.0f, 16.0f, dt);
+        CHECK(still.spin == -1);
+        still.player.angMom = t.ccwThreshold * 0.5f;
+        UpdateLine(still, t, 16.0f, 13.0f, 16.0f, dt);
+        CHECK(still.spin == -1);
+    }
 
     // The line sweeps in the spin's direction.
-    LineState sw; sw.player.angMom = -5; sw.player.weight = 1; sw.player.wx = 0; sw.player.wz = 0;
+    LineState sw; sw.player.angMom = -5;
     float before = 1.0f; sw.theta = before;
     UpdateLine(sw, t, 0.0f, 13.0f, 0.0f, 1.0f);
     CHECK(sw.spin == -1 && sw.theta < before);
@@ -648,10 +695,10 @@ static void TestTheLine() {
     // Falloff: standing still, one decade of intensity per blocksPerDecade,
     // flat treads between steps.
     auto settle = [&](float dist) {
-        LineState a; a.player.weight = 1e12; a.player.wx = 0; a.player.wz = 0; a.theta = 0; // a dominant pivot at the origin; line along +X
-        t.turnSeconds = 1e9f; // freeze the sweep for this test
+        LineState a; a.hasPivot = true; a.pivotX = 0; a.pivotZ = 0; a.theta = 0; // pivot at the origin; line along +X
+        t.turnSeconds = 1e9f; t.pivotMaxSpeed = 0; // freeze the sweep and the pivot for this test
         for (int i = 0; i < 600; i++) UpdateLine(a, t, 5.0f, 13.0f, dist, dt);
-        t.turnSeconds = 3600.0f;
+        t.turnSeconds = 3600.0f; t.pivotMaxSpeed = LineTuning().pivotMaxSpeed;
         return a;
     };
     LineState on = settle(0.0f), near = settle(3.0f), dec1 = settle(6.3f), tread = settle(9.0f), dec2 = settle(12.3f);
@@ -664,9 +711,11 @@ static void TestTheLine() {
 
     // Asymmetry: moving with the sweep stretches the falloff, against shrinks it.
     auto walk = [&](float vz) {
-        LineState a; a.player.weight = 1e12; a.player.wx = 0; a.player.wz = 0; a.theta = 0; a.player.angMom = 1e9; // dominant pivot, ccw
+        LineState a; a.hasPivot = true; a.pivotX = 0; a.pivotZ = 0; a.theta = 0; a.player.angMom = 1e9; // pivot at the origin, ccw
+        t.pivotMaxSpeed = 0;
         float z = 4.0f;
         for (int i = 0; i < 10; i++) { UpdateLine(a, t, 20.0f, 13.0f, z, dt); z += vz * dt; }
+        t.pivotMaxSpeed = LineTuning().pivotMaxSpeed;
         return a.blocksPerDecade;
     };
     // Line along +X, ccw spin: at x = +20 it sweeps toward +Z.

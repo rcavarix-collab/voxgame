@@ -769,7 +769,7 @@ static MapCamera g_mapCamera;
 static bool g_mapDragging = false;
 static int g_mapDragX = 0, g_mapDragY = 0;
 static void OpenMap() {
-    // Opens on the player's own dwell centre -- The Line's pivot -- at a
+    // Opens on The Line's pivot (the player's favourite place) at a
     // zoom showing a few hundred blocks around it (the view origin only;
     // no node moves).
     g_mapCamera.centerX = g_line.pivotX;

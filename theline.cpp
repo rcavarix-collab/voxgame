@@ -47,13 +47,54 @@ const PivotSource* DominantSource(const LineState& s) {
     return best;
 }
 
-void RefreshPivot(LineState& s) {
+// Where the dominant source pulls the pivot, and the spin: clockwise
+// unless there has been a good deal of net counterclockwise circling.
+void RefreshTarget(LineState& s, const LineTuning& t) {
     const PivotSource* d = DominantSource(s);
     if (d && d->weight > 0) {
-        s.pivotX = (float)(d->wx / d->weight);
-        s.pivotZ = (float)(d->wz / d->weight);
+        s.targetX = (float)(d->wx / d->weight);
+        s.targetZ = (float)(d->wz / d->weight);
     }
-    s.spin = (d && d->angMom < 0) ? -1 : 1;
+    s.spin = (d && d->angMom > t.ccwThreshold) ? 1 : -1;
+}
+
+// The player's pull: their favourite cell, refined toward whichever of
+// its neighbours also hold a lot of time (weights squared, relative to
+// the favourite), so the pivot sits in the middle of the place actually
+// lived in -- never in the empty ground between two separate haunts, the
+// way an average over everywhere would.
+void RefreshPlayerSource(LineState& s, const LineTuning& t) {
+    if (!s.hasFavourite) return;
+    auto fav = s.dwell.find(s.favourite);
+    if (fav == s.dwell.end() || !(fav->second > 0)) return;
+    double best = fav->second;
+    int fx, fz; CellOf(s.favourite, fx, fz);
+    double sw = 0, sx = 0, sz = 0;
+    for (int dz = -1; dz <= 1; dz++)
+        for (int dx = -1; dx <= 1; dx++) {
+            auto it = s.dwell.find(CellKey(fx + dx, fz + dz));
+            if (it == s.dwell.end()) continue;
+            double w = it->second / best; w *= w;
+            sw += w;
+            sx += w * (fx + dx + 0.5) * t.cellSize;
+            sz += w * (fz + dz + 0.5) * t.cellSize;
+        }
+    s.player.weight = best / s.dwellScale;
+    s.player.wx = sx / sw * s.player.weight;
+    s.player.wz = sz / sw * s.player.weight;
+}
+
+// The pivot travels toward its target rather than jumping: most of the
+// way in pivotFollow seconds, never faster than pivotMaxSpeed.
+void MovePivot(LineState& s, const LineTuning& t, float dt) {
+    if (!s.hasPivot) { s.pivotX = s.targetX; s.pivotZ = s.targetZ; s.hasPivot = true; return; }
+    float dx = s.targetX - s.pivotX, dz = s.targetZ - s.pivotZ;
+    float dist = sqrtf(dx * dx + dz * dz);
+    if (dist < 1e-4f) return;
+    float step = dist * (1.0f - expf(-dt / t.pivotFollow));
+    if (step > t.pivotMaxSpeed * dt) step = t.pivotMaxSpeed * dt;
+    s.pivotX += dx / dist * step;
+    s.pivotZ += dz / dist * step;
 }
 
 } // namespace
@@ -63,19 +104,23 @@ void ResetLine(LineState& s) { s = LineState(); }
 void UpdateLine(LineState& s, const LineTuning& t, float x, float y, float z, float dt) {
     if (dt <= 0) return;
 
-    // 1. Pivot history: time spent per cell, weighted by that time squared,
-    // so a place passed through barely registers and a place lived in
-    // dominates. Incremental: adding dt to a cell adds 2*T*dt + dt^2.
+    // 1. Pivot history: time spent per cell, fading with a long half-life
+    // so where the player spends time these days outweighs where they
+    // once did. Every cell fades at the same rate, so instead of touching
+    // them all, new time is added inflated by a growing scale; the
+    // favourite cell can then only change to the one being added to.
+    s.dwellScale *= exp2((double)dt / t.dwellHalfLife);
+    if (s.dwellScale > 1e100) { // renormalise, every few thousand hours of play
+        for (auto& kv : s.dwell) kv.second /= s.dwellScale;
+        s.dwellScale = 1.0;
+    }
     int cx = (int)floorf(x / t.cellSize), cz = (int)floorf(z / t.cellSize);
-    float& T = s.dwell[CellKey(cx, cz)];
-    double dW = 2.0 * T * dt + (double)dt * dt;
-    T += dt;
-    double centreX = (cx + 0.5) * t.cellSize, centreZ = (cz + 0.5) * t.cellSize;
-    s.player.weight += dW;
-    s.player.wx += dW * centreX;
-    s.player.wz += dW * centreZ;
-
-    RefreshPivot(s);
+    long long key = CellKey(cx, cz);
+    double v = (s.dwell[key] += (double)dt * s.dwellScale);
+    if (!s.hasFavourite || key == s.favourite || v > s.dwell[s.favourite]) { s.favourite = key; s.hasFavourite = true; }
+    RefreshPlayerSource(s, t);
+    RefreshTarget(s, t);
+    MovePivot(s, t, dt);
 
     // 2. Spin: net angular momentum of the player's actual movement about
     // the pivot, top-down, with a slow memory.
@@ -87,7 +132,7 @@ void UpdateLine(LineState& s, const LineTuning& t, float x, float y, float z, fl
     float rx = x - s.pivotX, rz = z - s.pivotZ;
     double decay = exp(-(double)dt * 0.69314718 / t.spinHalfLife);
     s.player.angMom = s.player.angMom * decay + (double)(rx * vz - rz * vx) * dt;
-    RefreshPivot(s);
+    RefreshTarget(s, t);
 
     // 3. The line sweeps around the pivot in the spin's direction and
     // settles at the player's height.
@@ -136,7 +181,8 @@ void LineSkyWobble(const LineState& s, const LineTuning& t, float amount, float 
 
 LineSaveData SnapshotLine(const LineState& s) {
     LineSaveData d;
-    d.dwell.assign(s.dwell.begin(), s.dwell.end());
+    d.dwell.reserve(s.dwell.size());
+    for (const auto& kv : s.dwell) d.dwell.push_back({ kv.first, (float)(kv.second / s.dwellScale) });
     d.angMom = s.player.angMom;
     d.theta = s.theta;
     return d;
@@ -147,13 +193,11 @@ void RestoreLine(LineState& s, const LineTuning& t, const LineSaveData& d) {
     for (const auto& kv : d.dwell) {
         if (!(kv.second > 0)) continue;
         s.dwell[kv.first] = kv.second;
-        int cx, cz; CellOf(kv.first, cx, cz);
-        double w = (double)kv.second * kv.second;
-        s.player.weight += w;
-        s.player.wx += w * (cx + 0.5) * t.cellSize;
-        s.player.wz += w * (cz + 0.5) * t.cellSize;
+        if (!s.hasFavourite || kv.second > s.dwell[s.favourite]) { s.favourite = kv.first; s.hasFavourite = true; }
     }
     s.player.angMom = d.angMom;
     s.theta = d.theta;
-    RefreshPivot(s);
+    RefreshPlayerSource(s, t);
+    RefreshTarget(s, t);
+    MovePivot(s, t, 0.0f); // first placement: straight onto the target
 }

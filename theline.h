@@ -2,17 +2,18 @@
 //
 // The Line (DESIGN.md Part XVIII): a thin, one-dimensional distortion in
 // local time, personal to the player. It lies horizontally at about the
-// player's own height and sweeps around a pivot -- the player's
-// dwell-weighted centre of gravity -- clockwise or counterclockwise
-// (seen from above) according to the net sense of the player's own
-// movement around that pivot. Its only intended expression is how
+// player's own height and sweeps around a pivot -- the place the player
+// spends the most time, which the pivot travels toward as that changes
+// -- clockwise seen from above, unless the player's own movement has been
+// circling the pivot the other way for a good while. Its only intended
+// expression is how
 // things that already move behave (the star field's turning, a ghost
 // of the moon); a debug marker exists purely for testing.
 //
-// Pure C++, deterministic, tested natively. Only the pivot history (a
-// float per 32-block cell the player has spent time in), the spin
-// accumulator and the line's angle persist; everything else is derived
-// each tick from the player within loaded space.
+// Pure C++, deterministic, tested natively. Only the pivot history (time
+// per 32-block cell, slowly fading), the spin accumulator and the line's
+// angle persist; everything else is derived each tick from the player
+// within loaded space.
 
 #pragma once
 
@@ -24,7 +25,11 @@
 // Open parameters (the brief leaves the exact curves to prototyping).
 struct LineTuning {
     float cellSize = 32.0f;          // pivot-history resolution, blocks
+    float dwellHalfLife = 4.0f * 3600.0f; // seconds of play for time spent somewhere to count half: where you are these days wins over where you once were
+    float pivotFollow = 60.0f;       // seconds for the pivot to close most of the way to a new favourite place...
+    float pivotMaxSpeed = 2.0f;      // ...travelling at most this many blocks per second
     float spinHalfLife = 3.0f * 3600.0f; // seconds of play for the spin memory to halve
+    float ccwThreshold = 600.0f;     // net counterclockwise circling (sum of r x v dt, blocks^2) needed to reverse the clockwise default
     float turnSeconds = 3600.0f;     // one sweep per in-game day
     float heightFollow = 5.0f;       // seconds for the line's height to settle on the player's
     float heightAboveFeet = 0.5f;    // through the middle of blocks at the player's own level
@@ -45,20 +50,27 @@ struct LineTuning {
 // mechanism, another source), and whichever source dominates supplies
 // both the pivot position and the spin.
 struct PivotSource {
-    double weight = 0;   // sum of dwell^2 over cells
-    double wx = 0, wz = 0;
+    double weight = 0;   // strength: seconds (faded) spent in its favourite cell
+    double wx = 0, wz = 0; // where it pulls the pivot, times weight
     double angMom = 0;   // decaying net angular momentum about the pivot (top-down, + = counterclockwise)
 };
 
 struct LineState {
     // Persistent.
-    std::unordered_map<long long, float> dwell; // cell key -> seconds spent
+    // Seconds spent per cell, stored inflated by dwellScale so fading
+    // every cell costs nothing: real (faded) seconds = value / dwellScale.
+    std::unordered_map<long long, double> dwell;
     PivotSource player;
     float theta = 0.0f;       // line direction angle, radians from +X toward +Z
 
     // Derived / transient.
-    float pivotX = 0, pivotZ = 0;
-    int spin = 1;             // +1 counterclockwise, -1 clockwise (from above: +X right, +Z up)
+    double dwellScale = 1.0;  // grows by 2^(dt / dwellHalfLife) each tick; renormalised long before overflow
+    long long favourite = 0;  // cell with the most (faded) time
+    bool hasFavourite = false;
+    float targetX = 0, targetZ = 0; // where the pivot is heading: the favourite place
+    bool hasPivot = false;
+    float pivotX = 0, pivotZ = 0;   // travels toward the target
+    int spin = -1;            // -1 clockwise (the default), +1 counterclockwise (from above: +X right, +Z up)
     float lineY = 0;          // height of the line
     float distance = 0;       // player's horizontal distance to the line
     float alignment = 0;      // -1 moving against the sweep .. +1 with it
@@ -87,7 +99,7 @@ void LineSkyWobble(const LineState& s, const LineTuning& t, float amount, float 
 
 // Save support.
 struct LineSaveData {
-    std::vector<std::pair<long long, float>> dwell;
+    std::vector<std::pair<long long, float>> dwell; // faded seconds per cell
     double angMom = 0;
     float theta = 0;
 };
