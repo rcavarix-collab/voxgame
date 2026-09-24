@@ -23,7 +23,7 @@
 enum GameAction {
     ACT_FORWARD, ACT_BACK, ACT_LEFT, ACT_RIGHT, ACT_JUMP,
     ACT_BREAK, ACT_PLACE, ACT_MENU, ACT_SAVE, ACT_LOAD, ACT_MAP,
-    ACT_SPRINT, ACT_CROUCH, // appended: saved bindings are by name, so older settings files still load
+    ACT_SPRINT, ACT_CROUCH, ACT_LIBRARY, // appended: saved bindings are by name, so older settings files still load
     ACT_COUNT
 };
 // Stable identity for the save file, same idea as g_blockNames.
@@ -48,6 +48,10 @@ extern bool g_moveToggleLatch[ACT_COUNT]; // only ACT_FORWARD/BACK/LEFT/RIGHT in
 // arp/pulse layer at all; 1 = the full designed arc -- a ceiling, not a
 // ceiling-breaker (see audio module docs / DESIGN.md Part XIV.3).
 extern float g_musicIntensity;
+// The hotbar's ten blocks (library.h), chosen from the block library and
+// saved by block name so registry changes can't scramble them.
+#include "library.h"
+extern BlockID g_hotbar[HOTBAR_SLOTS];
 
 bool SaveSettings();
 void LoadSettings();

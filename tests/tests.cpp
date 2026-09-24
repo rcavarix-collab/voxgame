@@ -12,6 +12,7 @@
 #include "../blocktex.h"
 #include "../glowlight.h"
 #include "../musiclevel.h"
+#include "../library.h"
 #include "../mesher.h"
 #include "../shapes.h"
 #include "../icons.h"
@@ -657,6 +658,45 @@ static Vec3 XformPoint(const Mat4& m, Vec3 p) {
     return { x / w, y / w, z / w };
 }
 
+static void TestLibrary() {
+    printf("block library and hotbar\n");
+    const int W = 960, H = 680, count = g_placeableList.count;   // the smallest window
+    // Hotbar: ten slots, on screen, left to right, no overlap.
+    for (int i = 0; i < HOTBAR_SLOTS; i++) {
+        UiRect r = HotbarSlotRect(W, H, i);
+        CHECK(r.x0 >= 0 && r.x1 <= W && r.y1 <= H);
+        if (i) CHECK(r.x0 >= HotbarSlotRect(W, H, i - 1).x1);
+        CHECK(HotbarSlotAt(W, H, (r.x0 + r.x1) / 2, (r.y0 + r.y1) / 2) == i);
+    }
+    CHECK(HotbarSlotAt(W, H, 5, 5) == -1);
+    // Library: every placeable block reachable, the grid above the hotbar.
+    LibraryLayout L = ComputeLibraryLayout(W, H, count);
+    CHECK(L.grid.y1 <= HotbarSlotRect(W, H, 0).y0 && L.panel.y0 >= 0 && L.panel.x0 >= 0 && L.panel.x1 <= W);
+    int maxScroll = L.rows - L.visibleRows;
+    for (int i = 0; i < count; i++) {
+        int scroll = std::min(maxScroll, i / L.columns);
+        UiRect c = LibraryCellRect(L, scroll, i);
+        CHECK(LibraryCellAt(L, count, scroll, (c.x0 + c.x1) / 2, (c.y0 + c.y1) / 2) == i);
+    }
+    // A click selects; a small wobble is still a click.
+    LibraryGesture g;
+    LibraryPress(g, 3, 100, 100); LibraryMove(g, 103, 98);
+    LibraryResult r = LibraryRelease(g, -1);
+    CHECK(r.outcome == LibraryOutcome::Select && r.entry == 3);
+    // A drag onto a slot assigns it there.
+    LibraryPress(g, 5, 100, 100); LibraryMove(g, 180, 400);
+    r = LibraryRelease(g, 7);
+    CHECK(r.outcome == LibraryOutcome::Assign && r.entry == 5 && r.slot == 7);
+    // A drag dropped anywhere else does nothing; a press on empty space does nothing.
+    LibraryPress(g, 5, 100, 100); LibraryMove(g, 300, 100);
+    CHECK(LibraryRelease(g, -1).outcome == LibraryOutcome::None);
+    LibraryPress(g, -1, 100, 100);
+    CHECK(LibraryRelease(g, 2).outcome == LibraryOutcome::None);
+    // The default hotbar holds ten distinct placeable blocks.
+    BlockID d[HOTBAR_SLOTS]; DefaultHotbar(d);
+    for (int i = 0; i < HOTBAR_SLOTS; i++) { CHECK(g_blocks[d[i]].placeable); for (int j = 0; j < i; j++) CHECK(d[i] != d[j]); }
+}
+
 static void TestMusicLevel() {
     printf("music onset level\n");
     const int SR = 44100, CH = SR / 4;
@@ -1027,6 +1067,7 @@ int main() {
     TestShapes();
     TestIcons();
     TestScheduledUpdates();
+    TestLibrary();
     TestMusicLevel();
     TestGlowLight();
     TestSky();

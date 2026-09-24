@@ -161,7 +161,7 @@ static void PickAndAct(bool breakBlock) {
                            && py + 1 > p.y && py < p.y + PlayerHeight(p)
                            && pz + 1 > p.z - PLAYER_HALFW && pz < p.z + PLAYER_HALFW;
         if (overlapsPlayer) return;
-        BlockID toPlace = g_placeableList.ids[g_player.hotbarIndex];
+        BlockID toPlace = g_hotbar[g_player.hotbarIndex];
         // The state byte, by the block's placement rule (blocks.h).
         BlockFace look = fabsf(f.x) > fabsf(f.z) ? (f.x > 0 ? FACE_POS_X : FACE_NEG_X)
                                                   : (f.z > 0 ? FACE_POS_Z : FACE_NEG_Z);
@@ -316,13 +316,13 @@ enum AccessibilityRow { ARROW_FOV = 0, ARROW_TOGGLE_MOVE = 1, ARROW_HIGH_CONTRAS
 static const char* g_actionLabels[ACT_COUNT] = { // on-screen text
     "MOVE FORWARD", "MOVE BACK", "MOVE LEFT", "MOVE RIGHT", "JUMP",
     "BREAK BLOCK", "PLACE BLOCK", "PAUSE MENU", "QUICK SAVE", "QUICK LOAD", "ESSENCE MAP",
-    "SPRINT", "CROUCH / SLIDE"
+    "SPRINT", "CROUCH / SLIDE", "BLOCK LIBRARY"
 };
 // Rows sized so all of them (+reset +back) fit the minimum 680 px window.
-static const SubmenuLayout KEYBIND_LAYOUT = { 480.0f, 28.0f, 6.0f, 92.0f, 20.0f, ACT_COUNT + 2 };
+static const SubmenuLayout KEYBIND_LAYOUT = { 480.0f, 26.0f, 5.0f, 88.0f, 18.0f, ACT_COUNT + 2 };
 
 static const int g_defaultBindings[ACT_COUNT] = {
-    'W', 'S', 'A', 'D', VK_SPACE, MOUSE_LEFT, MOUSE_RIGHT, VK_ESCAPE, VK_F5, VK_F9, 'M', VK_SHIFT, VK_CONTROL
+    'W', 'S', 'A', 'D', VK_SPACE, MOUSE_LEFT, MOUSE_RIGHT, VK_ESCAPE, VK_F5, VK_F9, 'M', VK_SHIFT, VK_CONTROL, 'E'
 };
 static int g_rebindingAction = -1; // -1 = not capturing; else a GameAction index
 
@@ -834,6 +834,42 @@ static void CloseMap() {
     StartMusicPlayback();
 }
 
+// ---- Block library (library.h): every placeable block in a grid; click
+// one to place it now, or drag it onto a hotbar slot to keep it there.
+static LibraryGesture g_libGesture;
+static int g_libScroll = 0; // first visible row
+static void OpenLibrary() {
+    g_libGesture = LibraryGesture();
+    g_menuScreen = MenuScreen::Library;
+    ReleaseMouseForMenu();
+    StopMusicPlayback();
+}
+static void CloseLibrary() {
+    g_libGesture = LibraryGesture();
+    g_menuScreen = MenuScreen::None;
+    CaptureMouseForPlay();
+    StartMusicPlayback();
+}
+static void LibraryMouseDown(int mx, int my) {
+    LibraryLayout L = ComputeLibraryLayout(g_screenW, g_screenH, g_placeableList.count);
+    int entry = LibraryCellAt(L, g_placeableList.count, g_libScroll, (float)mx, (float)my);
+    if (entry >= 0) { LibraryPress(g_libGesture, entry, (float)mx, (float)my); return; }
+    int slot = HotbarSlotAt(g_screenW, g_screenH, (float)mx, (float)my);
+    if (slot >= 0) g_player.hotbarIndex = slot; // pick which slot a click fills
+}
+static void LibraryMouseUp(int mx, int my) {
+    LibraryResult r = LibraryRelease(g_libGesture, HotbarSlotAt(g_screenW, g_screenH, (float)mx, (float)my));
+    if (r.outcome == LibraryOutcome::Select) {
+        g_hotbar[g_player.hotbarIndex] = g_placeableList.ids[r.entry];
+        SaveSettings();
+        CloseLibrary();
+    } else if (r.outcome == LibraryOutcome::Assign) {
+        g_hotbar[r.slot] = g_placeableList.ids[r.entry];
+        g_player.hotbarIndex = r.slot;
+        SaveSettings();
+    }
+}
+
 static bool IsSettingsSubmenu(MenuScreen s) {
     return s == MenuScreen::LookSettings || s == MenuScreen::Graphics || s == MenuScreen::Display
         || s == MenuScreen::Audio || s == MenuScreen::Accessibility || s == MenuScreen::Keybindings;
@@ -859,6 +895,8 @@ static void FireBoundAction(int code) {
             StartMusicPlayback();
         } else if (g_menuScreen == MenuScreen::Map) {
             CloseMap();
+        } else if (g_menuScreen == MenuScreen::Library) {
+            CloseLibrary();
         } else if (g_menuScreen == MenuScreen::OptionsHub) {
             g_menuScreen = g_optionsReturnScreen;
         } else if (IsSettingsSubmenu(g_menuScreen)) {
@@ -872,6 +910,11 @@ static void FireBoundAction(int code) {
     if (code == g_keyBindings[ACT_MAP]) {
         if (g_menuScreen == MenuScreen::None) OpenMap();
         else if (g_menuScreen == MenuScreen::Map) CloseMap();
+        return;
+    }
+    if (code == g_keyBindings[ACT_LIBRARY]) {
+        if (g_menuScreen == MenuScreen::None) OpenLibrary();
+        else if (g_menuScreen == MenuScreen::Library) CloseLibrary();
         return;
     }
     if (code == g_keyBindings[ACT_SAVE]) { DoSave(); return; }
@@ -905,6 +948,7 @@ static void DispatchMenuClick(int mx, int my) {
     case MenuScreen::TitleMain: HandleTitleClick(mx, my); break;
     case MenuScreen::SlotPicker: HandleSlotPickerClick(mx, my); break;
     case MenuScreen::Map: g_mapDragging = true; g_mapDragX = mx; g_mapDragY = my; break; // drag to pan
+    case MenuScreen::Library: LibraryMouseDown(mx, my); break;
     default: break;
     }
 }
@@ -942,6 +986,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             g_mapCamera.centerZ += (g_mouseY - g_mapDragY) / g_mapCamera.scale; // screen down = world -Z
             g_mapDragX = g_mouseX; g_mapDragY = g_mouseY;
         }
+        if (g_menuScreen == MenuScreen::Library) LibraryMove(g_libGesture, (float)g_mouseX, (float)g_mouseY);
         return 0;
     case WM_MOUSEWHEEL:
         if (g_menuScreen == MenuScreen::Map) {
@@ -951,10 +996,16 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             MapZoomAt(g_mapCamera, GET_WHEEL_DELTA_WPARAM(wParam) > 0 ? 1.25f : 0.8f, (float)pt.x, (float)pt.y);
             return 0;
         }
-        // Scroll through the hotbar (keys 1-9 reach only the first nine).
-        if (g_menuScreen == MenuScreen::None && g_gameState == GameState::InGame && g_placeableList.count > 0) {
+        if (g_menuScreen == MenuScreen::Library) { // scroll the grid's rows, if they overflow
+            LibraryLayout L = ComputeLibraryLayout(g_screenW, g_screenH, g_placeableList.count);
+            g_libScroll += GET_WHEEL_DELTA_WPARAM(wParam) > 0 ? -1 : 1;
+            g_libScroll = std::max(0, std::min(g_libScroll, L.rows - L.visibleRows));
+            return 0;
+        }
+        // Cycle the hotbar's slots.
+        if (g_menuScreen == MenuScreen::None && g_gameState == GameState::InGame) {
             int step = GET_WHEEL_DELTA_WPARAM(wParam) > 0 ? -1 : 1;
-            g_player.hotbarIndex = (g_player.hotbarIndex + step + g_placeableList.count) % g_placeableList.count;
+            g_player.hotbarIndex = (g_player.hotbarIndex + step + HOTBAR_SLOTS) % HOTBAR_SLOTS;
         }
         return 0;
     case WM_LBUTTONDOWN: {
@@ -970,6 +1021,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     case WM_LBUTTONUP:
         g_mouseButtonDown[0] = false;
         g_mapDragging = false;
+        if (g_menuScreen == MenuScreen::Library) LibraryMouseUp((int)(short)LOWORD(lParam), (int)(short)HIWORD(lParam));
         // Only release capture if a slider drag actually set it --
         // unconditionally releasing here would also kick the player out
         // of FPS mouse-look capture (CaptureMouseForPlay's SetCapture)
@@ -1028,9 +1080,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 return 0;
             }
         }
-        if (wParam >= '1' && wParam <= '9' && g_menuScreen == MenuScreen::None) {
-            int idx = (int)(wParam - '1');
-            if (idx < g_placeableList.count) g_player.hotbarIndex = idx;
+        if (wParam >= '0' && wParam <= '9' && (g_menuScreen == MenuScreen::None || g_menuScreen == MenuScreen::Library)) {
+            g_player.hotbarIndex = wParam == '0' ? 9 : (int)(wParam - '1'); // 1-9, then 0 for the tenth
             return 0;
         }
         // Toggle-to-move (Accessibility, Section 11): genuine presses only --
@@ -1114,36 +1165,28 @@ void RenderUIPass() {
     // Every placeable block is a plain textured cube, so all hotbar icons
     // sample the one block atlas and share a single batch (drawn between
     // the HUD and menu glyph runs -- see the end of this function).
-    // More blocks than fit across the window: show a window of slots that
-    // scrolls to keep the selected one in view (the wheel still walks the
-    // whole roster), with a faint arrow at each side that has more.
-    const int SLOT = 48, GAP = 4;
-    int hotbarN = g_placeableList.count;
-    int shown = std::max(1, std::min(hotbarN, (g_screenW - 64) / (SLOT + GAP)));
-    int first = std::min(std::max(0, g_player.hotbarIndex - shown / 2), hotbarN - shown);
-    int totalW = shown * SLOT + (shown - 1) * GAP;
-    float hbStartX = floorf((g_screenW - totalW) / 2.0f); // whole pixels: icons are point-sampled
-    float hbY0 = g_screenH - SLOT - 16.0f;
-    if (first > 0) UIDrawText(glyphVerts, "<", hbStartX - 22.0f, hbY0 + SLOT / 2.0f - UITextHeight(1.0f) / 2.0f, 1.0f, 1, 1, 1, 0.6f);
-    if (first + shown < hotbarN) UIDrawText(glyphVerts, ">", hbStartX + totalW + 10.0f, hbY0 + SLOT / 2.0f - UITextHeight(1.0f) / 2.0f, 1.0f, 1, 1, 1, 0.6f);
+    // The hotbar: ten slots the player fills from the block library (E).
+    if (g_player.hotbarIndex < 0 || g_player.hotbarIndex >= HOTBAR_SLOTS) g_player.hotbarIndex = 0; // an older save's index
     std::vector<UIVertex> iconVerts;
-    for (int i = first; i < first + shown; i++) {
-        float x0 = hbStartX + (i - first) * (SLOT + GAP), x1 = x0 + SLOT;
-        float y0 = hbY0, y1 = y0 + SLOT;
+    for (int i = 0; i < HOTBAR_SLOTS; i++) {
+        UiRect sr = HotbarSlotRect(g_screenW, g_screenH, i);
+        float x0 = sr.x0, x1 = sr.x1, y0 = sr.y0, y1 = sr.y1;
         bool selected = (i == g_player.hotbarIndex);
         if (selected) UIDrawRect(glyphVerts, x0 - 4, y0 - 4, x1 + 4, y1 + 4, 1.0f, 0.9f, 0.2f, 0.9f);
         UIDrawRect(glyphVerts, x0, y0, x1, y1, 0.12f, 0.12f, 0.12f, 0.75f);
-
-        BlockID b = g_placeableList.ids[i];
         float iu0, iv0, iu1, iv1;
-        IconRect(b, iu0, iv0, iu1, iv1);
+        IconRect(g_hotbar[i], iu0, iv0, iu1, iv1);
         // 32px icon = exactly half the 64px tile, so point sampling keeps
         // every other texel evenly instead of an irregular 64->36 pick.
         UIAddQuad(iconVerts, x0 + 8, y0 + 8, x1 - 8, y1 - 8, iu0, iv0, iu1, iv1, 1, 1, 1, 1);
+        // The slot's key, small in the corner: 1-9, then 0.
+        char key[2] = { (char)(i == 9 ? '0' : '1' + i), 0 };
+        UIDrawText(glyphVerts, key, x0 + 3, y0 + 2, 0.5f, 1, 1, 1, 0.55f);
     }
+    const float hbY0 = HotbarSlotRect(g_screenW, g_screenH, 0).y0;
 
     if (!menuIsOpen) {
-        std::string name = g_blocks[g_placeableList.ids[g_player.hotbarIndex]].name;
+        std::string name = g_blocks[g_hotbar[g_player.hotbarIndex]].name;
         for (char& ch : name) ch = ch == '_' ? ' ' : (char)toupper((unsigned char)ch); // "stone_slab" -> "STONE SLAB"
         float scale = 0.8f;
         float tw = UITextWidth(name, scale);
@@ -1232,8 +1275,54 @@ void RenderUIPass() {
 
     // A flat, even dim behind any menu (uniform to the screen edges now
     // that UIDrawRect no longer fades its borders -- no vignette).
-    if (g_menuScreen != MenuScreen::None && g_menuScreen != MenuScreen::Map) {
+    if (g_menuScreen != MenuScreen::None && g_menuScreen != MenuScreen::Map && g_menuScreen != MenuScreen::Library) {
         UIDrawRect(glyphVerts, 0, 0, (float)g_screenW, (float)g_screenH, 0, 0, 0, 0.45f);
+    }
+
+    // Block library (library.h): the dim stops short of the hotbar, which
+    // stays bright as the drop target. Its icons and the one being dragged
+    // go in their own batches after the menu glyphs, so the panel can't
+    // cover them.
+    std::vector<UIVertex> libIconVerts, dragIconVerts;
+    if (g_menuScreen == MenuScreen::Library) {
+        const int count = g_placeableList.count;
+        LibraryLayout L = ComputeLibraryLayout(g_screenW, g_screenH, count);
+        g_libScroll = std::max(0, std::min(g_libScroll, L.rows - L.visibleRows));
+        float hotbarTop = HotbarSlotRect(g_screenW, g_screenH, 0).y0 - 8.0f;
+        UIDrawRect(glyphVerts, 0, 0, (float)g_screenW, hotbarTop, 0, 0, 0, 0.45f);
+        UIDrawRect(glyphVerts, L.panel.x0, L.panel.y0, L.panel.x1, L.panel.y1, 0.10f, 0.10f, 0.13f, 0.95f);
+        UIDrawText(glyphVerts, "BLOCK LIBRARY", L.panel.x0 + 16, L.panel.y0 + 12, 1.0f, 0.9f, 0.9f, 1.0f, 1.0f);
+        int hover = LibraryCellAt(L, count, g_libScroll, (float)g_mouseX, (float)g_mouseY);
+        for (int i = g_libScroll * L.columns; i < std::min(count, (g_libScroll + L.visibleRows) * L.columns); i++) {
+            UiRect c = LibraryCellRect(L, g_libScroll, i);
+            bool hot = i == hover || i == g_libGesture.pressed;
+            UIDrawRect(glyphVerts, c.x0 + 3, c.y0 + 3, c.x1 - 3, c.y1 - 3, hot ? 0.30f : 0.16f, hot ? 0.28f : 0.16f, hot ? 0.18f : 0.19f, 0.95f);
+            float iu0, iv0, iu1, iv1;
+            IconRect(g_placeableList.ids[i], iu0, iv0, iu1, iv1);
+            UIAddQuad(libIconVerts, c.x0 + 12, c.y0 + 12, c.x1 - 12, c.y1 - 12, iu0, iv0, iu1, iv1, 1, 1, 1, 1);
+        }
+        if (L.rows > L.visibleRows) {
+            char more[48]; snprintf(more, sizeof(more), "ROWS %d-%d OF %d (WHEEL)", g_libScroll + 1, g_libScroll + L.visibleRows, L.rows);
+            UIDrawText(glyphVerts, more, L.panel.x1 - 16 - UITextWidth(more, 0.6f), L.panel.y0 + 16, 0.6f, 0.7f, 0.7f, 0.8f, 0.9f);
+        }
+        int named = g_libGesture.pressed >= 0 ? g_libGesture.pressed : hover;
+        std::string label = named >= 0 ? g_blocks[g_placeableList.ids[named]].name
+                                       : "CLICK A BLOCK TO USE IT - DRAG IT ONTO A SLOT TO KEEP IT";
+        for (char& ch : label) ch = ch == '_' ? ' ' : (char)toupper((unsigned char)ch);
+        float ls = named >= 0 ? 0.85f : 0.6f;
+        UIDrawText(glyphVerts, label, (g_screenW - UITextWidth(label, ls)) / 2.0f, L.panel.y1 + 6, ls, 1, 1, 1, 0.9f);
+        // The dragged block follows the cursor; the slot it would land in lights up.
+        if (g_libGesture.dragging && g_libGesture.pressed >= 0) {
+            int slot = HotbarSlotAt(g_screenW, g_screenH, (float)g_mouseX, (float)g_mouseY);
+            if (slot >= 0) {
+                UiRect sr = HotbarSlotRect(g_screenW, g_screenH, slot);
+                UIDrawRect(glyphVerts, sr.x0 - 4, sr.y0 - 4, sr.x1 + 4, sr.y1 + 4, 0.4f, 0.9f, 1.0f, 0.6f);
+            }
+            float iu0, iv0, iu1, iv1;
+            IconRect(g_placeableList.ids[g_libGesture.pressed], iu0, iv0, iu1, iv1);
+            float mx = (float)g_mouseX, my = (float)g_mouseY;
+            UIAddQuad(dragIconVerts, mx - 16, my - 16, mx + 16, my + 16, iu0, iv0, iu1, iv1, 1, 1, 1, 0.9f);
+        }
     }
 
     // Essence network map (Part XIX): the draw list is plain coloured
@@ -1474,6 +1563,8 @@ void RenderUIPass() {
     UIDrawBatch(glyphVerts.data(), hudVertCount, g_uiSRV);
     UIDrawBatch(iconVerts.data(), iconVerts.size(), g_iconSRV);
     UIDrawBatch(glyphVerts.data() + hudVertCount, glyphVerts.size() - hudVertCount, g_uiSRV);
+    if (!libIconVerts.empty()) UIDrawBatch(libIconVerts.data(), libIconVerts.size(), g_iconSRV);
+    if (!dragIconVerts.empty()) UIDrawBatch(dragIconVerts.data(), dragIconVerts.size(), g_iconSRV);
 
     // Restore world-pass defaults so next frame's world draws don't
     // inherit UI blend/depth state.

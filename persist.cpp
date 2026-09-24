@@ -31,11 +31,13 @@
 // =======================================================================
 
 const char* g_actionNames[ACT_COUNT] = {
-    "forward", "back", "left", "right", "jump", "break", "place", "menu", "save", "load", "map", "sprint", "crouch"
+    "forward", "back", "left", "right", "jump", "break", "place", "menu", "save", "load", "map", "sprint", "crouch", "library"
 };
 int g_keyBindings[ACT_COUNT] = {
-    'W', 'S', 'A', 'D', VK_SPACE, MOUSE_LEFT, MOUSE_RIGHT, VK_ESCAPE, VK_F5, VK_F9, 'M', VK_SHIFT, VK_CONTROL
+    'W', 'S', 'A', 'D', VK_SPACE, MOUSE_LEFT, MOUSE_RIGHT, VK_ESCAPE, VK_F5, VK_F9, 'M', VK_SHIFT, VK_CONTROL, 'E'
 };
+BlockID g_hotbar[HOTBAR_SLOTS] = { BLOCK_STONE, BLOCK_DIRT, BLOCK_WOOD, BLOCK_LOG, BLOCK_SAND,
+                                   BLOCK_SANDSTONE, BLOCK_GLASS, BLOCK_MUSIC, BLOCK_TIMESTREAM, BLOCK_STONE_SLAB }; // = DefaultHotbar
 float g_sensitivityMultX = 1.0f, g_sensitivityMultY = 1.0f;
 bool g_invertX = false, g_invertY = false;
 bool g_showFPS = false;
@@ -190,6 +192,9 @@ bool SaveSettings() {
     ss << "toggleMovement=" << (g_toggleMovement ? 1 : 0) << "\n";
     ss << "highContrastUI=" << (g_highContrastUI ? 1 : 0) << "\n";
     ss << "musicIntensity=" << g_musicIntensity << "\n";
+    ss << "hotbar=";
+    for (int i = 0; i < HOTBAR_SLOTS; i++) ss << (i ? "," : "") << g_blocks[g_hotbar[i]].name;
+    ss << "\n";
     for (int i = 0; i < ACT_COUNT; i++) {
         ss << "keybind." << g_actionNames[i] << "=" << g_keyBindings[i] << "\n"; // name-indexed, same reasoning as g_blockNames
     }
@@ -265,6 +270,19 @@ void LoadSettings() {
     g_toggleMovement = getB("toggleMovement", g_toggleMovement);
     g_highContrastUI = getB("highContrastUI", g_highContrastUI);
     g_musicIntensity = getF("musicIntensity", g_musicIntensity);
+    // Hotbar by block name; an unknown or no-longer-placeable name keeps
+    // that slot's default.
+    {
+        auto it = kv.find("hotbar");
+        if (it != kv.end()) {
+            std::stringstream hs(it->second); std::string name; int i = 0;
+            while (i < HOTBAR_SLOTS && std::getline(hs, name, ',')) {
+                for (int id = 1; id < BLOCK_COUNT; id++)
+                    if (name == g_blocks[id].name && g_blocks[id].placeable) { g_hotbar[i] = (BlockID)id; break; }
+                i++;
+            }
+        }
+    }
     for (int i = 0; i < ACT_COUNT; i++) {
         std::string key = std::string("keybind.") + g_actionNames[i];
         g_keyBindings[i] = getI(key.c_str(), g_keyBindings[i]);

@@ -131,6 +131,9 @@
     <ClInclude Include="musiclevel.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="library.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="essence.h">
       <Filter>Header Files</Filter>
     </ClInclude>

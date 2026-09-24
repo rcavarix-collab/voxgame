@@ -21,7 +21,7 @@
 // (freezing the simulation accumulator while a menu is open, gating the
 // mouse-look recenter). GameState (Title/InGame) stays entirely inside
 // game.cpp -- nothing outside it needs to ask which one is active.
-enum class MenuScreen { None, Pause, LookSettings, Graphics, Display, Audio, Keybindings, Accessibility, TitleMain, SlotPicker, OptionsHub, Map };
+enum class MenuScreen { None, Pause, LookSettings, Graphics, Display, Audio, Keybindings, Accessibility, TitleMain, SlotPicker, OptionsHub, Map, Library };
 extern MenuScreen g_menuScreen;
 
 extern bool g_mouseCaptured;
