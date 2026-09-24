@@ -62,6 +62,10 @@ enum BlockID : uint8_t {
     BLOCK_DAWN_LIGHT,
     BLOCK_STAR_FORGE,
     BLOCK_NEW_LOG,
+    BLOCK_VOID_STATIC_GROUND,
+    BLOCK_CUSTODIAN_LATTICE,
+    BLOCK_RAW_FRAGMENT_ORE,
+    BLOCK_ARCHIVIST_WALL,
     BLOCK_COUNT
 };
 
@@ -207,6 +211,11 @@ inline const BlockDef g_blocks[BLOCK_COUNT] = {
     { "dawn_light",        true,  false, true,  false, false, SHAPE_CUBE,         PLACE_PLAIN, GLOW_NONE,      false,       TEX("dawn_light", nullptr, nullptr, nullptr, nullptr) },
     { "star_forge",        true,  false, true,  false, false, SHAPE_CUBE,         PLACE_PLAIN, GLOW_EMBER,     false,       TEX("star_forge", nullptr, nullptr, nullptr, nullptr) },
     { "new_log",           true,  false, true,  false, false, SHAPE_CUBE,         PLACE_PLAIN, GLOW_NONE,      false,       TEX(nullptr, "log_top", "log_top", "new_bark", nullptr) },
+    // The custodian set: void ground, the lattice, a raw ore, archival masonry.
+    { "void_static_ground", true,  false, true,  false, false, SHAPE_CUBE,         PLACE_PLAIN, GLOW_NONE,      false,       TEX("void_static_ground", nullptr, nullptr, nullptr, nullptr) },
+    { "custodian_lattice", true,  false, true,  false, false, SHAPE_CUBE,         PLACE_PLAIN, GLOW_NONE,      false,       TEX("custodian_lattice", nullptr, nullptr, nullptr, nullptr) },
+    { "raw_fragment_ore",  true,  false, true,  false, false, SHAPE_CUBE,         PLACE_PLAIN, GLOW_NONE,      false,       TEX("raw_fragment_ore", nullptr, nullptr, nullptr, nullptr) },
+    { "archivist_wall",    true,  false, true,  false, false, SHAPE_CUBE,         PLACE_PLAIN, GLOW_NONE,      false,       TEX("archivist_wall", nullptr, nullptr, nullptr, nullptr) },
 };
 #undef TEX
 

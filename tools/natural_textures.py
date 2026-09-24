@@ -3,8 +3,9 @@
 
 Every material is a set of continuous fields over one tile -- colour,
 height, shine, glow -- defined in *tile units* (0..16 across), so the same
-material renders at any resolution: 16, 32 or 64 pixels per block (64 is
-what the game uses; DESIGN.md 4.3 / 4.13). Height becomes the normal map,
+material renders at any resolution: 16, 32 or 64 pixels per block (32 is
+what the game uses -- chosen by eye from a side-by-side; 64 looked like
+photo textures on cubes; DESIGN.md 4.3 / 4.13). Height becomes the normal map,
 shine a sun glint, glow what lights up by itself.
 
 Palettes and material ideas come from the art batches (DESIGN.md 4.3);
@@ -18,7 +19,7 @@ the drawing follows the texture brief's rules:
 Colours are quantised to short ramps built from each palette, so the
 result stays painterly rather than photographic.
 
-  python3 tools/natural_textures.py                 # the game's set, 64 px
+  python3 tools/natural_textures.py                 # the game's set, 32 px
   python3 tools/natural_textures.py --size 16 --out /tmp/n16.vtex
   python3 tools/natural_textures.py --flat          # no height/shine/glow maps
 
@@ -674,6 +675,76 @@ def m_new_bark():
     return f
 
 
+# -- the custodian set --
+
+def m_void_static():
+    # Dark ground shot through with a fine, still static of colour flecks
+    # (still: animated static would be a flashing risk).
+    n = fbm(601)
+    rng_cache = {}
+    def f(u, v):
+        t = n(u, v)
+        cx, cy = int(u * 4) % 64, int(v * 4) % 64            # one fleck cell per 64-px texel
+        r = random.Random(602 * 100003 + cy * 64 + cx).random()
+        if r < 0.05:
+            hue = random.Random(603 * 100003 + cy * 64 + cx).choice(["5a3a4a", "3a4a5a", "4a5a3a", "c0c0c8"])
+            return hexrgb(hue), 1, 0.45, 0.2, 0.1 if hue == "c0c0c8" else 0
+        return ramp(["1a1818", "2e2c2c", "3a3838", "4a4848"], 0.15 + 0.7 * t), 1, 0.35 + 0.3 * t, 0.05, 0
+    return f
+
+
+def m_custodian_lattice():
+    # A true diamond lattice (period 8 units, so exactly two per tile each
+    # way): raised polished lines, a bright stud at every crossing.
+    def f(u, v):
+        a, b = (u + v) % 8.0, (u - v) % 8.0
+        line = min(min(a, 8 - a), min(b, 8 - b))
+        node = min(math.hypot(wrapd(u, x), wrapd(v, y)) for x in (0.0, 8.0) for y in (0.0, 8.0))
+        node = min(node, min(math.hypot(wrapd(u, x), wrapd(v, y)) for x in (4.0, 12.0) for y in (4.0, 12.0)))
+        if node < 0.8:
+            return ramp(["a0a0b8", "c0c0d8", "e0e0f0"], 1 - node / 0.8), 1, 0.9, 0.9, 0
+        if line < 0.35:
+            return ramp(["6a6a80", "8a8aa0", "a8a8c0"], 1 - line / 0.35), 1, 0.7, 0.8, 0
+        return ramp(["0e0e18", "141420", "1c1c2a"], sstep(0.35, 2.8, line)), 1, 0.25 + 0.05 * sstep(0.35, 2.8, line), 0.15, 0
+    return f
+
+
+def m_raw_fragment_ore():
+    n = fbm(611)
+    clusters = scatter(612, 0.5, 1.4, 4.0)
+    shards = scatter(613, 0.8, 0.5, 1.0)
+    def f(u, v):
+        t = n(u, v)
+        c, _ = clusters(u, v)
+        s, sid = shards(u, v)
+        if c > 0 and s > 0.1:        # crystal shards, only inside a cluster's reach
+            return ramp(["5a3a8a", "8a5ac8", "c8a0f0"], 0.3 + 0.7 * s), 1, 0.55 + 0.4 * s, 0.8, 0.35 * s
+        return ramp(["1c1a20", "26242c", "302e38", "3a3844"], 0.2 + 0.6 * t), 1, 0.5 + 0.3 * t, 0.08, 0
+    return f
+
+
+def m_archivist_wall():
+    # Coursed masonry (four courses, joints offset a half block course to
+    # course), and a gold ward-seal split by one of the joints.
+    n = fbm(621)
+    tone = [random.Random(622 + i).uniform(-0.1, 0.1) for i in range(8)]
+    def f(u, v):
+        course = int(v // 4) % 4
+        y = v - course * 4
+        off = 0.0 if course % 2 == 0 else 4.0
+        x = (u + off) % 8.0
+        mortar = min(y, 4 - y) < 0.35 or min(x, 8 - x) < 0.35
+        t = n(u, v)
+        if mortar:
+            return ramp(["141212", "1a1818", "262424"], t), 1, 0.15, 0, 0
+        seal = abs(math.hypot(u - 8.0, v - 7.0) - 2.4)
+        if seal < 0.3 or (math.hypot(u - 8.0, v - 7.0) < 0.9):
+            return ramp(["a88420", "c9a227", "f0d060"], 1 - min(seal, 0.3) / 0.3), 1, 0.75, 0.8, 0.15
+        stone = int((u + off) // 8) + course * 2
+        return ramp(["2e2c2c", "3a3838", "4a4646", "565252"], 0.35 + 0.4 * t + tone[stone % 8]), 1, 0.55 + 0.25 * t, 0.05, 0
+    return f
+
+
 TEXTURES = [
     ("stone", "Stone: cool grey, mottled, a few hairline cracks", m_stone()),
     ("dirt", "Dirt: warm clumps, scattered pebbles and grit", m_dirt()),
@@ -712,12 +783,17 @@ TEXTURES = [
     ("dawn_light", "Dawn light: a smooth band of dawn colours, its bright middle aglow", m_dawn_light()),
     ("star_forge", "Star forge: sparks streaming inward to a bright core", m_star_forge()),
     ("new_bark", "New bark: smooth young bark with horizontal pores", m_new_bark()),
+    ("void_static_ground", "Void static ground: dark ground shot through with still flecks of colour", m_void_static()),
+    ("custodian_lattice", "Custodian lattice: raised polished diamond lattice, studs at the crossings", m_custodian_lattice()),
+    ("raw_fragment_ore", "Raw fragment ore: dark stone with clusters of faintly glowing violet shards", m_raw_fragment_ore()),
+    ("archivist_wall", "Archivist wall: coursed masonry and a gold ward-seal across a joint", m_archivist_wall()),
 ]
 SINGLE = ("stone", "dirt", "wood", "snow", "sand", "cracked_earth", "clay", "basalt", "magma_rock", "moss",
           "moss_stone", "meadow_grass", "shallow_water", "glacier_ice", "volcanic_ash", "coral_reef", "jungle_canopy",
           "autumn_leaf_litter", "peat_bog", "salt_flat", "river_pebble", "coastal_sand",
           "veined_flesh", "flesh_wound", "pulsing_membrane", "weeping_sore", "corrupted_flesh",
-          "genesis_soil", "seedling_sprout", "dawn_light", "star_forge")
+          "genesis_soil", "seedling_sprout", "dawn_light", "star_forge",
+          "void_static_ground", "custodian_lattice", "raw_fragment_ore", "archivist_wall")
 BLOCKS = [(n, [("all", n)]) for n in SINGLE] + [
     ("sandstone", [("side", "sandstone_layered"), ("top", "sandstone_top"), ("bottom", "sandstone_top")]),
     ("log", [("side", "log_bark"), ("top", "log_top"), ("bottom", "log_top")]),
@@ -764,7 +840,7 @@ def render(name, note, mat, size, flat):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--size", type=int, default=64, choices=(8, 16, 32, 64))
+    ap.add_argument("--size", type=int, default=32, choices=(8, 16, 32, 64))
     ap.add_argument("--flat", action="store_true", help="colours only, no height/shine/glow maps")
     ap.add_argument("--out", default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "assets", "textures", "natural.vtex"))
     args = ap.parse_args()

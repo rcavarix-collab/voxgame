@@ -143,7 +143,7 @@ static void TestBlockTextures() {
     BlockTextureSet t;
     BuildBlockTextures(none, t);
     CHECK(t.warnings.empty());
-    CHECK(t.layerCount == 14 + 33); // 14 procedural (foundation .. crystal) + 33 more names only the generated art provides (magenta without it)
+    CHECK(t.layerCount == 14 + 37); // 14 procedural (foundation .. crystal) + 37 more names only the generated art provides (magenta without it)
 
     // The natural materials' art in the repo loads cleanly and covers
     // every natural block (no magenta fallback), with seamless wrap.
@@ -155,8 +155,8 @@ static void TestBlockTextures() {
             while ((got = fread(buf, 1, sizeof buf, fp)) > 0) text.append(buf, got);
             fclose(fp);
             VtexSet nat; ParseVtex(text, "natural.vtex", nat);
-            CHECK(nat.errors.empty() && nat.textures.size() == 36 && nat.blocks.size() == 34);
-            for (auto& tx : nat.textures) CHECK(tx.size == 64 && !tx.height.empty()); // one density for everything, all with relief
+            CHECK(nat.errors.empty() && nat.textures.size() == 40 && nat.blocks.size() == 38);
+            for (auto& tx : nat.textures) CHECK(tx.size == 32 && !tx.height.empty()); // one density for everything (32), all with relief
             BlockTextureSet nt; BuildBlockTextures(nat, nt);
             CHECK(nt.warnings.empty());
             for (auto& w : nt.warnings) printf("    %s\n", w.c_str());
