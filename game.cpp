@@ -552,6 +552,51 @@ void ShowToast(const std::string& message, float seconds) {
     g_toastTimer = seconds;
 }
 
+// ---- Debug time control (Section 13) --------------------------------
+// There is one clock -- g_dayTimeSeconds -- and the sky, sun, shadows,
+// light and music all read it, so moving it moves everything. F8 jumps to
+// the next time of day; holding ] or Page Up runs it forward (a whole day
+// in 15 s), [ or Page Down backward. The music stops while scrubbing and
+// re-anchors to the new time on release. A testing aid, like F3 and F7.
+static const float DEBUG_SCRUB_RATE = DAY_LENGTH_SECONDS / 15.0f; // clock seconds per real second
+static const float kTimePresets[] = { 60.0f, 600.0f, 1500.0f, 2400.0f, 2940.0f, 3300.0f };
+static bool g_timeScrubbing = false;
+
+static std::string DayTimeLabel(float t) {
+    const char* phase = t < 300 ? "DAWN" : t < 1200 ? "MORNING" : t < 1800 ? "NOON" : t < 2700 ? "AFTERNOON" : t < 3000 ? "DUSK" : "NIGHT";
+    char buf[48];
+    snprintf(buf, sizeof(buf), "TIME %02d:%02d  %s", (int)t / 60, (int)t % 60, phase);
+    return buf;
+}
+
+static bool DebugKeyFree(int vk) {
+    for (int a = 0; a < ACT_COUNT; a++) if (g_keyBindings[a] == vk) return false; // a bound action wins
+    return true;
+}
+
+static void JumpToNextTimeOfDay() {
+    float next = kTimePresets[0];
+    for (float p : kTimePresets) if (p > g_dayTimeSeconds + 1.0f) { next = p; break; }
+    g_dayTimeSeconds = next;
+    StartMusicPlayback(); // re-anchor to the new time
+    ShowToast(DayTimeLabel(g_dayTimeSeconds), 2.0f);
+}
+
+void UpdateDebugTimeScrub(float frameSeconds) {
+    bool playing = g_gameState == GameState::InGame && g_menuScreen == MenuScreen::None;
+    auto held = [](int vk) { return vk >= 0 && vk < 256 && g_keyDown[vk] && DebugKeyFree(vk); };
+    int dir = (held(VK_OEM_6) || held(VK_PRIOR) ? 1 : 0) - (held(VK_OEM_4) || held(VK_NEXT) ? 1 : 0);
+    if (playing && dir != 0) {
+        if (!g_timeScrubbing) { StopMusicPlayback(); g_timeScrubbing = true; }
+        float t = fmodf(g_dayTimeSeconds + dir * DEBUG_SCRUB_RATE * frameSeconds, DAY_LENGTH_SECONDS);
+        g_dayTimeSeconds = t < 0 ? t + DAY_LENGTH_SECONDS : t;
+        ShowToast(DayTimeLabel(g_dayTimeSeconds), 1.5f);
+    } else if (g_timeScrubbing) {
+        g_timeScrubbing = false;
+        if (playing) StartMusicPlayback();
+    }
+}
+
 static void DoSave() {
     bool ok = SaveGame(g_world, g_player, g_currentSlot);
     g_toastMessage = ok ? "GAME SAVED" : "SAVE FAILED";
@@ -972,12 +1017,16 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         // F3 toggles the profiler overlay (Part XVI), F11 fullscreen --
         // unless the player has bound that key to an action, in which case
         // the action wins and the toggle stays reachable from Display settings.
-        if ((wParam == VK_F3 || wParam == VK_F7 || wParam == VK_F11) && !(lParam & (1 << 30))) {
+        if ((wParam == VK_F3 || wParam == VK_F7 || wParam == VK_F8 || wParam == VK_F11) && !(lParam & (1 << 30))) {
             bool bound = false;
             for (int a = 0; a < ACT_COUNT; a++) if (g_keyBindings[a] == (int)wParam) bound = true;
             if (!bound && wParam == VK_F3) { g_showProfiler = !g_showProfiler; SaveSettings(); return 0; }
             if (!bound && wParam == VK_F11) { ToggleFullscreenSetting(); return 0; }
             if (!bound && wParam == VK_F7) { g_lineDebug = !g_lineDebug; return 0; } // The Line's test marker (not saved)
+            if (!bound && wParam == VK_F8) {                                          // debug: next time of day
+                if (g_gameState == GameState::InGame && g_menuScreen == MenuScreen::None) JumpToNextTimeOfDay();
+                return 0;
+            }
         }
         if (wParam >= '1' && wParam <= '9' && g_menuScreen == MenuScreen::None) {
             int idx = (int)(wParam - '1');

@@ -60,3 +60,6 @@ void TickAutosave(float dt);
 
 // A transient centred message (save/load confirmations, startup problems).
 void ShowToast(const std::string& message, float seconds);
+// Debug time control (Section 13): holding ] / Page Up or [ / Page Down
+// scrubs the day clock; call once per frame with the frame's real time.
+void UpdateDebugTimeScrub(float frameSeconds);

@@ -119,6 +119,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
             if (g_confirmOverwriteTimer <= 0.0f) g_confirmOverwriteSlot = -1; // armed confirm expired; next click re-arms instead of overwriting
         }
 
+        UpdateDebugTimeScrub(dt); // debug time control (F8, ] / [ or Page Up / Down)
+
         g_fpsFrameCount++;
         g_fpsTimer += dt;
         if (g_fpsTimer >= 1.0f) {
