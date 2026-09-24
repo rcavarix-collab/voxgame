@@ -626,9 +626,10 @@ struct PipeBuilder {
     // `face` (0-5), or -1 for a slanted facet (lit by its true normal).
     // Wound the way the mesher's cubes are: the cross product of the first
     // two edges points out along `nrm`.
-    void Quad(const PipeFrame& fr, const int q[4][5], int face, int nx, int ny, int nz) {
+    void Quad(const PipeFrame& fr, const int q[4][5], int face, int nx, int ny, int nz, bool round = true) {
         ShapePoly p = {};
         p.count = 4;
+        p.round = round ? 1 : 0; // tube and elbow faces shade round; the thread's beads stay faceted
         for (int k = 0; k < 4; k++) p.v[k] = fr.Map(q[k][0], q[k][1], q[k][2], q[k][3], q[k][4]);
         int e1[3] = { q[1][0] - q[0][0], q[1][1] - q[0][1], q[1][2] - q[0][2] };
         int e2[3] = { q[2][0] - q[0][0], q[2][1] - q[0][1], q[2][2] - q[0][2] };
@@ -636,21 +637,6 @@ struct PipeBuilder {
         if (cr[0] * nx + cr[1] * ny + cr[2] * nz < 0) { std::swap(p.v[1], p.v[3]); }
         if (face >= 0) { p.texFace = (uint8_t)fr.MapFace(face); p.shade = p.texFace; }
         else { p.texFace = (uint8_t)fr.MapFace(FACE_POS_Z); p.shade = SHADE_SLOPE_UP; } // the shader derives the facet's own normal
-        p.boundary = -1;
-        out[n++] = p;
-    }
-    void Tri(const PipeFrame& fr, const int q[3][5], int face) {
-        ShapePoly p = {};
-        p.count = 3;
-        for (int k = 0; k < 3; k++) p.v[k] = fr.Map(q[k][0], q[k][1], q[k][2], q[k][3], q[k][4]);
-        // Outward: away from the tube's axis (canonical y = z = 4).
-        int cy = q[0][1] + q[1][1] + q[2][1] - 12, cz = q[0][2] + q[1][2] + q[2][2] - 12;
-        int e1[3] = { q[1][0] - q[0][0], q[1][1] - q[0][1], q[1][2] - q[0][2] };
-        int e2[3] = { q[2][0] - q[0][0], q[2][1] - q[0][1], q[2][2] - q[0][2] };
-        int cr1 = e1[2] * e2[0] - e1[0] * e2[2], cr2 = e1[0] * e2[1] - e1[1] * e2[0];
-        if (cr1 * cy + cr2 * cz < 0) std::swap(p.v[1], p.v[2]);
-        if (face >= 0) { p.texFace = (uint8_t)fr.MapFace(face); p.shade = p.texFace; }
-        else { p.texFace = (uint8_t)fr.MapFace(FACE_POS_Z); p.shade = SHADE_SLOPE_UP; }
         p.boundary = -1;
         out[n++] = p;
     }
@@ -671,7 +657,7 @@ struct PipeBuilder {
             int quad[4][5];
             for (int k = 0; k < 4; k++) { quad[k][0] = q[f][k][0]; quad[k][1] = q[f][k][1]; quad[k][2] = q[f][k][2]; quad[k][3] = u; quad[k][4] = v; }
             const int* d = kAxisDir[f];
-            Quad(fr, quad, f, d[0], d[1], d[2]);
+            Quad(fr, quad, f, d[0], d[1], d[2], false);
         }
     }
     // A threaded length along canonical +X, x 0..8: the plain tube, with a

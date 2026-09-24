@@ -57,7 +57,7 @@ void RenderBlockIcons(BlockTextureSet& set) {
             if (fabsf(den) < 1e-6f) continue;
             int x0 = std::max(0, (int)std::min({ X[0], X[1], X[2] })), x1 = std::min(R - 1, (int)std::max({ X[0], X[1], X[2] }) + 1);
             int y0 = std::max(0, (int)std::min({ Y[0], Y[1], Y[2] })), y1 = std::min(R - 1, (int)std::max({ Y[0], Y[1], Y[2] }) + 1);
-            const uint8_t* tex = set.mips[0].data() + (size_t)tv[0]->layer * N * N * 4;
+            const uint8_t* tex = set.mips[0].data() + (size_t)(tv[0]->layer & LAYER_INDEX_MASK) * N * N * 4;
             float light = faceShade[VertexFace(*tv[0])];
             if (VertexFace(*tv[0]) >= 6) {
                 // A slanted facet: shade by its true normal, blending the

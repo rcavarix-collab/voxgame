@@ -215,7 +215,7 @@ static const char* g_shaderSrc =
     // glowGrid: xyz the glow-light grid's world origin, w 1 when it holds any light (4.12).
     "cbuffer ChunkCB : register(b1) { float4 chunkOrigin; };\n"
     "struct VSIn { uint4 pos:POSITION; uint layer:TEXCOORD0; uint2 uv:TEXCOORD1; };\n"
-    "struct PSIn { float4 pos:SV_POSITION; float3 uvl:TEXCOORD0; float2 aoBias:TEXCOORD1; float3 wpos:TEXCOORD2; float4 glowInfo:TEXCOORD3; };\n"
+    "struct PSIn { float4 pos:SV_POSITION; float3 uvl:TEXCOORD0; float2 aoBias:TEXCOORD1; float3 wpos:TEXCOORD2; float4 glowInfo:TEXCOORD3; nointerpolation float round:TEXCOORD4; };\n"
     // A light touch of the old fixed per-direction shading keeps two faces
     // at the same angle to the sun from reading as one flat surface.
     "static const float faceBias[8] = { 0.94f, 0.94f, 1.00f, 0.90f, 0.88f, 0.88f, 1.00f, 0.92f };\n"
@@ -236,7 +236,8 @@ static const char* g_shaderSrc =
     "        p += float3(side.x * cu, cv, side.y * cu);\n"
     "    }\n"
     "    o.pos = mul(float4(p, 1.0f), mvp);\n"
-    "    o.uvl = float3(float2(i.uv) * 0.125f, (float)(i.layer & 0x7FFFu));\n"
+    "    o.uvl = float3(float2(i.uv) * 0.125f, (float)(i.layer & 0x3FFFu));\n"
+    "    o.round = (i.layer & 0x4000u) != 0u ? 1.0f : 0.0f;\n"          // a pipe's tube face (PIPE_ROUND_BIT)
     "    o.aoBias = float2(aoCurve[i.pos.w & 3u], card ? -1.0f : faceBias[face]);\n"    // negative: a card (cut out in the pixel shader)
     "    float3 n = face >= 6u ? float3(0.0f, 0.0f, 0.0f) : faceNormal[face];\n" // slanted facets: found per pixel below
     "    o.wpos = p + n * 0.08f;\n"                                   // normal offset (> 1 shadow texel): no acne
@@ -298,8 +299,20 @@ static const char* g_shaderSrc =
     "    float3 T = dp2perp * duv1.x + dp1perp * duv2.x;\n"
     "    float3 B = dp2perp * duv1.y + dp1perp * duv2.y;\n"
     "    float frameScale = rsqrt(max(max(dot(T, T), dot(B, B)), 1e-20f));\n"
+    // A pipe's tube face is flat, but shades as if round: its v runs 3..5
+    // across it, so lean the normal toward whichever edge the pixel is
+    // nearer, up to 45 degrees at the edge -- where the next face leans the
+    // same 45 back, so a square tube's faces meet in one smooth curve.
+    "    float3 nBase = nGeo;\n"
+    "    if (i.round > 0.5f) {\n"
+    "        float across = clamp((i.uvl.y - 0.5f) * 8.0f, -1.0f, 1.0f);\n"
+    "        float3 Bn = B * rsqrt(max(dot(B, B), 1e-20f));\n"
+    "        Bn = normalize(Bn - nGeo * dot(Bn, nGeo));\n"
+    "        float th = across * 0.785398f;\n"
+    "        nBase = normalize(nGeo * cos(th) + Bn * sin(th));\n"
+    "    }\n"
     "    float2 nxy = (surf.xy * 2.0f - 1.0f) * (1.0f - farBlend);\n"   // bumps flatten with distance (no glittering)
-    "    float3 n = normalize((T * nxy.x + B * nxy.y) * frameScale + nGeo * sqrt(saturate(1.0f - dot(nxy, nxy))));\n"
+    "    float3 n = normalize((T * nxy.x + B * nxy.y) * frameScale + nBase * sqrt(saturate(1.0f - dot(nxy, nxy))));\n"
     "    float ao = i.aoBias.x;\n"
     "    float shadow = 1.0f;\n"
     // Softened falloff (sqrt of N.L): a faked wrap so a low sun still

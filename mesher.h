@@ -33,6 +33,10 @@ static inline int VertexGlow(const Vertex& v) { return (v.aoFace >> 5) & 7; }
 // Set on a plant card's layer (4.14): the vertex shader turns the quad to
 // face the viewer. Real layers stay far below it.
 static const uint16_t CARD_LAYER_BIT = 0x8000;
+// A pipe's tube face (Part VI): the pixel shader bends its normal as if the
+// face were round across its v (3..5), so a square tube shades like a pipe.
+static const uint16_t PIPE_ROUND_BIT = 0x4000;
+static const uint16_t LAYER_INDEX_MASK = 0x3FFF;
 
 // Texture-array layer per [block][facing][face]; filled once at load
 // (InitTextures, from blocktex.h). The mesher's only texture lookup.

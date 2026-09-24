@@ -28,6 +28,7 @@ struct ShapePoly {
     uint8_t texFace;      // BlockFace whose texture this polygon uses
     uint8_t shade;        // BlockFace or SHADE_SLOPE_*
     int8_t boundary;      // BlockFace this polygon lies flat on (hidden by a full neighbour there), or -1
+    uint8_t round = 0;    // 1: a pipe's tube face -- shaded as if round across its v (3..5): the mesher flags it (PIPE_ROUND_BIT)
 };
 
 struct ShapeBox { uint8_t x0, y0, z0, x1, y1, z1; };

@@ -1056,6 +1056,8 @@ static void TestPulse() {
         ShapePoly polys[MAX_SHAPE_POLYS];
         uint8_t run = (1u << FACE_POS_X) | (1u << FACE_NEG_X), bend = (1u << FACE_POS_X) | (1u << FACE_POS_Y);
         CHECK(PipePolys(run, 0, polys) == 4);   // one seamless tube: no end faces where it joins on
+        { bool allRound = true; for (int k = 0; k < 4; k++) allRound = allRound && polys[k].round; CHECK(allRound); } // shaded round (PIPE_ROUND_BIT)
+        { int np = PipePolys(1u << FACE_NEG_Z, 0, polys), flat = 0; for (int k = 0; k < np; k++) flat += !polys[k].round; CHECK(flat == 6); } // the collar stays faceted
         CHECK(PipePolys(bend, 0, polys) == 12); // a low-poly elbow: six walls, three pieces a side
         CHECK(PipeMouths(run, 0) == 0 && PipeMouths(bend, 0) == 0);
         CHECK(PipeMouths(1u << FACE_NEG_Z, 0) == (1u << FACE_POS_Z));

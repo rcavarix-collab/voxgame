@@ -135,7 +135,7 @@ void BuildChunkMesh(World& w, const ChunkCoord& cc, const Chunk& c,
                             const FaceDef& bd = kFaces[sp.boundary];
                             if (cell[PIndex(px + bd.nx, py + bd.ny, pz + bd.nz)] == OPAQUE) continue;
                         }
-                        uint16_t layer = g_blockFaceLayer[id][facing][sp.texFace];
+                        uint16_t layer = (uint16_t)(g_blockFaceLayer[id][facing][sp.texFace] | (sp.round ? PIPE_ROUND_BIT : 0));
                         uint16_t base = (uint16_t)verts.size();
                         for (int k = 0; k < sp.count; k++) {
                             Vertex v;
