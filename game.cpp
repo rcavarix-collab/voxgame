@@ -661,7 +661,9 @@ void PollPerfCapture() {
     std::string text;
     if (!ProfTakeCaptureReport(text)) return;
     std::string path = WriteTextToSaveFolder("perf_report.txt", text);
-    ShowToast(path.empty() ? "PERF REPORT COULD NOT BE SAVED" : "PERF REPORT SAVED: perf_report.txt (next to your saves)", 5.0f);
+    // The full path: Documents is often moved (into OneDrive, say), so
+    // "next to your saves" alone can send the player to the wrong folder.
+    ShowToast(path.empty() ? "PERF REPORT COULD NOT BE SAVED" : "PERF REPORT SAVED: " + path, 12.0f);
 }
 void TickAutosave(float dt) {
     if (g_gameState != GameState::InGame || g_menuScreen != MenuScreen::None) return;
