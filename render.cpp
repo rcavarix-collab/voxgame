@@ -208,10 +208,19 @@ static const char* g_shaderSrc =
     "PSIn VSMain(VSIn i) {\n"
     "    PSIn o;\n"
     "    float3 p = float3(i.pos.xyz) * 0.125f + chunkOrigin.xyz;\n"   // 1/8-block fixed point
-    "    o.pos = mul(float4(p, 1.0f), mvp);\n"
-    "    o.uvl = float3(float2(i.uv) * 0.125f, (float)i.layer);\n"
     "    uint face = (i.pos.w >> 2) & 7u;\n"
-    "    o.aoBias = float2(aoCurve[i.pos.w & 3u], faceBias[face]);\n"
+    "    bool card = (i.layer & 0x8000u) != 0u;\n"
+    // Plant cards (4.14): all four corners arrive at the plant's base; spread
+    // them into a one-block quad turned (about the vertical) to face the eye.
+    "    if (card) {\n"
+    "        float2 toEye = fCamPos.xz - p.xz;\n"
+    "        float2 side = normalize(float2(-toEye.y, toEye.x) + float2(1e-5f, 0.0f));\n"
+    "        float cu = float(i.uv.x) * 0.125f - 0.5f, cv = 1.0f - float(i.uv.y) * 0.125f;\n"
+    "        p += float3(side.x * cu, cv, side.y * cu);\n"
+    "    }\n"
+    "    o.pos = mul(float4(p, 1.0f), mvp);\n"
+    "    o.uvl = float3(float2(i.uv) * 0.125f, (float)(i.layer & 0x7FFFu));\n"
+    "    o.aoBias = float2(aoCurve[i.pos.w & 3u], card ? -1.0f : faceBias[face]);\n"    // negative: a card (cut out in the pixel shader)
     "    float3 n = normalize(faceNormal[face]);\n"
     "    o.wpos = p + n * 0.08f;\n"                                   // normal offset (> 1 shadow texel): no acne
     "    o.glowInfo = float4((float)((i.pos.w >> 5) & 7u), n);\n"   // glow kind, face normal
@@ -228,6 +237,7 @@ static const char* g_shaderSrc =
     "#endif\n"
     "float4 PSMain(PSIn i) : SV_TARGET {\n"
     "    float4 texel = tex0.Sample(samp0, i.uvl);\n"                  // sRGB texture view: already linear
+    "    if (i.aoBias.y < 0.0f) clip(texel.a - 0.5f);\n"               // plant card: see-through pixels are cut out
     "    float4 surf = surfTex.Sample(samp0, i.uvl);\n"
     "    float3 albedo = texel.rgb;\n"
     "    float3 nGeo = i.glowInfo.yzw;\n"                              // the face itself
@@ -271,7 +281,7 @@ static const char* g_shaderSrc =
     "    float3 ambient = lerp(fAmbientDown.rgb, fAmbientUp.rgb, n.y * 0.5f + 0.5f) * ao;\n"
     "    float3 direct = fSunColor.rgb * sunLit * (0.55f + 0.45f * ao)\n"
     "                  + fMoonColor.rgb * saturate(dot(n, fMoonDir.xyz)) * ao;\n"
-    "    float3 col = albedo * (ambient + direct) * i.aoBias.y;\n"
+    "    float3 col = albedo * (ambient + direct) * abs(i.aoBias.y);\n"
     "    float3 v = i.wpos - fCamPos.xyz;\n"
     "    float dist = length(v);\n"
     "    float3 view = v / max(dist, 1e-3f);\n"

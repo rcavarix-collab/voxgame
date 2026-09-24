@@ -1,6 +1,7 @@
 // icons.cpp -- see icons.h.
 
 #include "icons.h"
+#include <cstring>
 #include "mesher.h"
 #include <algorithm>
 #include <cmath>
@@ -22,6 +23,13 @@ void RenderBlockIcons(BlockTextureSet& set) {
         // The block alone in an empty world, placed as if by a player at
         // the camera (which sits off toward -X -Z, looking down at it):
         // fronts face -Z, toward the viewer; ramps rise away.
+        if (BlockIsCard((BlockID)id)) {
+            // A plant card's icon is simply its picture (see-through where it is).
+            const uint8_t* src = set.mips[0].data() + (size_t)set.faceLayer[id][FACE_POS_Z][FACE_POS_Z] * N * N * 4;
+            for (int y = 0; y < N; y++)
+                memcpy(set.icons.data() + ((size_t)y * set.iconsW + (size_t)id * N) * 4, src + (size_t)y * N * 4, (size_t)N * 4);
+            continue;
+        }
         World w;
         uint8_t state = 0;
         if (g_blocks[id].place == PLACE_FACE_PLAYER) state = FACE_NEG_Z;

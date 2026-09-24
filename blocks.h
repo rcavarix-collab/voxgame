@@ -66,6 +66,12 @@ enum BlockID : uint8_t {
     BLOCK_CUSTODIAN_LATTICE,
     BLOCK_RAW_FRAGMENT_ORE,
     BLOCK_ARCHIVIST_WALL,
+    BLOCK_WILDFLOWER_YELLOW,
+    BLOCK_WILDFLOWER_BLUE,
+    BLOCK_GLOW_MUSHROOM_CLUSTER,
+    BLOCK_FERN_FROND,
+    BLOCK_THORN_BRAMBLE,
+    BLOCK_REED_GRASS,
     BLOCK_COUNT
 };
 
@@ -80,6 +86,7 @@ enum BlockShape : uint8_t {
     SHAPE_PYRAMID_HALF,  // half-height pyramid
     SHAPE_FUNNEL,        // upside-down pyramid
     SHAPE_FUNNEL_HALF,   // upside-down half pyramid, in the top half
+    SHAPE_CARD,          // a plant: one upright card that turns to face the viewer (4.14); not solid
 };
 
 // Blocks that light up on their own (world shader, Section 4.2): the
@@ -216,12 +223,20 @@ inline const BlockDef g_blocks[BLOCK_COUNT] = {
     { "custodian_lattice", true,  false, true,  false, false, SHAPE_CUBE,         PLACE_PLAIN, GLOW_NONE,      false,       TEX("custodian_lattice", nullptr, nullptr, nullptr, nullptr) },
     { "raw_fragment_ore",  true,  false, true,  false, false, SHAPE_CUBE,         PLACE_PLAIN, GLOW_NONE,      false,       TEX("raw_fragment_ore", nullptr, nullptr, nullptr, nullptr) },
     { "archivist_wall",    true,  false, true,  false, false, SHAPE_CUBE,         PLACE_PLAIN, GLOW_NONE,      false,       TEX("archivist_wall", nullptr, nullptr, nullptr, nullptr) },
+    // Plants: cards that turn to face the viewer (4.14). Walk-through, but targetable.
+    { "wildflower_yellow",   false, false, true,  false, false, SHAPE_CARD,         PLACE_PLAIN, GLOW_NONE,      false,       TEX("wildflower_yellow", nullptr, nullptr, nullptr, nullptr) },
+    { "wildflower_blue",     false, false, true,  false, false, SHAPE_CARD,         PLACE_PLAIN, GLOW_NONE,      false,       TEX("wildflower_blue", nullptr, nullptr, nullptr, nullptr) },
+    { "glow_mushroom_cluster", false, false, true,  false, false, SHAPE_CARD,         PLACE_PLAIN, GLOW_EMBER,     false,       TEX("glow_mushroom_cluster", nullptr, nullptr, nullptr, nullptr) },
+    { "fern_frond",          false, false, true,  false, false, SHAPE_CARD,         PLACE_PLAIN, GLOW_NONE,      false,       TEX("fern_frond", nullptr, nullptr, nullptr, nullptr) },
+    { "thorn_bramble",       false, false, true,  false, false, SHAPE_CARD,         PLACE_PLAIN, GLOW_NONE,      false,       TEX("thorn_bramble", nullptr, nullptr, nullptr, nullptr) },
+    { "reed_grass",          false, false, true,  false, false, SHAPE_CARD,         PLACE_PLAIN, GLOW_NONE,      false,       TEX("reed_grass", nullptr, nullptr, nullptr, nullptr) },
 };
 #undef TEX
 
 static inline bool BlockSolid(BlockID id) { return g_blocks[id].solid; }
 // Solid and a full cube (collision, geometry).
 static inline bool BlockFullCube(BlockID id) { return g_blocks[id].solid && g_blocks[id].shape == SHAPE_CUBE; }
+static inline bool BlockIsCard(BlockID id) { return g_blocks[id].shape == SHAPE_CARD; }
 // A full cube you can't see through: hides the faces beside it and
 // darkens AO. Glass is a full cube but not opaque.
 static inline bool BlockOpaqueCube(BlockID id) { return BlockFullCube(id) && !g_blocks[id].translucent; }

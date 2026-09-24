@@ -153,6 +153,11 @@ public:
     bool Solid(int x, int y, int z) {
         return BlockSolid(Get(x, y, z));
     }
+    // Anything the crosshair can target: solid blocks and walk-through
+    // ones like plants.
+    bool Pickable(int x, int y, int z) {
+        return Get(x, y, z) != BLOCK_AIR;
+    }
 
     // Marks the owning chunk dirty, plus every neighbour -- face, edge
     // or corner -- whose mesh this cell can affect: face culling reaches

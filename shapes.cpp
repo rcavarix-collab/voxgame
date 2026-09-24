@@ -185,6 +185,7 @@ int ShapePolys(BlockShape shape, uint8_t state, ShapePoly* out) {
     case SHAPE_PYRAMID_HALF: return Pointed(0, 4, out);
     case SHAPE_FUNNEL:       return Pointed(8, 0, out);
     case SHAPE_FUNNEL_HALF:  return Pointed(8, 4, out);
+    case SHAPE_CARD:         return 0; // a plant card is built by the mesher itself (4.14)
     }
     return 0;
 }

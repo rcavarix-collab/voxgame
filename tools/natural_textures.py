@@ -745,6 +745,97 @@ def m_archivist_wall():
     return f
 
 
+# -- plants: cards that turn to face the viewer (DESIGN.md 4.14) --
+# Transparent background; the plant stands on the tile's bottom edge (v = 16).
+CLEAR = ((0, 0, 0), 0, 0, 0, 0)
+
+
+def ellipse(u, v, cx, cy, rx, ry):
+    return ((u - cx) / rx) ** 2 + ((v - cy) / ry) ** 2
+
+
+def m_wildflower(petals, centre):
+    def f(u, v):
+        sway = 0.35 * math.sin(v * 0.45)
+        if ellipse(u, v, 8 + sway, 4.6, 1.2, 1.2) < 1:
+            return ramp(centre, 0.5), 1, 0.7, 0.1, 0
+        for a in range(5):
+            ang = a * 2 * math.pi / 5 + 0.3
+            if ellipse(u, v, 8 + sway + math.cos(ang) * 1.9, 4.6 + math.sin(ang) * 1.9, 1.3, 1.3) < 1:
+                return ramp(petals, 0.4 + 0.3 * math.cos(ang)), 1, 0.6, 0.15, 0
+        if abs(u - (8 + sway)) < 0.45 and 5.5 < v <= 16:
+            return ramp(["3e6a2e", "4a7a38"], 0.5), 1, 0.5, 0, 0
+        if ellipse(u, v, 6.4, 11.2, 1.8, 0.6) < 1 or ellipse(u, v, 9.8, 9.2, 1.8, 0.6) < 1:
+            return ramp(["2e5020", "3a6028", "4a7a38"], 0.5), 1, 0.5, 0.05, 0
+        return CLEAR
+    return f
+
+
+def m_glow_mushrooms():
+    caps = [(8.0, 6.2, 2.6, 7.0), (3.9, 9.6, 1.7, 5.4), (12.4, 8.8, 1.6, 5.2)]   # x, cap y, cap radius, stem length
+    def f(u, v):
+        for cx, cy, r, _ in caps:
+            if v <= cy + 0.4 and ellipse(u, v, cx, cy + 0.4, r, r * 0.8) < 1:
+                spot = ellipse(u, v, cx - r * 0.35, cy - r * 0.2, 0.45, 0.45) < 1 or ellipse(u, v, cx + r * 0.3, cy - r * 0.35, 0.35, 0.35) < 1
+                if spot:
+                    return ramp(["f0a850", "ffd890"], 0.6), 1, 0.8, 0.3, 0.9
+                return ramp(["8a3420", "c85a3a", "e07850"], 0.3 + 0.5 * (1 - (v - (cy + 0.4 - r)) / r)), 1, 0.7, 0.4, 0.35
+            if cy + 0.4 < v <= 16 and abs(u - cx) < r * 0.28:
+                return ramp(["6a5034", "8a6a48", "a88660"], 0.5 + (u - cx) / r), 1, 0.5, 0.05, 0.1
+        return CLEAR
+    return f
+
+
+def m_fern():
+    def f(u, v):
+        if v > 16 or v < 2.5: return CLEAR
+        spine_x = 8 + 1.6 * ((16 - v) / 13.5) ** 2                 # curling over at the top
+        if abs(u - spine_x) < 0.35:
+            return ramp(["1e3a18", "2a5020"], 0.5), 1, 0.55, 0.05, 0
+        k = (16 - v) / 13.5                                        # 0 at the base, 1 at the tip
+        span = 4.2 * (1 - k) + 0.6
+        side = u - spine_x
+        if abs(side) < span:
+            phase = (v * 1.3 + (0.5 if side > 0 else 0.0)) % 1.0     # alternating leaflets
+            if phase < 0.55 and abs(side) < span * (1 - phase / 0.55 * 0.4):
+                return ramp(["2a5020", "3a6c2a", "4a8036"], 0.3 + 0.5 * (1 - abs(side) / span)), 1, 0.5, 0.1, 0
+        return CLEAR
+    return f
+
+
+def m_bramble():
+    canes = [(6.0, 0.0), (10.0, 2.1), (8.2, 4.3)]
+    def f(u, v):
+        for bx, ph in canes:
+            x = bx + 1.6 * math.sin(v * 0.55 + ph)
+            top = 2.5 + ph
+            if top < v <= 16 and abs(u - x) < 0.45:
+                return ramp(["3a1218", "4a1a20", "5a2228"], 0.5), 1, 0.6, 0.1, 0
+            for tv in range(3, 16, 2):                                 # thorns, alternating sides
+                ty = tv + ph * 0.3
+                tx = bx + 1.6 * math.sin(ty * 0.55 + ph)
+                side = 1 if (tv // 2) % 2 == 0 else -1
+                du, dv = (u - tx) * side, v - ty
+                if top < ty < 16 and 0.3 < du < 1.3 and abs(dv) < 0.45 * (1.3 - du):
+                    return ramp(["8a3030", "a84040"], 0.5), 1, 0.7, 0.2, 0
+        return CLEAR
+    return f
+
+
+def m_reeds():
+    blades = [(3.2, 5.0, 0.4), (5.9, 2.2, -0.3), (8.3, 3.6, 0.2), (10.6, 1.4, -0.5), (12.9, 4.8, 0.35)]
+    def f(u, v):
+        for bx, top, lean in blades:
+            if top < v <= 16:
+                k = (16 - v) / (16 - top)
+                x = bx + lean * k * k * 3
+                w = 0.55 * (1 - 0.7 * k)
+                if abs(u - x) < w:
+                    return ramp(["1a3a3a", "3a6a4a", "4a7a5a", "5e9068"], 0.3 + 0.6 * k), 1, 0.5, 0.15, 0
+        return CLEAR
+    return f
+
+
 TEXTURES = [
     ("stone", "Stone: cool grey, mottled, a few hairline cracks", m_stone()),
     ("dirt", "Dirt: warm clumps, scattered pebbles and grit", m_dirt()),
@@ -787,13 +878,20 @@ TEXTURES = [
     ("custodian_lattice", "Custodian lattice: raised polished diamond lattice, studs at the crossings", m_custodian_lattice()),
     ("raw_fragment_ore", "Raw fragment ore: dark stone with clusters of faintly glowing violet shards", m_raw_fragment_ore()),
     ("archivist_wall", "Archivist wall: coursed masonry and a gold ward-seal across a joint", m_archivist_wall()),
+    ("wildflower_yellow", "Yellow wildflower (plant card)", m_wildflower(["c8a830", "e0c840", "f0e070"], ["6a4410", "8a5a1a"])),
+    ("wildflower_blue", "Blue wildflower (plant card)", m_wildflower(["4a6fb0", "6a8fd0", "90b0e8"], ["d8d0b8", "f0e8d0"])),
+    ("glow_mushroom_cluster", "Glow mushrooms (plant card): caps and spots aglow", m_glow_mushrooms()),
+    ("fern_frond", "Fern frond (plant card)", m_fern()),
+    ("thorn_bramble", "Thorn bramble (plant card)", m_bramble()),
+    ("reed_grass", "Reeds (plant card)", m_reeds()),
 ]
+PLANTS = ("wildflower_yellow", "wildflower_blue", "glow_mushroom_cluster", "fern_frond", "thorn_bramble", "reed_grass")
 SINGLE = ("stone", "dirt", "wood", "snow", "sand", "cracked_earth", "clay", "basalt", "magma_rock", "moss",
           "moss_stone", "meadow_grass", "shallow_water", "glacier_ice", "volcanic_ash", "coral_reef", "jungle_canopy",
           "autumn_leaf_litter", "peat_bog", "salt_flat", "river_pebble", "coastal_sand",
           "veined_flesh", "flesh_wound", "pulsing_membrane", "weeping_sore", "corrupted_flesh",
           "genesis_soil", "seedling_sprout", "dawn_light", "star_forge",
-          "void_static_ground", "custodian_lattice", "raw_fragment_ore", "archivist_wall")
+          "void_static_ground", "custodian_lattice", "raw_fragment_ore", "archivist_wall") + PLANTS
 BLOCKS = [(n, [("all", n)]) for n in SINGLE] + [
     ("sandstone", [("side", "sandstone_layered"), ("top", "sandstone_top"), ("bottom", "sandstone_top")]),
     ("log", [("side", "log_bark"), ("top", "log_top"), ("bottom", "log_top")]),

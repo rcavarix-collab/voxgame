@@ -78,6 +78,28 @@ void BuildChunkMesh(World& w, const ChunkCoord& cc, const Chunk& c,
                 BlockFace facing = StateFacing(c.state[li]);
                 int px = lx + 1, py = ly + 1, pz = lz + 1;
 
+                if (g_blocks[id].shape == SHAPE_CARD) {
+                    // A plant card (4.14): four vertices all at the cell's
+                    // base centre, their corners in u/v; the vertex shader
+                    // spreads them into a quad facing the viewer. The layer's
+                    // top bit marks it.
+                    uint16_t layer = (uint16_t)(g_blockFaceLayer[id][facing][FACE_POS_Z] | CARD_LAYER_BIT);
+                    uint16_t base = (uint16_t)verts.size();
+                    const uint8_t cu[4] = { 0, 0, SHAPE_UNITS, SHAPE_UNITS }, cv[4] = { SHAPE_UNITS, 0, 0, SHAPE_UNITS };
+                    for (int k = 0; k < 4; k++) {
+                        Vertex v;
+                        v.x = (uint8_t)(lx * SHAPE_UNITS + SHAPE_UNITS / 2);
+                        v.y = (uint8_t)(ly * SHAPE_UNITS);
+                        v.z = (uint8_t)(lz * SHAPE_UNITS + SHAPE_UNITS / 2);
+                        v.aoFace = (uint8_t)(3 | (FACE_POS_Y << 2) | (g_blocks[id].glow << 5)); // lit like an upward face
+                        v.layer = layer;
+                        v.u = cu[k]; v.v = cv[k];
+                        verts.push_back(v);
+                    }
+                    const uint16_t tri[6] = { 0, 1, 2, 0, 2, 3 };
+                    for (uint16_t t : tri) indices.push_back((uint16_t)(base + t));
+                    continue;
+                }
                 if (g_blocks[id].shape != SHAPE_CUBE) {
                     // Shaped block: its oriented polygons, with any lying
                     // flat on the cell boundary hidden by a full neighbour.

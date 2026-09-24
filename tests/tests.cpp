@@ -143,7 +143,7 @@ static void TestBlockTextures() {
     BlockTextureSet t;
     BuildBlockTextures(none, t);
     CHECK(t.warnings.empty());
-    CHECK(t.layerCount == 14 + 37); // 14 procedural (foundation .. crystal) + 37 more names only the generated art provides (magenta without it)
+    CHECK(t.layerCount == 14 + 43); // 14 procedural (foundation .. crystal) + 43 more names only the generated art provides (magenta without it)
 
     // The natural materials' art in the repo loads cleanly and covers
     // every natural block (no magenta fallback), with seamless wrap.
@@ -155,7 +155,7 @@ static void TestBlockTextures() {
             while ((got = fread(buf, 1, sizeof buf, fp)) > 0) text.append(buf, got);
             fclose(fp);
             VtexSet nat; ParseVtex(text, "natural.vtex", nat);
-            CHECK(nat.errors.empty() && nat.textures.size() == 40 && nat.blocks.size() == 38);
+            CHECK(nat.errors.empty() && nat.textures.size() == 46 && nat.blocks.size() == 44);
             for (auto& tx : nat.textures) CHECK(tx.size == 32 && !tx.height.empty()); // one density for everything (32), all with relief
             BlockTextureSet nt; BuildBlockTextures(nat, nt);
             CHECK(nt.warnings.empty());
@@ -170,6 +170,8 @@ static void TestBlockTextures() {
             // and column's wrap step is no bigger than the steps inside it.
             for (auto& tx : nat.textures) {
                 if (tx.name == "log_top") continue;
+                bool card = false; for (int id = 1; id < BLOCK_COUNT; id++) if (BlockIsCard((BlockID)id) && tx.name == g_blocks[id].name) card = true;
+                if (card) continue; // plant cards stand alone; they don't tile
                 auto d = [&](uint32_t a, uint32_t b) { return abs((int)(a >> 16 & 255) - (int)(b >> 16 & 255)) + abs((int)(a >> 8 & 255) - (int)(b >> 8 & 255)) + abs((int)(a & 255) - (int)(b & 255)); };
                 const int N = tx.size;
                 double maxC = 0, maxR = 0;
@@ -565,6 +567,17 @@ static void TestMesher() {
         CHECK(firstNone == idx.size()); // no glass: everything is opaque
     }
 
+    // Plant cards (4.14): one quad, all corners at the base centre, the
+    // layer flagged, corners in u/v; neighbours keep their faces.
+    {
+        World wp; wp.Set(3, 3, 3, BLOCK_FERN_FROND); wp.Set(4, 3, 3, BLOCK_STONE);
+        BuildChunkMesh(wp, { 0, 0, 0 }, *wp.FindChunk({ 0, 0, 0 }), v, idx);
+        int cards = 0;
+        for (auto& x : v) if (x.layer & CARD_LAYER_BIT) { cards++; CHECK(x.x == 3 * 8 + 4 && x.y == 3 * 8 && x.z == 3 * 8 + 4); }
+        CHECK(cards == 4 && v.size() == 4 + 24); // the stone keeps all six faces
+        CHECK(!BlockSolid(BLOCK_FERN_FROND) && BlockIsCard(BLOCK_FERN_FROND));
+    }
+
     // Worst case fits 16-bit indices.
     World w3;
     for (int y = 0; y < 16; y++) for (int z = 0; z < 16; z++) for (int x = 0; x < 16; x++)
@@ -690,6 +703,11 @@ static void TestIcons() {
     RenderBlockIcons(t);
     for (int id = 1; id < BLOCK_COUNT; id++) {
         auto alpha = [&](int x, int y) { return t.icons[((size_t)y * t.iconsW + (size_t)id * BLOCK_TEX_SIZE + x) * 4 + 3]; };
+        if (BlockIsCard((BlockID)id)) { // a plant card's icon is its picture, exactly
+            const uint8_t* src = t.mips[0].data() + (size_t)t.faceLayer[id][FACE_POS_Z][FACE_POS_Z] * BLOCK_TEX_SIZE * BLOCK_TEX_SIZE * 4;
+            CHECK(memcmp(src, &t.icons[(size_t)id * BLOCK_TEX_SIZE * 4], BLOCK_TEX_SIZE * 4) == 0);
+            continue;
+        }
         CHECK(alpha(0, 0) == 0 && alpha(BLOCK_TEX_SIZE - 1, 0) == 0); // transparent corners
         int opaque = 0, drawn = 0;
         for (int y = 0; y < BLOCK_TEX_SIZE; y++) for (int x = 0; x < BLOCK_TEX_SIZE; x++) { if (alpha(x, y) == 255) opaque++; if (alpha(x, y) >= 90) drawn++; }

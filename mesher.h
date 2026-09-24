@@ -30,6 +30,9 @@ static_assert(sizeof(Vertex) == 8, "chunk vertex must stay 8 bytes");
 static inline int VertexAO(const Vertex& v) { return v.aoFace & 3; }
 static inline int VertexFace(const Vertex& v) { return (v.aoFace >> 2) & 7; }
 static inline int VertexGlow(const Vertex& v) { return (v.aoFace >> 5) & 7; }
+// Set on a plant card's layer (4.14): the vertex shader turns the quad to
+// face the viewer. Real layers stay far below it.
+static const uint16_t CARD_LAYER_BIT = 0x8000;
 
 // Texture-array layer per [block][facing][face]; filled once at load
 // (InitTextures, from blocktex.h). The mesher's only texture lookup.

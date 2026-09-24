@@ -660,7 +660,10 @@ bool Raycast(World& w, float ox, float oy, float oz, float dx, float dy, float d
             voxZ += stepZ; traveled = tMaxZ; tMaxZ += tDeltaZ;
         }
 
-        if (w.Solid(voxX, voxY, voxZ)) {
+        // Past the starting cell, walk-through blocks (plants) are hits
+        // too; the cell the eye is in only counts if it's solid, so
+        // standing in grass doesn't make it the target of every click.
+        if (w.Pickable(voxX, voxY, voxZ)) {
             hitX = voxX; hitY = voxY; hitZ = voxZ;
             placeX = prevX; placeY = prevY; placeZ = prevZ;
             return true;
