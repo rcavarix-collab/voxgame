@@ -2,6 +2,9 @@
 
 The design of record is `DESIGN.md`; read the relevant part before changing a system.
 
+## What the game is reaching for
+The owner's touchstones: Minecraft (the block world, building), Satisfactory and FactoryTown (production chains, logistics), BuildCraft and IndustrialCraft (machines, pipes, power), Equivalent Exchange (transmutation by value), Sandustry (simulated materials that fall, flow and react). The shape: a factory game grounded in a living, simulated world, with The Line and the essence network as the strange layer on top — essence is the natural candidate for a transmutation economy. Take their *mechanics* (genre ground); never their names, terms, items or art.
+
 ## Standing priorities
 - **Lagless efficiency.** Cost scales with what's on screen or what changed, never with world size. Budget per-tick work; rebuild only on change; measure with the F3 profiler.
 - **Fake it convincingly, cheaply.** Visual effects are per-pixel tricks driven by small per-frame constants, not extra passes or per-block data (DESIGN.md 4.8–4.12).
