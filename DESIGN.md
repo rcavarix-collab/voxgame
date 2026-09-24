@@ -141,6 +141,9 @@ A small font-glyph atlas (ASCII 32–126 in monospace grids, plus a solid-white 
 
 GDI+ is used exclusively at load time to *generate* textures into bitmaps that get uploaded once to GPU textures; it never touches the frame loop. This was an explicit decision against mixing GDI+ and Direct3D rendering live, which would fight over the swap chain surface.
 
+### 4.6.1 Window size, fullscreen and DPI
+The backbuffer follows the window: the window is resizable and maximisable, `WM_SIZE` resizes the swap chain and depth buffer (`ResizeRenderTargets`), and the projection's aspect ratio and every UI layout read the live `g_screenW`/`g_screenH` (a minimised 0×0 window keeps the old size). F11 or Display Settings toggles **borderless fullscreen** on the window's current monitor (no exclusive mode, so alt-tab and other monitors behave normally); the choice is saved. The process declares per-monitor DPI awareness, so Windows never bitmap-stretches the window on a scaled display — the UI stays pixel-exact at its native size (a UI-scale option is the planned follow-up for high-DPI screens).
+
 ### 4.7 Camera and player view
 Standard FPS mouse-look: yaw from horizontal delta, pitch from vertical delta, pitch clamped to avoid gimbal flip (±~1.55 rad). Perspective projection, near/far planes wide enough for the load radius in use.
 
@@ -266,6 +269,8 @@ Same shape as the save file's (7.3): the whole file is one `ostringstream`-built
 3. Only if the write completes without error: rotate the existing `voxelproto.sav` to `voxelproto.sav.bak`, then rename `.tmp` into place as `voxelproto.sav`.
 
 A crash or power loss at any point before step 3 completes leaves the previously-good save completely untouched — there is no window where the live save file is partially overwritten.
+
+**Autosave:** every 5 minutes of actual play (paused time doesn't count, so a game left on the pause menu isn't rewritten), on Quit to Title, on Quit, and when the window is closed mid-game. With delta saves (7.2) a save is small enough to write on the main thread without a hitch; the previous file is always kept as `.bak` by the sequence above.
 
 ### 7.4 Load sequence (corruption safety)
 1. Read the whole file into memory.
@@ -449,7 +454,7 @@ Each `.cpp` above owns one subsystem and includes only the headers it needs (`co
 
 (`-lxaudio2_8` is MinGW's import-lib name for the same XAudio2 2.8 API that the Windows SDK's `xaudio2.lib` provides — a MinGW-only naming difference, same idea as `-municode` above it.)
 
-Default controls (all fully remappable to any keyboard key or the left/right/middle mouse button via Pause → Keybindings — click a row, then press the new input; Esc cancels a rebind in progress, except on the Pause Menu row, where Esc binds Escape): WASD to move, mouse to look (click once to capture the cursor), Space to jump, left-click to break the targeted block, right-click to place the selected hotbar block, number keys 1–9 or the mouse wheel to select a hotbar block (fixed, not remappable in this pass), F3 for the profiler overlay, F5 to save, F9 to load, Esc to open/close the Pause menu or back out one level from any of its submenus (Look Settings, Graphics, Display, Audio, Keybindings, each with its own Reset to Default), all clickable with the freed cursor.
+Default controls (all fully remappable to any keyboard key or the left/right/middle mouse button via Pause → Keybindings — click a row, then press the new input; Esc cancels a rebind in progress, except on the Pause Menu row, where Esc binds Escape): WASD to move, mouse to look (click once to capture the cursor), Space to jump, left-click to break the targeted block, right-click to place the selected hotbar block, number keys 1–9 or the mouse wheel to select a hotbar block (fixed, not remappable in this pass), F3 for the profiler overlay, F11 for fullscreen, F5 to save, F9 to load, Esc to open/close the Pause menu or back out one level from any of its submenus (Look Settings, Graphics, Display, Audio, Keybindings, each with its own Reset to Default), all clickable with the freed cursor.
 
 ## Part XVI — Frame Profiler
 

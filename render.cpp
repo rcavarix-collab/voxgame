@@ -32,6 +32,7 @@ extern "C" bool GenerateUIAtlas(
     uint8_t** outPixelsBGRA);
 
 HWND g_hwnd = nullptr;
+int g_screenW = DEFAULT_WINDOW_W, g_screenH = DEFAULT_WINDOW_H;
 ID3D11Device* g_device = nullptr;
 ID3D11DeviceContext* g_context = nullptr;
 IDXGISwapChain* g_swapChain = nullptr;
@@ -350,11 +351,49 @@ bool FrustumIntersectsAABB(const Frustum& f, Vec3 minB, Vec3 maxB) {
 // D3D11 initialization
 // =======================================================================
 
+// The backbuffer's render target, the depth buffer and the viewport --
+// everything whose size is the window's. Recreated on every resize.
+static void CreateSizeDependentTargets() {
+    ID3D11Texture2D* backBuffer = nullptr;
+    g_swapChain->GetBuffer(0, __uuidof(ID3D11Texture2D), (void**)&backBuffer);
+    g_device->CreateRenderTargetView(backBuffer, nullptr, &g_rtv);
+    backBuffer->Release();
+
+    D3D11_TEXTURE2D_DESC depthDesc = {};
+    depthDesc.Width = g_screenW; depthDesc.Height = g_screenH;
+    depthDesc.MipLevels = 1; depthDesc.ArraySize = 1;
+    depthDesc.Format = DXGI_FORMAT_D24_UNORM_S8_UINT;
+    depthDesc.SampleDesc.Count = 1;
+    depthDesc.Usage = D3D11_USAGE_DEFAULT;
+    depthDesc.BindFlags = D3D11_BIND_DEPTH_STENCIL;
+    ID3D11Texture2D* depthTex = nullptr;
+    g_device->CreateTexture2D(&depthDesc, nullptr, &depthTex);
+    g_device->CreateDepthStencilView(depthTex, nullptr, &g_dsv);
+    depthTex->Release();
+
+    D3D11_VIEWPORT vp = {};
+    vp.Width = (float)g_screenW; vp.Height = (float)g_screenH;
+    vp.MinDepth = 0; vp.MaxDepth = 1;
+    g_context->RSSetViewports(1, &vp);
+}
+
+void ResizeRenderTargets(int w, int h) {
+    if (w <= 0 || h <= 0) return;           // minimised: keep the old size
+    if (!g_swapChain) { g_screenW = w; g_screenH = h; return; } // before InitD3D
+    if (w == g_screenW && h == g_screenH) return;
+    g_screenW = w; g_screenH = h;
+    g_context->OMSetRenderTargets(0, nullptr, nullptr);
+    if (g_rtv) { g_rtv->Release(); g_rtv = nullptr; }
+    if (g_dsv) { g_dsv->Release(); g_dsv = nullptr; }
+    g_swapChain->ResizeBuffers(0, (UINT)w, (UINT)h, DXGI_FORMAT_UNKNOWN, 0);
+    CreateSizeDependentTargets();
+}
+
 bool InitD3D(HWND hwnd) {
     DXGI_SWAP_CHAIN_DESC scd = {};
     scd.BufferCount = 1;
-    scd.BufferDesc.Width = SCREEN_W;
-    scd.BufferDesc.Height = SCREEN_H;
+    scd.BufferDesc.Width = g_screenW;
+    scd.BufferDesc.Height = g_screenH;
     scd.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
     scd.BufferDesc.RefreshRate.Numerator = 60;
     scd.BufferDesc.RefreshRate.Denominator = 1;
@@ -372,27 +411,7 @@ bool InitD3D(HWND hwnd) {
         &scd, &g_swapChain, &g_device, &chosen, &g_context);
     if (FAILED(hr)) return false;
 
-    ID3D11Texture2D* backBuffer = nullptr;
-    g_swapChain->GetBuffer(0, __uuidof(ID3D11Texture2D), (void**)&backBuffer);
-    g_device->CreateRenderTargetView(backBuffer, nullptr, &g_rtv);
-    backBuffer->Release();
-
-    D3D11_TEXTURE2D_DESC depthDesc = {};
-    depthDesc.Width = SCREEN_W; depthDesc.Height = SCREEN_H;
-    depthDesc.MipLevels = 1; depthDesc.ArraySize = 1;
-    depthDesc.Format = DXGI_FORMAT_D24_UNORM_S8_UINT;
-    depthDesc.SampleDesc.Count = 1;
-    depthDesc.Usage = D3D11_USAGE_DEFAULT;
-    depthDesc.BindFlags = D3D11_BIND_DEPTH_STENCIL;
-    ID3D11Texture2D* depthTex = nullptr;
-    g_device->CreateTexture2D(&depthDesc, nullptr, &depthTex);
-    g_device->CreateDepthStencilView(depthTex, nullptr, &g_dsv);
-    depthTex->Release();
-
-    D3D11_VIEWPORT vp = {};
-    vp.Width = (float)SCREEN_W; vp.Height = (float)SCREEN_H;
-    vp.MinDepth = 0; vp.MaxDepth = 1;
-    g_context->RSSetViewports(1, &vp);
+    CreateSizeDependentTargets();
 
     ID3DBlob* vsBlob = nullptr, * psBlob = nullptr, * errBlob = nullptr;
     hr = D3DCompile(g_shaderSrc, strlen(g_shaderSrc), nullptr, nullptr, nullptr,

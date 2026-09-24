@@ -213,7 +213,7 @@ struct SubmenuLayout { float panelW, rowH, rowGap, topMargin, bottomMargin; int 
 
 static UIRect SubmenuPanelRect(const SubmenuLayout& L) {
     float h = L.topMargin + L.rowCount * (L.rowH + L.rowGap) - L.rowGap + L.bottomMargin;
-    float px = (SCREEN_W - L.panelW) / 2.0f, py = (SCREEN_H - h) / 2.0f;
+    float px = (g_screenW - L.panelW) / 2.0f, py = (g_screenH - h) / 2.0f;
     return { px, py, px + L.panelW, py + h };
 }
 static UIRect SubmenuRowRect(const SubmenuLayout& L, int rowIndex) {
@@ -267,8 +267,8 @@ enum GraphicsRow { GROW_RENDER_DIST = 0, GROW_RESET = 1, GROW_BACK = 2 };
 // Display: one real setting -- an FPS counter toggle. Resolution/
 // fullscreen switching would need swap-chain resize and WM_SIZE
 // handling this prototype doesn't have yet, so it isn't faked here.
-static const SubmenuLayout DISPLAY_LAYOUT  = { 340.0f, 40.0f, 12.0f, 70.0f, 20.0f, 4 };
-enum DisplayRow { DROW_SHOW_FPS = 0, DROW_SHOW_PROFILER = 1, DROW_RESET = 2, DROW_BACK = 3 };
+static const SubmenuLayout DISPLAY_LAYOUT  = { 340.0f, 40.0f, 12.0f, 70.0f, 20.0f, 5 };
+enum DisplayRow { DROW_SHOW_FPS = 0, DROW_SHOW_PROFILER = 1, DROW_FULLSCREEN = 2, DROW_RESET = 3, DROW_BACK = 4 };
 
 // Audio: Master and Music sliders, backed by a real XAudio2 voice
 // (Section 10) playing the procedural ambient track. Separate channels
@@ -391,7 +391,7 @@ static void ResetGraphicsSettings() {
     g_loadRadius = 3;
     g_lastPlayerChunkX = INT32_MIN; g_lastPlayerChunkZ = INT32_MIN; // force a rescan at the new radius
 }
-static void ResetDisplaySettings() { g_showFPS = false; g_showProfiler = false; }
+static void ResetDisplaySettings() { g_showFPS = false; g_showProfiler = false; if (g_fullscreen) { g_fullscreen = false; ApplyFullscreen(false); } }
 static void ResetAudioSettings() { g_masterVolume = 1.0f; g_musicVolume = 1.0f; ApplyAudioVolumes(); }
 static void ResetAccessibilitySettings() {
     g_fov = 45.0f;
@@ -503,6 +503,37 @@ static void BeginSliderDrag(int id, int mx) {
 // Wrap Save/Load so every call site (F5/F9-equivalent bound inputs and
 // the pause-menu buttons) gets the same on-screen confirmation instead
 // of failing or succeeding silently.
+// Borderless fullscreen: the window loses its frame and covers its
+// monitor (no exclusive mode -- alt-tab and other monitors behave
+// normally); WM_SIZE then resizes the backbuffer to match.
+static WINDOWPLACEMENT g_windowedPlacement = {};
+static bool g_isFullscreen = false;
+void ApplyFullscreen(bool on) {
+    if (on == g_isFullscreen || !g_hwnd) return;
+    if (on) {
+        g_windowedPlacement.length = sizeof(g_windowedPlacement);
+        GetWindowPlacement(g_hwnd, &g_windowedPlacement);
+        MONITORINFO mi = {};
+        mi.cbSize = sizeof(mi);
+        GetMonitorInfoW(MonitorFromWindow(g_hwnd, MONITOR_DEFAULTTONEAREST), &mi);
+        SetWindowLongW(g_hwnd, GWL_STYLE, WS_POPUP | WS_VISIBLE);
+        SetWindowPos(g_hwnd, HWND_TOP, mi.rcMonitor.left, mi.rcMonitor.top,
+                     mi.rcMonitor.right - mi.rcMonitor.left, mi.rcMonitor.bottom - mi.rcMonitor.top,
+                     SWP_FRAMECHANGED | SWP_NOOWNERZORDER);
+    } else {
+        SetWindowLongW(g_hwnd, GWL_STYLE, WS_OVERLAPPEDWINDOW | WS_VISIBLE);
+        SetWindowPlacement(g_hwnd, &g_windowedPlacement);
+        SetWindowPos(g_hwnd, nullptr, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
+    }
+    g_isFullscreen = on;
+}
+
+static void ToggleFullscreenSetting() {
+    g_fullscreen = !g_fullscreen;
+    ApplyFullscreen(g_fullscreen);
+    SaveSettings();
+}
+
 void ShowToast(const std::string& message, float seconds) {
     g_toastMessage = message;
     g_toastTimer = seconds;
@@ -513,6 +544,23 @@ static void DoSave() {
     g_toastMessage = ok ? "GAME SAVED" : "SAVE FAILED";
     g_toastTimer = 2.0f;
 }
+// Autosave (Section 7.3): every AUTOSAVE_SECONDS of actual play (paused
+// time doesn't count), plus on Quit to Title and on closing the window
+// mid-game. A delta save (7.2) is small, so this doesn't hitch.
+static const float AUTOSAVE_SECONDS = 300.0f;
+static float g_autosaveTimer = 0.0f;
+static void AutosaveNow(bool announce) {
+    if (g_gameState != GameState::InGame) return;
+    bool ok = SaveGame(g_world, g_player, g_currentSlot);
+    if (announce || !ok) ShowToast(ok ? "AUTOSAVED" : "AUTOSAVE FAILED", ok ? 1.5f : 3.0f);
+    g_autosaveTimer = 0.0f;
+}
+void TickAutosave(float dt) {
+    if (g_gameState != GameState::InGame || g_menuScreen != MenuScreen::None) return;
+    g_autosaveTimer += dt;
+    if (g_autosaveTimer >= AUTOSAVE_SECONDS) AutosaveNow(true);
+}
+
 static void DoLoad() {
     bool ok = LoadGame(g_world, g_player, g_currentSlot);
     g_toastMessage = ok ? "GAME LOADED" : "LOAD FAILED (no save?)";
@@ -533,12 +581,13 @@ static void HandleMenuClick(int mx, int my) {
         return;
     }
     if (PointInRect(mx, my, SubmenuRowRect(PAUSE_LAYOUT, PROW_QUIT_TO_TITLE))) {
+        AutosaveNow(false);
         g_gameState = GameState::Title;
         g_menuScreen = MenuScreen::TitleMain;
         StopMusicPlayback(); // already stopped (Pause is only reachable with music already stopped), but explicit/idempotent
         return;
     }
-    if (PointInRect(mx, my, SubmenuRowRect(PAUSE_LAYOUT, PROW_QUIT))) { PostQuitMessage(0); return; }
+    if (PointInRect(mx, my, SubmenuRowRect(PAUSE_LAYOUT, PROW_QUIT))) { AutosaveNow(false); PostQuitMessage(0); return; }
 }
 
 static void HandleOptionsHubClick(int mx, int my) {
@@ -567,6 +616,7 @@ static void HandleGraphicsClick(int mx, int my) {
 static void HandleDisplayClick(int mx, int my) {
     if (PointInRect(mx, my, SubmenuRowRect(DISPLAY_LAYOUT, DROW_SHOW_FPS))) { g_showFPS = !g_showFPS; SaveSettings(); return; }
     if (PointInRect(mx, my, SubmenuRowRect(DISPLAY_LAYOUT, DROW_SHOW_PROFILER))) { g_showProfiler = !g_showProfiler; SaveSettings(); return; }
+    if (PointInRect(mx, my, SubmenuRowRect(DISPLAY_LAYOUT, DROW_FULLSCREEN))) { ToggleFullscreenSetting(); return; }
     if (PointInRect(mx, my, SubmenuRowRect(DISPLAY_LAYOUT, DROW_RESET))) { ResetDisplaySettings(); SaveSettings(); return; }
     if (PointInRect(mx, my, SubmenuRowRect(DISPLAY_LAYOUT, DROW_BACK))) { g_menuScreen = MenuScreen::OptionsHub; return; }
 }
@@ -631,6 +681,7 @@ static void ResetWorldForNewGame() {
 // picker, mark a real game as running, and hand control to the player.
 static void EnterGameplay() {
     g_gameState = GameState::InGame;
+    g_autosaveTimer = 0.0f;
     g_menuScreen = MenuScreen::None;
     CaptureMouseForPlay();
     StartMusicPlayback();
@@ -764,8 +815,17 @@ static void DispatchMenuClick(int mx, int my) {
 
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
+    case WM_CLOSE:
+        AutosaveNow(false); // the window's X button mid-game
+        DestroyWindow(hwnd);
+        return 0;
     case WM_DESTROY:
         PostQuitMessage(0);
+        return 0;
+    case WM_SIZE:
+        // The backbuffer follows the client area (resizing, maximising,
+        // fullscreen); a minimised window keeps its old size.
+        if (wParam != SIZE_MINIMIZED) ResizeRenderTargets((int)LOWORD(lParam), (int)HIWORD(lParam));
         return 0;
     case WM_MOUSEMOVE:
         g_mouseX = (int)(short)LOWORD(lParam);
@@ -835,13 +895,14 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             g_rebindingAction = -1;
             return 0;
         }
-        // F3 toggles the profiler overlay (Part XVI) -- unless the player
-        // has bound F3 to an action, in which case the action wins and
-        // the overlay stays reachable from Display settings.
-        if (wParam == VK_F3 && !(lParam & (1 << 30))) {
+        // F3 toggles the profiler overlay (Part XVI), F11 fullscreen --
+        // unless the player has bound that key to an action, in which case
+        // the action wins and the toggle stays reachable from Display settings.
+        if ((wParam == VK_F3 || wParam == VK_F11) && !(lParam & (1 << 30))) {
             bool bound = false;
-            for (int a = 0; a < ACT_COUNT; a++) if (g_keyBindings[a] == VK_F3) bound = true;
-            if (!bound) { g_showProfiler = !g_showProfiler; SaveSettings(); return 0; }
+            for (int a = 0; a < ACT_COUNT; a++) if (g_keyBindings[a] == (int)wParam) bound = true;
+            if (!bound && wParam == VK_F3) { g_showProfiler = !g_showProfiler; SaveSettings(); return 0; }
+            if (!bound && wParam == VK_F11) { ToggleFullscreenSetting(); return 0; }
         }
         if (wParam >= '1' && wParam <= '9' && g_menuScreen == MenuScreen::None) {
             int idx = (int)(wParam - '1');
@@ -920,7 +981,7 @@ void RenderUIPass() {
     bool menuIsOpen = g_menuScreen != MenuScreen::None;
 
     if (g_mouseCaptured && !menuIsOpen) {
-        float cx = SCREEN_W / 2.0f, cy = SCREEN_H / 2.0f;
+        float cx = g_screenW / 2.0f, cy = g_screenH / 2.0f;
         UIDrawRect(glyphVerts, cx - 8, cy - 1, cx + 8, cy + 1, 1, 1, 1, 0.85f);
         UIDrawRect(glyphVerts, cx - 1, cy - 8, cx + 1, cy + 8, 1, 1, 1, 0.85f);
     }
@@ -931,8 +992,8 @@ void RenderUIPass() {
     const int SLOT = 48, GAP = 4;
     int hotbarN = g_placeableList.count;
     int totalW = hotbarN * SLOT + (hotbarN - 1) * GAP;
-    float hbStartX = floorf((SCREEN_W - totalW) / 2.0f); // whole pixels: icons are point-sampled
-    float hbY0 = SCREEN_H - SLOT - 16.0f;
+    float hbStartX = floorf((g_screenW - totalW) / 2.0f); // whole pixels: icons are point-sampled
+    float hbY0 = g_screenH - SLOT - 16.0f;
     std::vector<UIVertex> iconVerts;
     for (int i = 0; i < hotbarN; i++) {
         float x0 = hbStartX + i * (SLOT + GAP), x1 = x0 + SLOT;
@@ -954,14 +1015,14 @@ void RenderUIPass() {
         for (char& ch : name) ch = ch == '_' ? ' ' : (char)toupper((unsigned char)ch); // "stone_slab" -> "STONE SLAB"
         float scale = 0.8f;
         float tw = UITextWidth(name, scale);
-        UIDrawText(glyphVerts, name, (SCREEN_W - tw) / 2.0f, hbY0 - 26.0f, scale, 1, 1, 1, 0.9f);
+        UIDrawText(glyphVerts, name, (g_screenW - tw) / 2.0f, hbY0 - 26.0f, scale, 1, 1, 1, 0.9f);
     }
 
     if (!g_mouseCaptured && !menuIsOpen) {
         std::string hint = "CLICK TO PLAY";
         float scale = 1.3f;
         float tw = UITextWidth(hint, scale);
-        UIDrawText(glyphVerts, hint, (SCREEN_W - tw) / 2.0f, SCREEN_H * 0.42f, scale, 1, 1, 1, 0.9f);
+        UIDrawText(glyphVerts, hint, (g_screenW - tw) / 2.0f, g_screenH * 0.42f, scale, 1, 1, 1, 0.9f);
     }
 
     // Toggle-to-move indicator (Accessibility, Section 11): a small arrow
@@ -970,7 +1031,7 @@ void RenderUIPass() {
     // it changes only when the player presses something.
     if (g_toggleMovement && !menuIsOpen && g_gameState == GameState::InGame) {
         const float S = 26.0f, G = 3.0f, x0 = 16.0f;
-        const float yTop = SCREEN_H - 16.0f - (3.0f * S + 2.0f * G);
+        const float yTop = g_screenH - 16.0f - (3.0f * S + 2.0f * G);
         struct Cell { GameAction act; const char* glyph; float cx, cy; };
         const Cell cells[4] = {
             { ACT_FORWARD, "^", 1, 0 }, { ACT_LEFT, "<", 0, 1 },
@@ -1040,7 +1101,7 @@ void RenderUIPass() {
     // A flat, even dim behind any menu (uniform to the screen edges now
     // that UIDrawRect no longer fades its borders -- no vignette).
     if (g_menuScreen != MenuScreen::None) {
-        UIDrawRect(glyphVerts, 0, 0, (float)SCREEN_W, (float)SCREEN_H, 0, 0, 0, 0.45f);
+        UIDrawRect(glyphVerts, 0, 0, (float)g_screenW, (float)g_screenH, 0, 0, 0, 0.45f);
     }
 
     if (g_menuScreen == MenuScreen::Pause) {
@@ -1123,6 +1184,7 @@ void RenderUIPass() {
 
         drawRowButton(SubmenuRowRect(DISPLAY_LAYOUT, DROW_SHOW_FPS), g_showFPS ? "SHOW FPS COUNTER: ON" : "SHOW FPS COUNTER: OFF");
         drawRowButton(SubmenuRowRect(DISPLAY_LAYOUT, DROW_SHOW_PROFILER), g_showProfiler ? "PROFILER (F3): ON" : "PROFILER (F3): OFF");
+        drawRowButton(SubmenuRowRect(DISPLAY_LAYOUT, DROW_FULLSCREEN), g_fullscreen ? "FULLSCREEN (F11): ON" : "FULLSCREEN (F11): OFF");
         drawRowButton(SubmenuRowRect(DISPLAY_LAYOUT, DROW_RESET), "RESET TO DEFAULT");
         drawRowButton(SubmenuRowRect(DISPLAY_LAYOUT, DROW_BACK), "BACK");
     } else if (g_menuScreen == MenuScreen::Audio) {
@@ -1206,7 +1268,7 @@ void RenderUIPass() {
         float alpha = g_toastTimer < 0.5f ? g_toastTimer / 0.5f : 1.0f;
         float scale = 1.1f;
         float tw = UITextWidth(g_toastMessage, scale);
-        UIDrawText(glyphVerts, g_toastMessage, (SCREEN_W - tw) / 2.0f, 40.0f, scale, 1.0f, 0.95f, 0.55f, alpha);
+        UIDrawText(glyphVerts, g_toastMessage, (g_screenW - tw) / 2.0f, 40.0f, scale, 1.0f, 0.95f, 0.55f, alpha);
     }
 
     g_context->OMSetDepthStencilState(g_uiDepthState, 0);
@@ -1223,7 +1285,7 @@ void RenderUIPass() {
         D3D11_MAPPED_SUBRESOURCE mapped;
         g_context->Map(g_uiCBuffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
         float* f = (float*)mapped.pData;
-        f[0] = (float)SCREEN_W; f[1] = (float)SCREEN_H; f[2] = 0; f[3] = 0;
+        f[0] = (float)g_screenW; f[1] = (float)g_screenH; f[2] = 0; f[3] = 0;
         g_context->Unmap(g_uiCBuffer, 0);
     }
 

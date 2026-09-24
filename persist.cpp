@@ -37,6 +37,7 @@ int g_keyBindings[ACT_COUNT] = {
 float g_sensitivityMultX = 1.0f, g_sensitivityMultY = 1.0f;
 bool g_invertX = false, g_invertY = false;
 bool g_showFPS = false;
+bool g_fullscreen = false;
 float g_masterVolume = 1.0f;
 float g_musicVolume = 1.0f;
 float g_fov = 45.0f;
@@ -175,6 +176,7 @@ bool SaveSettings() {
     ss << "renderDistance=" << g_loadRadius << "\n";
     ss << "showFPS=" << (g_showFPS ? 1 : 0) << "\n";
     ss << "showProfiler=" << (g_showProfiler ? 1 : 0) << "\n";
+    ss << "fullscreen=" << (g_fullscreen ? 1 : 0) << "\n";
     ss << "masterVolume=" << g_masterVolume << "\n";
     ss << "musicVolume=" << g_musicVolume << "\n";
     ss << "fov=" << g_fov << "\n";
@@ -243,6 +245,7 @@ void LoadSettings() {
     g_loadRadius = getI("renderDistance", g_loadRadius);
     g_showFPS = getB("showFPS", g_showFPS);
     g_showProfiler = getB("showProfiler", g_showProfiler);
+    g_fullscreen = getB("fullscreen", g_fullscreen);
     g_masterVolume = getF("masterVolume", g_masterVolume);
     g_musicVolume = getF("musicVolume", g_musicVolume);
     g_fov = getF("fov", g_fov);

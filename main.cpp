@@ -38,8 +38,18 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
     wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
     RegisterClassW(&wc);
 
-    RECT wr = { 0, 0, SCREEN_W, SCREEN_H };
-    DWORD style = (WS_OVERLAPPEDWINDOW & ~WS_THICKFRAME & ~WS_MAXIMIZEBOX);
+    // Per-monitor DPI aware, so Windows never bitmap-stretches (blurs) the
+    // window on a scaled display. Looked up dynamically: the V2 context
+    // needs Windows 10 1703+, with the Vista-era call as the fallback.
+    {
+        typedef BOOL (WINAPI *SetCtxFn)(HANDLE);
+        HMODULE user32 = GetModuleHandleW(L"user32.dll");
+        SetCtxFn setCtx = user32 ? (SetCtxFn)(void*)GetProcAddress(user32, "SetProcessDpiAwarenessContext") : nullptr;
+        if (!setCtx || !setCtx((HANDLE)-4 /* DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 */)) SetProcessDPIAware();
+    }
+
+    RECT wr = { 0, 0, DEFAULT_WINDOW_W, DEFAULT_WINDOW_H };
+    DWORD style = WS_OVERLAPPEDWINDOW; // resizable and maximisable; the backbuffer follows (WM_SIZE)
     AdjustWindowRect(&wr, style, FALSE);
     g_hwnd = CreateWindowW(L"VoxisticsWindowClass", L"Voxistics",
                             style, CW_USEDEFAULT, CW_USEDEFAULT,
@@ -59,6 +69,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
     bool comInitialized = SUCCEEDED(comHr);
 
     if (!InitD3D(g_hwnd)) return -1;
+    if (g_fullscreen) ApplyFullscreen(true); // saved preference
     std::string textureProblems;
     if (!InitTextures(textureProblems)) return -1;
     if (!textureProblems.empty()) ShowToast(textureProblems, 8.0f);
@@ -92,6 +103,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
         if (dt > 0.25f) dt = 0.25f; // clamp huge stalls (e.g. window drag)
         accumulator += dt;
 
+        TickAutosave(dt);
         if (g_toastTimer > 0.0f) {
             g_toastTimer -= dt;
             if (g_toastTimer < 0.0f) g_toastTimer = 0.0f;
@@ -208,7 +220,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
         // is this constant's old fixed value, unchanged until the
         // slider is touched.
         float fovRadians = g_fov * (3.14159265359f / 180.0f);
-        Mat4 proj = MatPerspectiveFovLH(fovRadians, (float)SCREEN_W / SCREEN_H, 0.1f, 500.0f);
+        Mat4 proj = MatPerspectiveFovLH(fovRadians, (float)g_screenW / g_screenH, 0.1f, 500.0f);
         Mat4 viewProj = MatMul(view, proj);
 
         // Sky pass: depth off (reusing the UI pass's depth-disabled

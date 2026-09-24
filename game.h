@@ -51,5 +51,12 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
 // frame.
 void RenderUIPass();
 
+// Borderless fullscreen on the window's current monitor, or back to the
+// window as it was. Doesn't touch the saved preference.
+void ApplyFullscreen(bool on);
+
+// Autosaves every few minutes of actual play; called once per frame.
+void TickAutosave(float dt);
+
 // A transient centred message (save/load confirmations, startup problems).
 void ShowToast(const std::string& message, float seconds);

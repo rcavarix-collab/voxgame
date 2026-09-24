@@ -94,8 +94,11 @@ static inline Mat4 MatPerspectiveFovLH(float fovY, float aspect, float zn, float
 // Part II/III - World representation and block model
 // =======================================================================
 
-static const int SCREEN_W = 1280;
-static const int SCREEN_H = 720;
+// Initial window client size. The live backbuffer size is g_screenW /
+// g_screenH (render.cpp), which follows window resizes and fullscreen.
+static const int DEFAULT_WINDOW_W = 1280;
+static const int DEFAULT_WINDOW_H = 720;
+extern int g_screenW, g_screenH;
 
 static const int CHUNK_SIZE = 16;
 static const int CHUNK_CELLS = CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE;
