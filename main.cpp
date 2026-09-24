@@ -218,7 +218,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
         // that's the meaningful unit for a player-facing slider.
         float fovRadians = g_fov * (3.14159265359f / 180.0f);
         Mat4 proj = MatPerspectiveFovLH(fovRadians, (float)g_screenW / g_screenH, 0.1f, 500.0f);
-        RenderScene(g_world, view, proj, eye, f, u, g_dayTimeSeconds);
+        // The essence map covers the whole screen: skip the world (and its
+        // post effects) entirely while it's open rather than draw it unseen.
+        if (g_menuScreen == MenuScreen::Map) RenderEmptyScene();
+        else RenderScene(g_world, view, proj, eye, f, u, g_dayTimeSeconds);
 
         {
             ProfScope prof(PROF_UI);

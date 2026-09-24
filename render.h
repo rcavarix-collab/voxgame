@@ -131,6 +131,9 @@ void UpdateCBuffer(const CBData& data);
 // The whole 3D frame: shadow map (when stale), sky, world, and the post
 // pass when an effect is on. The UI pass draws over the result.
 void RenderScene(World& w, const Mat4& view, const Mat4& proj, Vec3 eye, Vec3 forward, Vec3 up, float dayTime);
+// In place of RenderScene when a full-screen screen (the essence map)
+// covers the world: just clears the backbuffer for the UI pass.
+void RenderEmptyScene();
 
 // Capped per-frame chunk mesh rebuild (Section 4.2/4-perf) -- see
 // render.cpp for the full reasoning; this is the single entry point

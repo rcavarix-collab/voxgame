@@ -8,7 +8,7 @@
 namespace {
 
 struct Col { float r, g, b, a; };
-const Col kBackground = { 0.02f, 0.03f, 0.06f, 0.97f };
+const Col kBackground = { 0.02f, 0.03f, 0.06f, 1.0f }; // fully opaque: the world isn't drawn behind the map, and a trace of it would show
 const Col kGrid = { 0.5f, 0.55f, 0.7f, 0.06f };
 const Col kZone = { 0.62f, 0.52f, 1.0f, 1.0f };
 const Col kAttractor = { 1.0f, 0.78f, 0.35f, 1.0f };

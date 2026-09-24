@@ -806,6 +806,13 @@ static void RenderBloom() {
     g_context->RSSetViewports(1, &vp);
 }
 
+void RenderEmptyScene() {
+    float black[4] = { 0, 0, 0, 1 };
+    g_context->OMSetRenderTargets(1, &g_rtv, g_dsv);
+    g_context->ClearRenderTargetView(g_rtv, black);
+    g_context->ClearDepthStencilView(g_dsv, D3D11_CLEAR_DEPTH, 1.0f, 0);
+}
+
 void RenderScene(World& w, const Mat4& view, const Mat4& proj, Vec3 eye, Vec3 forward, Vec3 up, float dayTime) {
     SkyState sky = ComputeSky(dayTime);
     bool shadows = g_shadows && g_shadowsAvailable && sky.sunLight > 0.001f;
