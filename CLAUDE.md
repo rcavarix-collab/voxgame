@@ -9,6 +9,7 @@ The owner's touchstones: Minecraft (the block world, building), Satisfactory and
 The owner keeps scope with MoSCoW (Must / Should / Could / Won't) against a stated horizon (the "How to use" sheet). Before starting work, check it: new work needs a row; new ideas enter as Could or Won't, marked "Claude (proposed)" in Decided by, until the owner decides. Only the owner sets Must. Won't = not this horizon (the dev pile), not rejected. Update Status as work lands (edit with openpyxl, keeping its formatting; LibreOffice can't recalculate in the cloud sandbox, so the workbook calculates on open).
 
 ## Standing priorities
+- **Target machine: an outdated, modest Windows PC** (the owner's own). Design every feature to run well there; never read or report the player's hardware (no GPU/CPU/spec queries) — assume the modest machine instead.
 - **Lagless efficiency.** Cost scales with what's on screen or what changed, never with world size. Budget per-tick work; rebuild only on change; measure with the F3 profiler.
 - **Fake it convincingly, cheaply.** Visual effects are per-pixel tricks driven by small per-frame constants, not extra passes or per-block data (DESIGN.md 4.8–4.12).
 - **Photosensitivity.** Nothing flashes faster than 3 times a second (musiclevel.h shows how).
