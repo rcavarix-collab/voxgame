@@ -166,8 +166,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
                     UpdatePlayerPhysics(g_world, g_player, FIXED_DT, fwd, back, left, right, jump);
                 }
                 {
-                    ProfScope prof(PROF_FALLS);
-                    ProcessFalls(g_world);
+                    ProfScope prof(PROF_UPDATES);
+                    ProcessScheduledUpdates(g_world);
                 }
 
                 accumulator -= FIXED_DT;
@@ -189,7 +189,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
         ProfSetCounter(PCOUNT_CHUNKS_RESIDENT, (int64_t)g_world.chunks.size());
         ProfSetCounter(PCOUNT_DIRTY_WAITING, (int64_t)g_world.dirtyChunks.size());
         ProfSetCounter(PCOUNT_COLUMNS_WAITING, (int64_t)g_pendingColumns.size());
-        ProfSetCounter(PCOUNT_FALLS_WAITING, (int64_t)g_fallQueue.size());
+        ProfSetCounter(PCOUNT_UPDATES_WAITING, (int64_t)ScheduledUpdateCount());
         int64_t worldStart = ProfNow();
 
         float clearColor[4] = { 0.4f, 0.6f, 0.9f, 1.0f };

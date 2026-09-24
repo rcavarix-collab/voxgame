@@ -101,7 +101,6 @@ static const int CHUNK_SIZE = 16;
 static const int CHUNK_CELLS = CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE;
 static const int Y_MIN = 0;
 static const int Y_MAX = 255;
-static const int MAX_FALLS = 64;  // capped per-tick gravity work (Section 5.1)
 
 // The block registry (IDs, names, flags, per-face textures) lives in
 // blocks.h -- one row per block type (Part III).

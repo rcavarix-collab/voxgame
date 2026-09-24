@@ -16,7 +16,7 @@ enum ProfSection {
     PROF_TERRAIN,   // column queueing + generation
     PROF_EVICT,     // column eviction
     PROF_PHYSICS,   // player movement/collision
-    PROF_FALLS,     // falling-block queue
+    PROF_UPDATES,   // scheduled block updates (gravity, ...)
     PROF_MUSIC,     // music chunk synthesis
     PROF_MESH,      // chunk mesh rebuilds + GPU uploads
     PROF_WORLD,     // sky + world draw submission (CPU side)
@@ -32,7 +32,7 @@ enum ProfCounter {
     PCOUNT_MESHES_BUILT,
     PCOUNT_DIRTY_WAITING,
     PCOUNT_COLUMNS_WAITING,
-    PCOUNT_FALLS_WAITING,
+    PCOUNT_UPDATES_WAITING,
     PCOUNT_COUNT
 };
 

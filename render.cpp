@@ -173,7 +173,7 @@ static void RebuildChunkMesh(World& w, const ChunkCoord& cc, Chunk& c) {
     c.dirty = false;
 }
 
-// Capped the same way gravity (MAX_FALLS) and column generation
+// Capped the same way block updates (MAX_UPDATES_PER_TICK) and column generation
 // (MAX_COLUMN_GENS_PER_TICK) already are: entering a large unexplored
 // area can generate several new columns in a single tick (each up to a
 // few vertical chunks tall, per GenerateColumn), all newly dirty at

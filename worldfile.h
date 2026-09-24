@@ -6,9 +6,9 @@
 // live state. Kept free of <windows.h> so it compiles and is tested
 // natively (tests/).
 //
-// v5 stores only modified chunks (Section 7.5): everything else is
-// regenerated from the world's recorded generator. v2-v4 (every block,
-// hills terrain) still load.
+// v5 stores only modified chunks (Section 7.2): everything else is
+// regenerated from the world's recorded generator; v6 adds pending
+// scheduled block updates. v2-v5 still load.
 
 #pragma once
 
@@ -19,7 +19,7 @@
 #include <memory>
 #include <unordered_map>
 
-static const uint32_t SAVE_VERSION = 5;
+static const uint32_t SAVE_VERSION = 6;
 
 using ChunkMap = std::unordered_map<ChunkCoord, std::unique_ptr<Chunk>, ChunkCoordHash>;
 
@@ -28,6 +28,7 @@ struct SaveData {
     float dayTime = 0.0f;
     WorldGenParams gen;
     ChunkMap chunks; // every chunk that differs from the generator, all flagged modified
+    std::vector<PendingUpdate> updates; // scheduled block updates still pending (v6+)
 
     uint32_t version = 0; // of the file that was read
     // v2 only: preferences that used to live in the save (Section 7.2.3).
@@ -48,6 +49,7 @@ const char* DecodeResultText(DecodeResult r);
 // Every modified chunk from both the resident world and the eviction
 // store. Unmodified chunks are skipped.
 void EncodeSave(const Player& p, float dayTime, const WorldGenParams& gen,
-                const World& w, const ChunkMap& evicted, std::vector<uint8_t>& out);
+                const World& w, const ChunkMap& evicted, const std::vector<PendingUpdate>& updates,
+                std::vector<uint8_t>& out);
 
 DecodeResult DecodeSave(const uint8_t* data, size_t size, SaveData& out);

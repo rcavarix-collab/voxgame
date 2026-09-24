@@ -101,14 +101,14 @@ const ProfReport& ProfGetReport() { return g_report; }
 
 const char* ProfSectionName(ProfSection s) {
     static const char* names[PROF_COUNT] = {
-        "TERRAIN", "EVICT", "PHYSICS", "FALLS", "MUSIC", "MESH", "WORLD DRAW", "UI", "PRESENT",
+        "TERRAIN", "EVICT", "PHYSICS", "UPDATES", "MUSIC", "MESH", "WORLD DRAW", "UI", "PRESENT",
     };
     return names[s];
 }
 
 const char* ProfCounterName(ProfCounter c) {
     static const char* names[PCOUNT_COUNT] = {
-        "CHUNKS RESIDENT", "CHUNKS DRAWN", "TRIANGLES", "MESHES BUILT", "DIRTY WAITING", "COLUMNS WAITING", "FALLS WAITING",
+        "CHUNKS RESIDENT", "CHUNKS DRAWN", "TRIANGLES", "MESHES BUILT", "DIRTY WAITING", "COLUMNS WAITING", "UPDATES WAITING",
     };
     return names[c];
 }

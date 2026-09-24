@@ -202,21 +202,49 @@ public:
 extern int g_loadRadius;
 
 // =======================================================================
-// Part V - Falling-block gravity system
+// Part V - Scheduled block updates (gravity is the first kind)
 // =======================================================================
+//
+// "Update the block at (x, y, z) in N ticks": one bounded queue for every
+// system whose blocks change over time. Only blocks that are actually
+// changing cost anything -- an idle world has an empty queue -- which is
+// Part 1.3's rule applied to simulation. At most MAX_UPDATES_PER_TICK run
+// per tick however many are due, so one catastrophic edit (removing a
+// foundation under a huge structure) is smoothed over many ticks instead
+// of spiking a frame (Section 5.1). Due updates run oldest-first.
 
-struct FallEntry { int x, y, z; };
-extern std::deque<FallEntry> g_fallQueue;
+enum UpdateKind : uint8_t {
+    UPD_GRAVITY = 0,  // fall one cell if unsupported
+    UPD_KIND_COUNT
+};
+
+struct ScheduledUpdate {
+    int x, y, z;
+    uint32_t due;     // g_worldTick at which it runs
+    uint32_t seq;     // FIFO order among updates due the same tick
+    UpdateKind kind;
+};
+
+static const int MAX_UPDATES_PER_TICK = 64;
+// Simulation ticks since the world was loaded or created (relative only;
+// saves store updates' remaining delays, not absolute ticks).
+extern uint32_t g_worldTick;
+
+void ScheduleUpdate(int x, int y, int z, UpdateKind kind, uint32_t delayTicks);
+// Runs due updates (capped), then advances g_worldTick. Once per sim tick.
+void ProcessScheduledUpdates(World& w);
 // Empties the queue and its per-column bookkeeping together (New Game,
 // Load -- entries from the old world must not replay in the new one).
-void ClearFallQueue();
+void ClearScheduledUpdates();
+size_t ScheduledUpdateCount();
+// A snapshot for saving, and the matching restore (delays relative to now).
+struct PendingUpdate { int x, y, z; UpdateKind kind; uint32_t delay; };
+std::vector<PendingUpdate> SnapshotScheduledUpdates();
+void RestoreScheduledUpdates(const std::vector<PendingUpdate>& updates);
 
-void MaybeQueueFall(World& w, int x, int y, int z);
-// Drains at most MAX_FALLS entries per call regardless of queue length,
-// so a single catastrophic edit (removing a foundation under a huge
-// structure) cannot spike frame time -- the cascade is smoothed across
-// many ticks instead (Section 5.1).
-void ProcessFalls(World& w);
+// Schedules a gravity check for the block at (x, y, z) if it's a block
+// that can fall and currently has nothing under it.
+void MaybeQueueFall(World& w, int x, int y, int z, uint32_t delayTicks = 0);
 // A live world edit that could have removed support underneath a block.
 void LiveEdit(World& w, int x, int y, int z, BlockID id, uint8_t state = 0);
 

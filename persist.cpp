@@ -258,7 +258,7 @@ void LoadSettings() {
 
 bool SaveGame(World& w, Player& p, int slot) {
     std::vector<uint8_t> buf;
-    EncodeSave(p, g_dayTimeSeconds, g_worldGen, w, g_evictedChunks, buf);
+    EncodeSave(p, g_dayTimeSeconds, g_worldGen, w, g_evictedChunks, SnapshotScheduledUpdates(), buf);
 
     // Crash-safe write sequence (Section 7.3): write to .tmp, only then
     // rotate the previous save to .bak and rename .tmp into place.
@@ -352,7 +352,8 @@ bool LoadGame(World& w, Player& p, int slot) {
     w.ClearChunks();
     g_evictedChunks = std::move(d.chunks);
     g_residentColumns.clear();
-    ClearFallQueue();
+    ClearScheduledUpdates();
+    RestoreScheduledUpdates(d.updates); // unknown kinds are dropped
     g_pendingColumns.clear();
     g_pendingColumnSet.clear();
     g_pendingEvictions.clear();

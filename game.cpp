@@ -618,7 +618,7 @@ static void ResetWorldForNewGame() {
     g_dayTimeSeconds = 0.0f; // dawn -- first light in a land they've never seen (Section 13)
     g_residentColumns.clear();
     g_evictedChunks.clear();
-    ClearFallQueue();
+    ClearScheduledUpdates();
     g_pendingColumns.clear();
     g_pendingColumnSet.clear();
     g_pendingEvictions.clear();

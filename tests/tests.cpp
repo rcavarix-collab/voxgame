@@ -28,7 +28,7 @@ static void ResetWorldState(World& w) {
     w = World();
     g_residentColumns.clear();
     g_evictedChunks.clear();
-    ClearFallQueue();
+    ClearScheduledUpdates();
     g_pendingColumns.clear(); g_pendingColumnSet.clear();
     g_pendingEvictions.clear(); g_pendingEvictionSet.clear();
     g_lastPlayerChunkX = g_lastPlayerChunkZ = INT32_MIN;
@@ -144,7 +144,8 @@ static void TestSaveRoundTrip() {
 
     Player p; p.x = 1.5f; p.y = 13; p.z = 2.5f; p.yaw = 0.7f; p.hotbarIndex = 3;
     std::vector<uint8_t> buf;
-    EncodeSave(p, 1234.5f, g_worldGen, w, g_evictedChunks, buf);
+    std::vector<PendingUpdate> pend = { { 7, 20, 7, UPD_GRAVITY, 3 }, { -1, 5, 9, UPD_GRAVITY, 0 } };
+    EncodeSave(p, 1234.5f, g_worldGen, w, g_evictedChunks, pend, buf);
     printf("    %zu generated chunks, 2 modified -> %zu bytes\n", generated, buf.size());
     CHECK(buf.size() < 3000);
 
@@ -155,6 +156,7 @@ static void TestSaveRoundTrip() {
     CHECK(d.dayTime == 1234.5f);
     CHECK(d.gen.type == GEN_FLAT && d.gen.seed == g_worldGen.seed);
     CHECK(d.chunks.size() == 2);
+    CHECK(d.updates.size() == 2 && d.updates[0].x == 7 && d.updates[0].delay == 3 && d.updates[1].y == 5);
     for (auto& kv : d.chunks) {
         Chunk* orig = w.FindChunk(kv.first);
         CHECK(orig && orig->modified && ChunksEqual(*orig, *kv.second));
@@ -370,6 +372,42 @@ static void TestShapes() {
     CHECK(q.z < 11.0f - PLAYER_HALFW + 1e-3f && fabsf(q.y - 13.0f) < 1e-3f); // stopped at the full block
 }
 
+static void TestScheduledUpdates() {
+    printf("scheduled updates (gravity)\n");
+    World w; ResetWorldState(w);
+    g_loadRadius = 1; g_worldGen = WorldGenParams(); g_worldGen.type = GEN_FLAT;
+    Stream(w, 8, 8, 20);
+    // A 5-high stone column on a wood block; remove the wood.
+    for (int y = 14; y < 19; y++) w.Set(8, y, 8, BLOCK_STONE);
+    w.Set(8, 13, 8, BLOCK_WOOD);
+    LiveEdit(w, 8, 13, 8, BLOCK_AIR);
+    CHECK(ScheduledUpdateCount() == 1);
+    int ticks = 0;
+    while (ScheduledUpdateCount() > 0 && ticks < 200) { ProcessScheduledUpdates(w); ticks++; }
+    CHECK(ScheduledUpdateCount() == 0);
+    for (int y = 13; y < 18; y++) CHECK(w.Get(8, y, 8) == BLOCK_STONE);
+    CHECK(w.Get(8, 18, 8) == BLOCK_AIR);
+    printf("    5-block column settled in %d ticks\n", ticks);
+
+    // The per-tick cap spreads a big collapse over several ticks.
+    ClearScheduledUpdates();
+    for (int x = 0; x < 16; x++) for (int z = 0; z < 16; z++) { w.Set(x, 20, z, BLOCK_DIRT); ScheduleUpdate(x, 20, z, UPD_GRAVITY, 0); }
+    ProcessScheduledUpdates(w);
+    CHECK(ScheduledUpdateCount() == 256); // 64 fell one cell and re-queued themselves; 192 still waiting their turn
+    int fell = 0; for (int x = 0; x < 16; x++) for (int z = 0; z < 16; z++) if (w.Get(x, 19, z) == BLOCK_DIRT) fell++;
+    CHECK(fell == MAX_UPDATES_PER_TICK);
+
+    // Snapshot/restore keeps remaining delays.
+    ClearScheduledUpdates();
+    ScheduleUpdate(1, 2, 3, UPD_GRAVITY, 5);
+    ProcessScheduledUpdates(w); ProcessScheduledUpdates(w);
+    std::vector<PendingUpdate> snap = SnapshotScheduledUpdates();
+    CHECK(snap.size() == 1 && snap[0].delay == 3);
+    ClearScheduledUpdates();
+    RestoreScheduledUpdates(snap);
+    CHECK(ScheduledUpdateCount() == 1);
+}
+
 static void TestIcons() {
     printf("icons\n");
     VtexSet none; BlockTextureSet t; BuildBlockTextures(none, t);
@@ -394,6 +432,7 @@ int main() {
     TestMesher();
     TestShapes();
     TestIcons();
+    TestScheduledUpdates();
     printf("\n%d checks, %d failed\n", g_checks, g_failures);
     return g_failures ? 1 : 0;
 }

@@ -167,6 +167,11 @@ Fixed-timestep logic tick, decoupled from render/present rate via an accumulator
 
 ---
 
+### 5.4 Scheduled block updates — gravity generalized
+The falling-block queue is now one case of a general **scheduled update queue** (`ScheduleUpdate(x, y, z, kind, delayTicks)`, world.cpp): a priority queue ordered by due tick then insertion order, with a handler per `UpdateKind`. Gravity (`UPD_GRAVITY`) is the first kind; machines and anything else whose blocks change over time add a kind and a handler rather than their own queue. At most `MAX_UPDATES_PER_TICK` (64) run per tick however many are due, oldest first — Section 5.1's smoothing, now shared. An idle world has an empty queue and costs nothing: simulation cost scales with what's actually changing (Part 1.3). The profiler shows the time spent and the queue length (Part XVI).
+
+A column with updates pending isn't evicted (a cascade must finish in its own column), and pending updates are **saved** with their remaining delays (save v6), so a save taken mid-collapse finishes collapsing after loading instead of leaving blocks floating. Long-delay updates — machine timers — will want to travel with their chunk (stored per chunk, resumed when the column returns) rather than pinning a column in memory; that's the planned extension when machines arrive.
+
 ## Part VI — Item Logistics (designed, not yet implemented in the prototype)
 
 ### 6.1 The load-bearing interface
@@ -209,10 +214,10 @@ Fully designed, **not yet coded**, and now provisional rather than committed: th
 ### 7.1 Why the legacy approach was unacceptable
 All four reference files persisted state via `file.write(reinterpret_cast<const char*>(&block), sizeof(Block))` — a raw struct dump. This fails three ways: (1) any struct field change silently corrupts every old save with no error; (2) no corruption detection — an interrupted write loads however far it got with no signal anything's wrong; (3) block identity is positional (enum/array order *is* the format), so adding a new block type during ongoing development reinterprets every existing save's blocks as the wrong type. A concrete bug was also found in LG2.cpp: `LoadGame` clears the quadtree and never rebuilds it, and separately, the quadtree holds pointers invalidated by `blocks.insert`/`erase` elsewhere — save/load interacting with a raw-pointer spatial index made the whole system fragile in a way that would have been very hard to diagnose from symptoms alone.
 
-### 7.2 Format actually implemented (v5)
+### 7.2 Format actually implemented (v6)
 The byte format lives in `worldfile.cpp` (pure C++, no OS calls — tested natively); `persist.cpp` does the disk side and applies a decoded save to live state.
 ```
-magic (u32 "VXLG") | version (u32, currently 5)
+magic (u32 "VXLG") | version (u32, currently 6)
 player: pos.x,y,z (f32×3)  yaw,pitch (f32×2)  hotbarSelection (i32)  dayTime (f32)
 generator: name (str)  version (u32)  seed (u64)                      (2.5)
 blockNameCount (u32) | [ nameLen(u16) nameBytes ] × count             (3.1)
@@ -221,11 +226,12 @@ chunkCount (u32) | per chunk:
     blocks: runs of (length u16, nameIndex u16) covering all 4096 cells
     state (if flag 1): runs of (length u16, value u8)
     data  (if flag 2): count (u16), then (cell u16, length u32, bytes)
+updateCount (u32) | [ x,y,z (i32×3)  kind (u8)  delay (u32, ticks from now) ] × count   (v6, 5.4)
 checksum (u32)  — FNV-1a over every byte above
 ```
 **Only modified chunks are written** (2.4); everything else regenerates from the recorded generator. Cells run in `LocalIndex` order (x fastest, then z, then y), so the horizontal layers typical of terrain and buildings collapse into a handful of runs. The effect on size is large: the old format spent 13 bytes on every non-air block (x, y, z as i32 plus an ID), so a radius-8 hills world was tens of megabytes; now an untouched world is a few hundred bytes of header, and a modest build costs a few hundred bytes to a few KB per chunk it touched (the native test's two-chunk edit encodes to 209 bytes).
 
-**Older versions still load:** v2 (preferences embedded, 7.2.2), v3 (preferences moved out), v4 (added the day clock). Their block lists are all hills v1 terrain, so they load as hills worlds with every stored chunk flagged modified; because those formats stored only non-air blocks, a hills chunk the player had dug out entirely would be absent — so each stored column's chunk rows 0–3 (hills v1 tops out at y = 60) are filled in as explicit empty chunks rather than letting regeneration refill them. Saving such a world again writes v5.
+**Older versions still load:** v2 (preferences embedded, 7.2.2), v3 (preferences moved out), v4 (added the day clock), v5 (generator + per-chunk storage, no pending updates). Their block lists are all hills v1 terrain, so they load as hills worlds with every stored chunk flagged modified; because those formats stored only non-air blocks, a hills chunk the player had dug out entirely would be absent — so each stored column's chunk rows 0–3 (hills v1 tops out at y = 60) are filled in as explicit empty chunks rather than letting regeneration refill them. Saving such a world again writes the current version.
 
 ### 7.2.1 Save location
 `Documents\My Games\Voxistics\` — the conventional PC-game save location (Skyrim and most Bethesda/Paradox titles use the same pattern), chosen over a hidden `%LOCALAPPDATA%` folder specifically because it's visible and easy for players to find, back up, or copy between machines. The directory is resolved fresh on every save/load (`SHGetKnownFolderPath(FOLDERID_Documents, ...)` plus the `My Games\Voxistics` subfolder, created if missing) rather than cached once, so a transient failure doesn't permanently strand the game on a fallback it no longer needs.

@@ -9,6 +9,8 @@
 //     blocks: runs of (u16 length, u16 nameIndex) covering all 4096 cells
 //     state (flag 1): runs of (u16 length, u8 value) covering 4096 cells
 //     data (flag 2): u16 count, then (u16 cell, u32 length, bytes) each
+//   u32 updateCount, then per update (v6+):
+//     i32 x, y, z; u8 kind; u32 delay (ticks from now)
 //   u32 FNV-1a checksum of everything before it
 //
 // Cells run in Chunk::LocalIndex order (x fastest, then z, then y), so
@@ -178,7 +180,8 @@ const char* DecodeResultText(DecodeResult r) {
 }
 
 void EncodeSave(const Player& p, float dayTime, const WorldGenParams& gen,
-                const World& world, const ChunkMap& evicted, std::vector<uint8_t>& out) {
+                const World& world, const ChunkMap& evicted, const std::vector<PendingUpdate>& updates,
+                std::vector<uint8_t>& out) {
     out.clear();
     Writer w{ out };
     w.U32(MAGIC);
@@ -197,6 +200,10 @@ void EncodeSave(const Player& p, float dayTime, const WorldGenParams& gen,
     for (const auto& kv : world.chunks) if (kv.second->modified) EncodeChunk(w, kv.first, *kv.second);
     for (const auto& kv : evicted) if (kv.second->modified) EncodeChunk(w, kv.first, *kv.second);
 
+    // Pending updates, so a save taken mid-collapse finishes collapsing.
+    w.U32((uint32_t)updates.size());
+    for (const PendingUpdate& u : updates) { w.I32(u.x); w.I32(u.y); w.I32(u.z); w.U8(u.kind); w.U32(u.delay); }
+
     w.U32(Fnv1a(out.data(), out.size()));
 }
 
@@ -210,7 +217,8 @@ DecodeResult DecodeSave(const uint8_t* data, size_t size, SaveData& out) {
     if (r.U32() != MAGIC) return DecodeResult::BadMagic;
     out.version = r.U32();
     // v2 embedded preferences, v3 moved them out, v4 added the day clock,
-    // v5 added the generator and per-chunk storage (Section 7.2).
+    // v5 added the generator and per-chunk storage, v6 pending updates
+    // (Section 7.2).
     if (out.version < 2 || out.version > SAVE_VERSION) return DecodeResult::UnsupportedVersion;
 
     Player& p = out.player;
@@ -263,6 +271,16 @@ DecodeResult DecodeSave(const uint8_t* data, size_t size, SaveData& out) {
         if (!r.ok) return DecodeResult::Truncated;
         for (uint32_t i = 0; i < chunkCount; i++)
             if (!DecodeChunk(r, remap, out.chunks)) return r.ok ? DecodeResult::Corrupt : DecodeResult::Truncated;
+        if (out.version >= 6) {
+            uint32_t n = r.U32();
+            if (!r.ok || n > (r.size - r.pos) / 17) return DecodeResult::Corrupt;
+            out.updates.resize(n);
+            for (PendingUpdate& u : out.updates) {
+                u.x = r.I32(); u.y = r.I32(); u.z = r.I32();
+                u.kind = (UpdateKind)r.U8(); u.delay = r.U32();
+            }
+            if (!r.ok) return DecodeResult::Truncated;
+        }
     } else {
         if (!DecodeLegacyBlocks(r, remap, out)) return r.ok ? DecodeResult::Corrupt : DecodeResult::Truncated;
     }

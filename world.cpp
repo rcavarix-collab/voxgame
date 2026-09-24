@@ -13,6 +13,7 @@
 #include <cfloat>
 #include <algorithm>
 #include <cstring>
+#include <queue>
 #include <windows.h> // QueryPerformanceCounter for new-world seeds
 
 Chunk::~Chunk() {
@@ -27,20 +28,101 @@ Player g_player;
 float g_dayTimeSeconds = 0.0f;
 
 // =======================================================================
-// Part V - Falling-block gravity system
+// Part V - Scheduled block updates
 // =======================================================================
 
-std::deque<FallEntry> g_fallQueue;
-// Pending falls per column, kept in step with g_fallQueue so eviction can
-// ask "is a cascade still running here?" without scanning the queue.
-static std::unordered_map<long long, int> g_fallsPerColumn;
+uint32_t g_worldTick = 0;
 
-void ClearFallQueue() {
-    g_fallQueue.clear();
-    g_fallsPerColumn.clear();
+namespace {
+struct LaterFirst {
+    bool operator()(const ScheduledUpdate& a, const ScheduledUpdate& b) const {
+        if (a.due != b.due) return (int32_t)(a.due - b.due) > 0; // wrap-safe
+        return (int32_t)(a.seq - b.seq) > 0;
+    }
+};
+std::priority_queue<ScheduledUpdate, std::vector<ScheduledUpdate>, LaterFirst> g_updates;
+uint32_t g_updateSeq = 0;
+// Pending updates per column, kept in step with the queue so eviction can
+// ask "is something still changing here?" without scanning it.
+std::unordered_map<long long, int> g_updatesPerColumn;
+
+void ForgetColumnUpdate(int x, int z) {
+    auto it = g_updatesPerColumn.find(ColumnKey(FloorDiv16(x), FloorDiv16(z)));
+    if (it != g_updatesPerColumn.end() && --it->second <= 0) g_updatesPerColumn.erase(it);
 }
 
-void MaybeQueueFall(World& w, int x, int y, int z) {
+// ---- Handlers, one per UpdateKind ----
+
+// Gravity: fall one cell if still unsupported, then re-check what was
+// resting on top and whether this block keeps falling -- both a tick
+// later, so a column of blocks comes down one cell per tick, visibly.
+void UpdateGravity(World& w, int x, int y, int z) {
+    BlockID id = w.Get(x, y, z);
+    if (id == BLOCK_AIR || g_blocks[id].foundational) return; // stale entry
+    if (y - 1 < Y_MIN) return;
+    if (w.Solid(x, y - 1, z)) return; // became supported since queued
+
+    // The state byte travels with the block. (A per-block data record
+    // wouldn't -- every block that has one is foundational today, so none
+    // can fall; a falling data block would need its record moved.)
+    w.SetRaw(x, y - 1, z, id, w.GetState(x, y, z));
+    w.SetRaw(x, y, z, BLOCK_AIR);
+
+    MaybeQueueFall(w, x, y + 1, z, 1); // whatever was resting on top
+    MaybeQueueFall(w, x, y - 1, z, 1); // keep falling if still unsupported
+}
+
+using UpdateHandler = void (*)(World&, int, int, int);
+const UpdateHandler kHandlers[UPD_KIND_COUNT] = {
+    UpdateGravity,
+};
+} // namespace
+
+void ScheduleUpdate(int x, int y, int z, UpdateKind kind, uint32_t delayTicks) {
+    g_updates.push({ x, y, z, g_worldTick + delayTicks, g_updateSeq++, kind });
+    g_updatesPerColumn[ColumnKey(FloorDiv16(x), FloorDiv16(z))]++;
+}
+
+void ProcessScheduledUpdates(World& w) {
+    int n = 0;
+    while (!g_updates.empty() && n < MAX_UPDATES_PER_TICK) {
+        ScheduledUpdate u = g_updates.top();
+        if ((int32_t)(u.due - g_worldTick) > 0) break; // nothing else is due yet
+        g_updates.pop();
+        ForgetColumnUpdate(u.x, u.z);
+        if (u.kind < UPD_KIND_COUNT) kHandlers[u.kind](w, u.x, u.y, u.z);
+        n++;
+    }
+    g_worldTick++;
+}
+
+void ClearScheduledUpdates() {
+    g_updates = decltype(g_updates)();
+    g_updatesPerColumn.clear();
+    g_worldTick = 0;
+    g_updateSeq = 0;
+}
+
+size_t ScheduledUpdateCount() { return g_updates.size(); }
+
+std::vector<PendingUpdate> SnapshotScheduledUpdates() {
+    std::vector<PendingUpdate> out;
+    auto copy = g_updates; // small in practice: only what's changing right now
+    while (!copy.empty()) {
+        const ScheduledUpdate& u = copy.top();
+        int32_t d = (int32_t)(u.due - g_worldTick);
+        out.push_back({ u.x, u.y, u.z, u.kind, (uint32_t)(d > 0 ? d : 0) });
+        copy.pop();
+    }
+    return out;
+}
+
+void RestoreScheduledUpdates(const std::vector<PendingUpdate>& updates) {
+    for (const PendingUpdate& u : updates)
+        if (u.kind < UPD_KIND_COUNT) ScheduleUpdate(u.x, u.y, u.z, u.kind, u.delay);
+}
+
+void MaybeQueueFall(World& w, int x, int y, int z, uint32_t delayTicks) {
     if (y < Y_MIN || y > Y_MAX) return;
     BlockID id = w.Get(x, y, z);
     if (id == BLOCK_AIR) return;
@@ -48,32 +130,7 @@ void MaybeQueueFall(World& w, int x, int y, int z) {
     if (!g_blocks[id].solid) return;
     if (y - 1 < Y_MIN) return;         // resting on the world floor
     if (w.Solid(x, y - 1, z)) return;  // supported
-    g_fallQueue.push_back({ x, y, z });
-    g_fallsPerColumn[ColumnKey(FloorDiv16(x), FloorDiv16(z))]++;
-}
-
-void ProcessFalls(World& w) {
-    int n = (int)std::min<size_t>(MAX_FALLS, g_fallQueue.size());
-    for (int i = 0; i < n; i++) {
-        FallEntry e = g_fallQueue.front();
-        g_fallQueue.pop_front();
-        auto fc = g_fallsPerColumn.find(ColumnKey(FloorDiv16(e.x), FloorDiv16(e.z)));
-        if (fc != g_fallsPerColumn.end() && --fc->second <= 0) g_fallsPerColumn.erase(fc);
-
-        BlockID id = w.Get(e.x, e.y, e.z);
-        if (id == BLOCK_AIR || g_blocks[id].foundational) continue; // stale entry
-        if (e.y - 1 < Y_MIN) continue;
-        if (w.Solid(e.x, e.y - 1, e.z)) continue; // became supported since queued
-
-        // The state byte travels with the block. (A per-block data record
-        // wouldn't -- every block that has one is foundational today, so
-        // none can fall; a falling data block would need its record moved.)
-        w.SetRaw(e.x, e.y - 1, e.z, id, w.GetState(e.x, e.y, e.z));
-        w.SetRaw(e.x, e.y, e.z, BLOCK_AIR);
-
-        MaybeQueueFall(w, e.x, e.y + 1, e.z); // whatever was resting on top
-        MaybeQueueFall(w, e.x, e.y - 1, e.z); // keep falling if still unsupported
-    }
+    ScheduleUpdate(x, y, z, UPD_GRAVITY, delayTicks);
 }
 
 void LiveEdit(World& w, int x, int y, int z, BlockID id, uint8_t state) {
@@ -198,12 +255,14 @@ static void EvictColumnFromWorld(World& w, int cx, int cz) {
     }
 }
 
-// Gravity only ever moves a block straight down, so a pending fall only
-// ever touches its own column. Evicting that column mid-cascade would
-// make every remaining entry read air and get discarded as stale,
-// leaving the rest of the structure floating once the column returns.
-static bool ColumnHasPendingFalls(int cx, int cz) {
-    return g_fallsPerColumn.count(ColumnKey(cx, cz)) != 0;
+// A column with updates still pending isn't evicted: gravity only ever
+// moves a block straight down within its own column, and evicting it
+// mid-cascade would make every remaining entry read air and be dropped
+// as stale, leaving the rest of the structure floating on return.
+// (Long-delay updates, e.g. machine timers, will want to travel with
+// their chunk instead -- see DESIGN.md 5.4.)
+static bool ColumnHasPendingUpdates(int cx, int cz) {
+    return g_updatesPerColumn.count(ColumnKey(cx, cz)) != 0;
 }
 
 static inline BlockID TerrainBlockAt(int wy, int surface) {
@@ -358,7 +417,7 @@ void ProcessColumnEviction(World& w) {
         // nothing refills until the next chunk crossing.
         if (ColumnDistance(col.first, col.second, g_lastPlayerChunkX, g_lastPlayerChunkZ)
                 <= g_loadRadius + 1 + CHUNK_EVICT_MARGIN) continue;
-        if (ColumnHasPendingFalls(col.first, col.second)) {
+        if (ColumnHasPendingUpdates(col.first, col.second)) {
             g_pendingEvictionSet.insert(key);
             g_pendingEvictions.push_back(col); // retry once the cascade drains
             continue;
