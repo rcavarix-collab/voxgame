@@ -634,10 +634,10 @@ static std::string PerfReportHeader() {
 #endif
     snprintf(b, sizeof b,
              "Voxistics performance report\n"
-             "build: %s\nGPU: %s\nresolution: %d x %d%s\n"
+             "build: %s\nwindow: %d x %d%s\n"
              "render distance: %d  shadows: %s  bloom: %s  SSAO: %s  edges: %s  music intensity: %.0f%%\n"
              "day time: %s  position: %.0f, %.0f, %.0f\n\n",
-             build, GpuName().c_str(), g_screenW, g_screenH, g_fullscreen ? " (fullscreen)" : "",
+             build, g_screenW, g_screenH, g_fullscreen ? " (fullscreen)" : "",
              g_loadRadius, g_shadows ? "on" : "off", g_bloom ? "on" : "off", g_postSSAO ? "on" : "off", g_postEdges ? "on" : "off",
              g_musicIntensity * 100.0f, DayTimeLabel(g_dayTimeSeconds).c_str(), g_player.x, g_player.y, g_player.z);
     return b;

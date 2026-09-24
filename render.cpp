@@ -1150,22 +1150,6 @@ static ID3DBlob* CompileShader(const char* src, const char* entry, const char* p
 }
 
 bool ShadowsAvailable() { return g_shadowsAvailable; }
-std::string GpuName() {
-    if (!g_device) return "";
-    IDXGIDevice* dxgi = nullptr;
-    std::string name;
-    if (SUCCEEDED(g_device->QueryInterface(__uuidof(IDXGIDevice), (void**)&dxgi))) {
-        IDXGIAdapter* adapter = nullptr;
-        if (SUCCEEDED(dxgi->GetAdapter(&adapter))) {
-            DXGI_ADAPTER_DESC d;
-            if (SUCCEEDED(adapter->GetDesc(&d)))
-                for (const wchar_t* p = d.Description; *p; p++) name += *p < 128 ? (char)*p : '?';
-            adapter->Release();
-        }
-        dxgi->Release();
-    }
-    return name;
-}
 bool PostEffectsAvailable() { return g_postAvailable; }
 bool BloomAvailable() { return g_bloomAvailable; }
 const std::string& ShaderErrors() { return g_shaderErrors; }
