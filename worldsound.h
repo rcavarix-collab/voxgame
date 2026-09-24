@@ -15,7 +15,7 @@ void WorldSoundReset();                 // a new game or a load: a fresh session
 void WorldSoundTick(float dt);          // after each physics tick
 void WorldSoundFrame(float dt, bool playing); // once per frame: census, axes, the palette's queue
 
-void WorldSoundPlace(BlockID id);       // a block was placed (Set; Unveil the first time this session)
+void WorldSoundPlace(BlockID id);       // a block was placed (Set)
 void WorldSoundBreak(BlockID id);       // a block was taken
 void WorldSoundCue(SoundId id, int slot = 0, float strength = 1.0f);
 

@@ -231,7 +231,7 @@ Immediate (≤ ~25 ms), tier 1, and always harmonically current. **Material tint
 ### 5.3 Discovery — "something new"
 Tier 2: quantised to the next beat (next half-bar when calm), never more than one per 2 bars.
 
-**D1 · Unveil (first time a block type is placed this session)**
+**D1 · Unveil** — *not triggered: the owner dropped the first-placement cue. The recipe stays in the palette for a future discovery that earns it.*
 - Synthesis: three BELL(1, 2, 3; partial gains 1, 0.3, 0.12; partial τ ×0.5) notes, ladder root → 5th → 9th (e.g. D5 A5 E6 under Dm9), 8th notes, each 6/exp τ 600 ms; echo send 0.5. Level −25.
 - Axes default: P +0.4 · A 0.4 · M 0.3.
 - Axis response: P > 0.5 adds the octave on top as a 4th note; P < 0 plays root → 4th → root (a question, not an answer). A → 16ths instead of 8ths at A > 0.6. M adds the bar-mode partials (a clean glass/metal chime) and drops jitter.

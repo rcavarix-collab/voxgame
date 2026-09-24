@@ -9,7 +9,6 @@
 #include <cmath>
 
 static Soundscape g_soundscape;
-static bool g_placedThisSession[BLOCK_COUNT] = {};
 
 // Movement state from the previous tick.
 static bool g_wasOnGround = true, g_wasSliding = false, g_wasSprinting = false;
@@ -30,7 +29,6 @@ static SoundMaterial MaterialUnderFeet() {
 
 void WorldSoundReset() {
     g_soundscape.Reset();
-    for (bool& b : g_placedThisSession) b = false;
     g_wasOnGround = true; g_wasSliding = g_wasSprinting = false;
     g_prevVelY = 0; g_haveLast = false; g_stride = 0; g_speed = 0;
     g_lineNear = false; g_lineCooldown = 0;
@@ -112,10 +110,6 @@ void WorldSoundPlace(BlockID id) {
     PlayWorldSound(c);
     // The placeholder machine stands in for a machine starting up (5.6 P4).
     if (id == BLOCK_MACHINE) { SoundCue o; o.id = SND_ONLINE; PlayWorldSound(o); }
-    if (id < BLOCK_COUNT && !g_placedThisSession[id]) {
-        g_placedThisSession[id] = true;
-        SoundCue u; u.id = SND_UNVEIL; PlayWorldSound(u);
-    }
 }
 
 void WorldSoundBreak(BlockID id) {
