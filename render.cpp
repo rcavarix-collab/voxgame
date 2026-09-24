@@ -48,6 +48,8 @@ ID3D11PixelShader* g_ps = nullptr;
 ID3D11InputLayout* g_layout = nullptr;
 ID3D11Buffer* g_cbuffer = nullptr;
 ID3D11SamplerState* g_sampler = nullptr;
+// Trilinear, wrapping: the blurred read behind the colour bleed (4.16).
+static ID3D11SamplerState* g_softSampler = nullptr;
 ID3D11RasterizerState* g_rasterState = nullptr;
 ID3D11DepthStencilState* g_depthState = nullptr;
 ID3D11Buffer* g_chunkCBuffer = nullptr;
@@ -231,6 +233,20 @@ static const char* g_shaderSrc =
     "Texture3D glowTex : register(t2);\n"
     "SamplerState glowSamp : register(s2);\n"
     "Texture2DArray surfTex : register(t3);\n"                      // normal xy, shine, glow (4.13)
+    "SamplerState softSamp : register(s3);\n"                      // trilinear: the colour bleed (4.16)
+    // Large-scale variation (4.16): a slow drift of value and warmth across
+    // the world, from the pixel's world position -- a few ALU ops, no data.
+    "float VHash(float2 p) { p = frac(p * float2(0.1031f, 0.1030f)); p += dot(p, p.yx + 33.33f); return frac((p.x + p.y) * p.x); }\n"
+    "float VNoise(float2 x) {\n"
+    "    float2 c = floor(x), f = frac(x); f = f * f * (3.0f - 2.0f * f);\n"
+    "    return lerp(lerp(VHash(c), VHash(c + float2(1, 0)), f.x), lerp(VHash(c + float2(0, 1)), VHash(c + float2(1, 1)), f.x), f.y);\n"
+    "}\n"
+    "float3 WorldVariation(float3 w) {\n"
+    "    float2 q = w.xz + w.y * float2(0.37f, 0.21f);\n"              // walls vary with height too
+    "    float val = 1.0f + 0.18f * (VNoise(q / 24.0f) - 0.5f) + 0.08f * (VNoise(q / 9.0f + 17.3f) - 0.5f);\n"
+    "    float warm = 0.10f * (VNoise(q / 31.0f + 5.1f) - 0.5f);\n"
+    "    return float3(val * (1.0f + warm), val, val * (1.0f - warm));\n"
+    "}\n"
     "#ifndef NO_SHADOWS\n"
     "Texture2D<float> shadowMap : register(t1);\n"
     "SamplerComparisonState shadowSamp : register(s1);\n"
@@ -240,6 +256,11 @@ static const char* g_shaderSrc =
     "    if (i.aoBias.y < 0.0f) clip(texel.a - 0.5f);\n"               // plant card: see-through pixels are cut out
     "    float4 surf = surfTex.Sample(samp0, i.uvl);\n"
     "    float3 albedo = texel.rgb;\n"
+    // Soft detail (4.16): a third of a blurrier read of the same texture
+    // (two mips down, trilinear) bleeds colour between neighbouring texels
+    // -- crisp pixels, softened by their surroundings -- then the slow
+    // world-scale drift breaks up the repetition of a tiled material.
+    "    albedo = lerp(albedo, tex0.SampleBias(softSamp, i.uvl, 2.0f).rgb, 0.35f) * WorldVariation(i.wpos);\n"
     "    float3 nGeo = i.glowInfo.yzw;\n"                              // the face itself
     // A slanted facet (ramps, pyramids, the faceted props of 4.15) is lit by
     // its true, flat normal: the cross product of the position's screen
@@ -1033,8 +1054,8 @@ void RenderScene(World& w, const Mat4& view, const Mat4& proj, Vec3 eye, Vec3 fo
         ID3D11Buffer* cbs[2] = { g_cbuffer, g_chunkCBuffer };
         g_context->VSSetConstantBuffers(0, 2, cbs);
         g_context->PSSetConstantBuffers(0, 1, &g_cbuffer);
-        ID3D11SamplerState* samplers[3] = { g_sampler, g_shadowSampler, g_glowSampler };
-        g_context->PSSetSamplers(0, 3, samplers);
+        ID3D11SamplerState* samplers[4] = { g_sampler, g_shadowSampler, g_glowSampler, g_softSampler };
+        g_context->PSSetSamplers(0, 4, samplers);
         ID3D11ShaderResourceView* srvs[4] = { g_blockTexSRV, shadows ? g_shadowSRV : nullptr, g_glowSRV, g_surfaceSRV };
         g_context->PSSetShaderResources(0, 4, srvs);
         Frustum frustum = ExtractFrustum(viewProj);
@@ -1317,6 +1338,8 @@ bool InitD3D(HWND hwnd) {
     sampDesc.MaxLOD = D3D11_FLOAT32_MAX;
     sampDesc.ComparisonFunc = D3D11_COMPARISON_NEVER;
     g_device->CreateSamplerState(&sampDesc, &g_sampler);
+    sampDesc.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+    g_device->CreateSamplerState(&sampDesc, &g_softSampler);
 
     D3D11_RASTERIZER_DESC rastDesc = {};
     rastDesc.FillMode = D3D11_FILL_SOLID;

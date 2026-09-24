@@ -226,6 +226,11 @@ Set-dressing that breaks up the cube grid cheaply: small faceted shapes baked in
 - **Landmarks.** Two deliberately distinctive shapes, meant for sparing placement rather than scatter: the **canopy cap** (a stalk under a broad faceted cap whose underside shows — the glowcap, a moss canopy) and the **coil stalk** (a stem curling over like a fern's head — fern and sprout coils).
 - **In the library now, not in world generation yet.** The first set (44 blocks, with the landmarks) pairs the shapes with existing materials: moss, meadow, earth, peat, genesis and salt clumps; coral, flesh and membrane bulbs; snow, pebble and coastal boulders; stone, basalt, magma, sandstone, mossy, ore and ice shards; a water ripple, a pebble and a leaf breaker; log and wood beams, wood and stone corbels, a shutter, an awning, stone and clay chimney caps; tube and lattice pipes, a machine gear, a foundation vent, an ore hopper, wood and lattice struts. Scattering them through terrain generation comes later.
 
+### 4.16 Soft detail: colour bleed and large-scale variation
+Chosen by the owner from a four-way comparison (crisp / bleed / variation / both): **both**. Two per-pixel tricks in the world shader, no new data:
+- **Colour bleed.** A third of each texel's colour comes from a second, trilinear read of the same texture two mips down (`SampleBias(+2)`), so crisp pixels are softened by their neighbours the way real colours bleed, and flat-coloured materials pick up a hint of what's around them. One extra texture read.
+- **Large-scale variation.** A slow drift of value (±9 % over ~24 blocks, ±4 % over ~9) and warmth (±5 % over ~31) across the world, from the pixel's world position through a small hashed value noise (a few ALU ops; walls vary with height too). It breaks up the repetition of any tiled material over distance — a meadow reads as ground, not wallpaper.
+
 ## Part V — Simulation: the falling-block system as the reusable pattern
 
 ### 5.1 Why gravity is designed this way
