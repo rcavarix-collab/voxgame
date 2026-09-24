@@ -23,6 +23,7 @@
 #include "persist.h"
 #include "game.h"
 #include "profiler.h"
+#include "theline.h"
 
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
     // Wide (W-suffixed) throughout, deliberately -- mixing an ANSI-
@@ -181,6 +182,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
                     ProfScope prof(PROF_UPDATES);
                     ProcessScheduledUpdates(g_world);
                 }
+                UpdateLine(g_line, g_lineTuning, g_player.x, g_player.y, g_player.z, FIXED_DT);
 
                 accumulator -= FIXED_DT;
             }

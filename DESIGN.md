@@ -224,10 +224,10 @@ Fully designed, **not yet coded**, and now provisional rather than committed: th
 ### 7.1 Why the legacy approach was unacceptable
 All four reference files persisted state via `file.write(reinterpret_cast<const char*>(&block), sizeof(Block))` — a raw struct dump. This fails three ways: (1) any struct field change silently corrupts every old save with no error; (2) no corruption detection — an interrupted write loads however far it got with no signal anything's wrong; (3) block identity is positional (enum/array order *is* the format), so adding a new block type during ongoing development reinterprets every existing save's blocks as the wrong type. A concrete bug was also found in LG2.cpp: `LoadGame` clears the quadtree and never rebuilds it, and separately, the quadtree holds pointers invalidated by `blocks.insert`/`erase` elsewhere — save/load interacting with a raw-pointer spatial index made the whole system fragile in a way that would have been very hard to diagnose from symptoms alone.
 
-### 7.2 Format actually implemented (v6)
+### 7.2 Format actually implemented (v7)
 The byte format lives in `worldfile.cpp` (pure C++, no OS calls — tested natively); `persist.cpp` does the disk side and applies a decoded save to live state.
 ```
-magic (u32 "VXLG") | version (u32, currently 6)
+magic (u32 "VXLG") | version (u32, currently 7)
 player: pos.x,y,z (f32×3)  yaw,pitch (f32×2)  hotbarSelection (i32)  dayTime (f32)
 generator: name (str)  version (u32)  seed (u64)                      (2.5)
 blockNameCount (u32) | [ nameLen(u16) nameBytes ] × count             (3.1)
@@ -237,11 +237,12 @@ chunkCount (u32) | per chunk:
     state (if flag 1): runs of (length u16, value u8)
     data  (if flag 2): count (u16), then (cell u16, length u32, bytes)
 updateCount (u32) | [ x,y,z (i32×3)  kind (u8)  delay (u32, ticks from now) ] × count   (v6, 5.4)
+lineCells (u32) | [ cell (i64)  seconds (f32) ] × count; angMom (f64); angle (f32)   (v7, Part XVIII)
 checksum (u32)  — FNV-1a over every byte above
 ```
 **Only modified chunks are written** (2.4); everything else regenerates from the recorded generator. Cells run in `LocalIndex` order (x fastest, then z, then y), so the horizontal layers typical of terrain and buildings collapse into a handful of runs. The effect on size is large: the old format spent 13 bytes on every non-air block (x, y, z as i32 plus an ID), so a radius-8 hills world was tens of megabytes; now an untouched world is a few hundred bytes of header, and a modest build costs a few hundred bytes to a few KB per chunk it touched (the native test's two-chunk edit encodes to 209 bytes).
 
-**Older versions still load:** v2 (preferences embedded, 7.2.2), v3 (preferences moved out), v4 (added the day clock), v5 (generator + per-chunk storage, no pending updates). Their block lists are all hills v1 terrain, so they load as hills worlds with every stored chunk flagged modified; because those formats stored only non-air blocks, a hills chunk the player had dug out entirely would be absent — so each stored column's chunk rows 0–3 (hills v1 tops out at y = 60) are filled in as explicit empty chunks rather than letting regeneration refill them. Saving such a world again writes the current version.
+**Older versions still load:** v2 (preferences embedded, 7.2.2), v3 (preferences moved out), v4 (added the day clock), v5 (generator + per-chunk storage, no pending updates), v6 (no Line state). Their block lists are all hills v1 terrain, so they load as hills worlds with every stored chunk flagged modified; because those formats stored only non-air blocks, a hills chunk the player had dug out entirely would be absent — so each stored column's chunk rows 0–3 (hills v1 tops out at y = 60) are filled in as explicit empty chunks rather than letting regeneration refill them. Saving such a world again writes the current version.
 
 ### 7.2.1 Save location
 `Documents\My Games\Voxistics\` — the conventional PC-game save location (Skyrim and most Bethesda/Paradox titles use the same pattern), chosen over a hidden `%LOCALAPPDATA%` folder specifically because it's visible and easy for players to find, back up, or copy between machines. The directory is resolved fresh on every save/load (`SHGetKnownFolderPath(FOLDERID_Documents, ...)` plus the `My Games\Voxistics` subfolder, created if missing) rather than cached once, so a transient failure doesn't permanently strand the game on a fallback it no longer needs.
@@ -389,7 +390,7 @@ One authoritative value, `g_dayTimeSeconds` (0 to `DAY_LENGTH_SECONDS = 3600`, o
 
 This is deliberately the *only* clock anything in this system reads. Part XIV's music is built entirely around not needing a second one — see 14.4.
 
-**The sky and world light follow it** (`ComputeSky`, sky.h — pure functions of the clock, tested natively): the sun rises in the east as the music's Dawn begins (0:00), peaks tilted toward the south, and sets in the west at 50:00 inside Dusk, leaving ten minutes of real night. The moon trails it by ~140°, up through dusk and night into the early morning. The sky shader blends day and night gradients, warms the sky around a low sun, and draws the sun's disc and glow; the world's brightness runs from 30 % at night (still playable) to full in the day, and the direct-sun amount drives the shadows (4.8). A star field whose turning is also driven by the clock is the foundation for The Line (Part XVIII).
+**The sky and world light follow it** (`ComputeSky`, sky.h — pure functions of the clock, tested natively): the sun rises in the east as the music's Dawn begins (0:00), peaks tilted toward the south, and sets in the west at 50:00 inside Dusk, leaving ten minutes of real night. The moon trails it by ~140°, up through dusk and night into the early morning. The sky shader blends day and night gradients, warms the sky around a low sun, and draws the sun's disc and glow; the world's brightness runs from 30 % at night (still playable) to full in the day, and the direct-sun amount drives the shadows (4.8). The star field turns about the celestial pole with the clock (normal east-to-west streaming), and The Line (Part XVIII) composites its own precession on top.
 
 ---
 
@@ -445,17 +446,17 @@ Generation runs on the main thread, so it is budgeted like everything else: medi
 
 ## Part XV — Build
 
-Fifteen source files (`main.cpp world.cpp render.cpp audio.cpp persist.cpp game.cpp textures.cpp music_synth.cpp profiler.cpp worldfile.cpp vtex.cpp blocktex.cpp mesher.cpp shapes.cpp icons.cpp`), one compiler invocation, no project file strictly needed (the checked-in `.vcxproj`/`.vcxproj.filters` list them all for Visual Studio):
+Sixteen source files (`main.cpp world.cpp render.cpp audio.cpp persist.cpp game.cpp textures.cpp music_synth.cpp profiler.cpp worldfile.cpp vtex.cpp blocktex.cpp mesher.cpp shapes.cpp icons.cpp theline.cpp`), one compiler invocation, no project file strictly needed (the checked-in `.vcxproj`/`.vcxproj.filters` list them all for Visual Studio):
 
 ```
-cl main.cpp world.cpp render.cpp audio.cpp persist.cpp game.cpp textures.cpp music_synth.cpp profiler.cpp worldfile.cpp vtex.cpp blocktex.cpp mesher.cpp shapes.cpp icons.cpp /link d3d11.lib dxgi.lib d3dcompiler.lib gdiplus.lib gdi32.lib user32.lib shell32.lib ole32.lib uuid.lib xaudio2.lib /SUBSYSTEM:WINDOWS
+cl main.cpp world.cpp render.cpp audio.cpp persist.cpp game.cpp textures.cpp music_synth.cpp profiler.cpp worldfile.cpp vtex.cpp blocktex.cpp mesher.cpp shapes.cpp icons.cpp theline.cpp /link d3d11.lib dxgi.lib d3dcompiler.lib gdiplus.lib gdi32.lib user32.lib shell32.lib ole32.lib uuid.lib xaudio2.lib /SUBSYSTEM:WINDOWS
 ```
 
 or with MinGW-w64 (used during development to compile-check this prototype on a non-Windows host, since it ships full D3D11/DXGI/D3DCompiler/GDI+/XAudio2 headers and import libraries):
 
 ```
 x86_64-w64-mingw32-g++ -std=c++17 -O2 -mwindows -municode -DUNICODE -D_UNICODE \
-  main.cpp world.cpp render.cpp audio.cpp persist.cpp game.cpp textures.cpp music_synth.cpp profiler.cpp worldfile.cpp vtex.cpp blocktex.cpp mesher.cpp shapes.cpp icons.cpp -o voxistics.exe \
+  main.cpp world.cpp render.cpp audio.cpp persist.cpp game.cpp textures.cpp music_synth.cpp profiler.cpp worldfile.cpp vtex.cpp blocktex.cpp mesher.cpp shapes.cpp icons.cpp theline.cpp -o voxistics.exe \
   -ld3d11 -ldxgi -ld3dcompiler -lgdiplus -lgdi32 -luser32 -lole32 -lshell32 -luuid -lxaudio2_8 -static-libgcc -static-libstdc++
 ```
 
@@ -463,7 +464,7 @@ Each `.cpp` above owns one subsystem and includes only the headers it needs (`co
 
 (`-lxaudio2_8` is MinGW's import-lib name for the same XAudio2 2.8 API that the Windows SDK's `xaudio2.lib` provides — a MinGW-only naming difference, same idea as `-municode` above it.)
 
-Default controls (all fully remappable to any keyboard key or the left/right/middle mouse button via Pause → Keybindings — click a row, then press the new input; Esc cancels a rebind in progress, except on the Pause Menu row, where Esc binds Escape): WASD to move, mouse to look (click once to capture the cursor), Space to jump, left-click to break the targeted block, right-click to place the selected hotbar block, number keys 1–9 or the mouse wheel to select a hotbar block (fixed, not remappable in this pass), F3 for the profiler overlay, F11 for fullscreen, F5 to save, F9 to load, Esc to open/close the Pause menu or back out one level from any of its submenus (Look Settings, Graphics, Display, Audio, Keybindings, each with its own Reset to Default), all clickable with the freed cursor.
+Default controls (all fully remappable to any keyboard key or the left/right/middle mouse button via Pause → Keybindings — click a row, then press the new input; Esc cancels a rebind in progress, except on the Pause Menu row, where Esc binds Escape): WASD to move, mouse to look (click once to capture the cursor), Space to jump, left-click to break the targeted block, right-click to place the selected hotbar block, number keys 1–9 or the mouse wheel to select a hotbar block (fixed, not remappable in this pass), F3 for the profiler overlay, F7 for The Line's debug marker, F11 for fullscreen, F5 to save, F9 to load, Esc to open/close the Pause menu or back out one level from any of its submenus (Look Settings, Graphics, Display, Audio, Keybindings, each with its own Reset to Default), all clickable with the freed cursor.
 
 ## Part XVI — Frame Profiler
 
@@ -474,3 +475,19 @@ Collection is always on (a few dozen timer reads per frame); the overlay is togg
 ## Part XVII — Tests
 
 `tests/run.sh` builds and runs `tests/tests.cpp` with the host compiler — no Windows needed — against the platform-free modules (`world.cpp`, `worldfile.cpp`, `vtex.cpp`, `blocktex.cpp`, `mesher.cpp`, `shapes.cpp`, `icons.cpp`), with `tests/stub/` standing in for the two Windows/D3D headers they touch. It covers the `.vtex` parser (valid input and each class of error), texture assembly (placeholders, authored overrides and upscaling, orientation, warnings), the v5 save round trip (including state, data, corruption detection), legacy v4 loading (name remapping, dug-out chunks), streaming (one-ring-past-view residency, eviction keeping only modified chunks, bit-exact regeneration on return), player spawn and unstick, the mesher (culling, AO, cross-chunk faces, orientation, the 16-bit worst case), shapes (orientation, boundary culling, collision, stepping onto a slab but not a full block) and the rendered icons. Every change to those modules should keep it at zero failures, and new systems should add their checks here — the harnesses that used to be written and thrown away during development now live in the repo instead.
+
+## Part XVIII — The Line
+
+A thin, one-dimensional distortion in local time, personal to the player (`theline.h/.cpp`, pure C++, tested natively). It is not a mapped place and not a drawn effect: its intended expression is only in how things that already move behave. A debug marker exists for testing and is meant to be hidden once the sky expression is validated on its own.
+
+**The pivot** is the player's dwell-weighted centre of gravity. Time spent is accumulated per 32-block cell, and the centroid weights each cell by that time *squared*, so a place passed through for seconds barely registers while a place lived in for hours dominates (updated in O(1) per tick: adding dt to a cell adds 2·T·dt + dt² to its weight). Pivot sources are a list — today only the player's own dwelling — and whichever dominates supplies both pivot and spin; player-built structures are meant to become further sources through the same mechanism (not built yet, not architected out).
+
+**Spin** is the sign of the player's net angular momentum about the pivot, viewed top-down (+X right, +Z up; counterclockwise positive): Σ (r × v) over actual movement, with a slow memory (3-hour half-life of play) so it follows current habits. Teleport-sized jumps (loads) don't count as movement.
+
+**The line** runs horizontally through the pivot at about the player's waist height (following the player's height over ~5 s) and sweeps around the pivot in the spin's direction, one turn per in-game day. It is evaluated only within loaded space and never constrains building — it has no blocks, no collision, no geometry.
+
+**Intensity** falls off exponentially in whole orders of magnitude of the player's horizontal distance to the line: I = 10^−steps(d / L), where `steps` is a smooth staircase (flat treads, short risers — legible decades rather than a continuous slope). L, the blocks per decade, is asymmetric with motion: stretched to 12 when moving with the line's sweep (strong effect with little distance closed), shrunk to 3 against it, 6 standing still. All of these are open parameters in `LineTuning`, meant to be prototyped and tuned, not a finished curve.
+
+**Sky expression.** The star field (procedural, in the sky shader) keeps its normal east-to-west streaming — turning about the celestial pole, which lies perpendicular to the sun's path — and The Line composites a small **precession** on top: a tilt of up to ~6° about a horizontal axis that starts along the line and circles at a rate rising with intensity, in the spin's direction. The stars still do their normal thing, but subtly wrong, and more so the closer the player is to the line. The **moon** gets a ghost image from the same precession at a quarter of the amplitude, drawn at under a quarter of the moon's brightness — a soft double exposure, always subtler than the star effect. Nothing here needs UI; wind, when a wind system exists, is meant to take the same intensity value.
+
+**Persistence:** the pivot history (a float per cell visited), the spin accumulator and the line's angle are saved (v7); everything else is re-derived each tick. **Debug:** F7 toggles the marker (the line across the loaded area — cyan for counterclockwise, orange for clockwise — with strokes showing which way it's sweeping and a white pole at the pivot) and a top-right readout of distance, blocks per decade, intensity, spin, alignment and pivot.

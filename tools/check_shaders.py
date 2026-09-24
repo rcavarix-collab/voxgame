@@ -10,8 +10,9 @@ def extract(path):
     src = open(path, encoding='utf-8').read()
     for m in re.finditer(r'static const char\*\s+(g_\w*[Ss]hader\w*)\s*=(.*?);\s*\n', src, re.S):
         name, body = m.group(1), m.group(2)
-        # Drop // comments between literals, then join the literals.
-        pieces = re.findall(r'"((?:[^"\\]|\\.)*)"', re.sub(r'//[^\n]*', '', body))
+        # Walk literals and C++ comments together, so a // inside an HLSL
+        # string isn't mistaken for a C++ comment (and vice versa).
+        pieces = [m.group(1) for m in re.finditer(r'"((?:[^"\\]|\\.)*)"|//[^\n]*', body) if m.group(1) is not None]
         text = ''.join(pieces).encode().decode('unicode_escape')
         yield name, text
 
@@ -22,6 +23,9 @@ def main():
         for name, text in extract(f):
             with tempfile.NamedTemporaryFile('w', suffix='.hlsl', delete=False) as t:
                 t.write(text)
+            if 'VSMain' not in text and 'PSMain' not in text:
+                print(f"FAIL {name}: no VSMain/PSMain found (extraction problem?)")
+                failed += 1
             for entry, stage in (('VSMain', 'vert'), ('PSMain', 'frag')):
                 if entry not in text:
                     continue

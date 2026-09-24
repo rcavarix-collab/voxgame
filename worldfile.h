@@ -8,18 +8,19 @@
 //
 // v5 stores only modified chunks (Section 7.2): everything else is
 // regenerated from the world's recorded generator; v6 adds pending
-// scheduled block updates. v2-v5 still load.
+// scheduled block updates, v7 The Line's state. v2-v6 still load.
 
 #pragma once
 
 #include "world.h"
+#include "theline.h"
 #include <cstdint>
 #include <string>
 #include <vector>
 #include <memory>
 #include <unordered_map>
 
-static const uint32_t SAVE_VERSION = 6;
+static const uint32_t SAVE_VERSION = 7;
 
 using ChunkMap = std::unordered_map<ChunkCoord, std::unique_ptr<Chunk>, ChunkCoordHash>;
 
@@ -29,6 +30,7 @@ struct SaveData {
     WorldGenParams gen;
     ChunkMap chunks; // every chunk that differs from the generator, all flagged modified
     std::vector<PendingUpdate> updates; // scheduled block updates still pending (v6+)
+    LineSaveData line;                  // The Line's pivot history, spin and angle (v7+)
 
     uint32_t version = 0; // of the file that was read
     // v2 only: preferences that used to live in the save (Section 7.2.3).
@@ -50,6 +52,6 @@ const char* DecodeResultText(DecodeResult r);
 // store. Unmodified chunks are skipped.
 void EncodeSave(const Player& p, float dayTime, const WorldGenParams& gen,
                 const World& w, const ChunkMap& evicted, const std::vector<PendingUpdate>& updates,
-                std::vector<uint8_t>& out);
+                const LineSaveData& line, std::vector<uint8_t>& out);
 
 DecodeResult DecodeSave(const uint8_t* data, size_t size, SaveData& out);

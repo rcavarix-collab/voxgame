@@ -7,6 +7,7 @@
 #include "blocktex.h"
 #include "icons.h"
 #include "sky.h"
+#include "theline.h"
 #include "persist.h"
 #include "vtex.h"
 #include <filesystem>
@@ -68,6 +69,14 @@ static ID3D11PixelShader* g_postPS = nullptr;
 static ID3D11Buffer* g_postCB = nullptr;
 static ID3D11SamplerState* g_pointClampSampler = nullptr;
 static bool g_postAvailable = false;
+// Debug lines.
+struct DebugVertex { float x, y, z, r, g, b, a; };
+static const UINT DEBUG_VB_CAPACITY = 128;
+static ID3D11VertexShader* g_debugVS = nullptr;
+static ID3D11PixelShader* g_debugPS = nullptr;
+static ID3D11InputLayout* g_debugLayout = nullptr;
+static ID3D11Buffer* g_debugVB = nullptr;
+static ID3D11Buffer* g_debugCB = nullptr;
 // Bumped on every chunk mesh rebuild: the shadow map re-renders when the
 // geometry it was drawn from has changed.
 static uint32_t g_meshVersion = 0;
@@ -164,6 +173,15 @@ static const char* g_shadowShaderSrc =
     "    return mul(float4(p, 1.0f), lightViewProj);\n"
     "}\n";
 
+// Debug lines (The Line's test marker, Part XVIII): coloured line list,
+// depth tested. A testing aid only.
+static const char* g_debugShaderSrc =
+    "cbuffer DebugCB : register(b0) { row_major matrix viewProj; };\n"
+    "struct VSIn { float3 pos:POSITION; float4 col:COLOR0; };\n"
+    "struct PSIn { float4 pos:SV_POSITION; float4 col:COLOR0; };\n"
+    "PSIn VSMain(VSIn i) { PSIn o; o.pos = mul(float4(i.pos, 1.0f), viewProj); o.col = i.col; return o; }\n"
+    "float4 PSMain(PSIn i) : SV_TARGET { return i.col; }\n";
+
 // Screen-space post pass (Section 4.8): edge outlines and ambient
 // occlusion from the depth buffer alone. A full-screen triangle made
 // from SV_VertexID, so it needs no vertex buffer.
@@ -255,8 +273,14 @@ static const char* g_uiShaderSrc =
 // (renormalized) direction instead makes it smooth in every direction,
 // independent of the mesh's face boundaries.
 static const char* g_skyShaderSrc =
-    "cbuffer SkyCB : register(b0) { row_major matrix viewProj; float4 sun; float4 params; };\n"
-    // sun.xyz: toward the sun. params: x day amount 0..1, y stars visible (unused yet), z direct sun
+    "cbuffer SkyCB : register(b0) {\n"
+    "    row_major matrix viewProj;\n"
+    "    float4 sun;       // xyz toward the sun\n"
+    "    float4 params;    // x day amount 0..1, y stars visible, z direct sun\n"
+    "    float4 moon;      // xyz toward the moon, w visibility\n"
+    "    float4 ghostMoon; // xyz toward The Line's ghost moon, w strength\n"
+    "    float4 starRow0; float4 starRow1; float4 starRow2; // sky direction -> star-field direction\n"
+    "};\n"
     "struct VSIn { float3 pos:POSITION; };\n"
     "struct PSIn { float4 pos:SV_POSITION; float3 dir:TEXCOORD0; };\n"
     "PSIn VSMain(VSIn input) { PSIn o; o.pos = mul(float4(input.pos,1.0f), viewProj); o.dir = input.pos; return o; }\n"
@@ -265,13 +289,41 @@ static const char* g_skyShaderSrc =
     "static const float3 NIGHT_ZENITH = float3(0.012f, 0.018f, 0.045f);\n"
     "static const float3 NIGHT_HORIZON = float3(0.045f, 0.055f, 0.10f);\n"
     "static const float3 SUNSET = float3(1.0f, 0.52f, 0.25f);\n"
+    "float Hash(float3 p) { p = frac(p * 0.3183099f + 0.1f); p *= 17.0f; return frac(p.x * p.y * p.z * (p.x + p.y + p.z)); }\n"
+    // Procedural stars: each face of a cube around the sky is a grid of
+    // ~1-degree cells; some cells hold one star at a hashed spot, size and
+    // brightness. Looked up in star-field space, so the whole field turns
+    // with the clock (and The Line's wobble) by rotating the lookup.
+    "float Stars(float3 s) {\n"
+    "    float3 a = abs(s);\n"
+    "    float2 uv; float face;\n"
+    "    if (a.x >= a.y && a.x >= a.z) { uv = s.yz / a.x; face = s.x > 0.0f ? 0.0f : 1.0f; }\n"
+    "    else if (a.y >= a.z)          { uv = s.xz / a.y; face = s.y > 0.0f ? 2.0f : 3.0f; }\n"
+    "    else                          { uv = s.xy / a.z; face = s.z > 0.0f ? 4.0f : 5.0f; }\n"
+    "    float2 g = (uv * 0.5f + 0.5f) * 90.0f;\n"
+    "    float3 key = float3(floor(g), face);\n"
+    "    if (Hash(key) > 0.18f) return 0.0f;\n"
+    "    float2 spot = float2(Hash(key + 7.1f), Hash(key + 3.7f)) * 0.7f + 0.15f;\n"
+    "    float size = 0.10f + 0.14f * Hash(key + 1.3f);\n"
+    "    float b = saturate(1.0f - length(frac(g) - spot) / size);\n"
+    "    return b * b * (0.5f + 0.9f * Hash(key + 9.2f));\n"
+    "}\n"
+    "float Disc(float3 d, float3 c, float cosR) { return smoothstep(cosR - 0.00008f, cosR + 0.00002f, dot(d, c)); }\n"
     "float4 PSMain(PSIn input) : SV_TARGET {\n"
     "    float3 d = normalize(input.dir);\n"
     "    float h = saturate(d.y);\n"
     "    float day = params.x;\n"
     "    float3 col = lerp(lerp(NIGHT_HORIZON, DAY_HORIZON, day), lerp(NIGHT_ZENITH, DAY_ZENITH, day), h);\n"
+    "    float above = smoothstep(-0.04f, 0.04f, d.y);\n"
+    // Stars, fading in as the sun goes down.
+    "    float3 s = float3(dot(starRow0.xyz, d), dot(starRow1.xyz, d), dot(starRow2.xyz, d));\n"
+    "    col += Stars(s) * params.y * above * float3(0.95f, 0.97f, 1.0f);\n"
+    // Moon, and The Line's faint ghost of it (a soft double exposure).
+    "    float3 moonCol = float3(0.86f, 0.88f, 0.95f);\n"
+    "    col = lerp(col, moonCol, Disc(d, moon.xyz, 0.99966f) * moon.w * above);\n"
+    "    col += moonCol * Disc(d, ghostMoon.xyz, 0.99966f) * ghostMoon.w * above;\n"
+    // Sun: warm the sky around it while low, then its disc and glow.
     "    float toward = saturate(dot(d, sun.xyz));\n"
-    // Sunrise/sunset: warm the sky around the sun while it's near the horizon.
     "    float low = saturate(1.0f - abs(sun.y) * 4.0f);\n"
     "    col = lerp(col, SUNSET, low * pow(toward, 6.0f) * (1.0f - h) * 0.85f);\n"
     "    float disc = smoothstep(0.9990f, 0.9996f, toward) + pow(toward, 64.0f) * 0.35f;\n"
@@ -492,6 +544,8 @@ static void UpdateShadowMap(World& w, Vec3 eye, Vec3 sun) {
     ProfAddCounter(PCOUNT_SHADOW_RENDERS, 1);
 }
 
+static void DrawLineDebug(const Mat4& viewProj, Vec3 player); // below InitD3D, beside its pipeline
+
 void RenderScene(World& w, const Mat4& view, const Mat4& proj, Vec3 eye, Vec3 forward, Vec3 up, float dayTime) {
     SkyState sky = ComputeSky(dayTime);
     bool shadows = g_shadows && g_shadowsAvailable && sky.sunLight > 0.001f;
@@ -516,10 +570,32 @@ void RenderScene(World& w, const Mat4& view, const Mat4& proj, Vec3 eye, Vec3 fo
     // translates with it.
     {
         Mat4 skyViewProj = MatMul(MatLookToLH({ 0, 0, 0 }, forward, up), proj);
-        struct { Mat4 viewProj; float sun[4]; float params[4]; } cb = {
+        float day = (sky.daylight - NIGHT_LIGHT) / (1.0f - NIGHT_LIGHT);
+        // Star field: shown = W * R * star, where R is the normal turning
+        // about the pole and W The Line's precession; the shader needs the
+        // inverse, (W R)^T = R^T W^T.
+        float R[3][3], W[3][3], G[3][3];
+        AxisAngleMatrix(CelestialPole(), sky.starAngle, R);
+        LineSkyWobble(g_line, g_lineTuning, 1.0f, W);
+        LineSkyWobble(g_line, g_lineTuning, g_lineTuning.moonGhostScale, G);
+        float M[3][3];
+        for (int i = 0; i < 3; i++)
+            for (int j = 0; j < 3; j++) {
+                M[i][j] = 0;
+                for (int k = 0; k < 3; k++) M[i][j] += R[k][i] * W[j][k];
+            }
+        Vec3 md = sky.moonDir;
+        Vec3 ghost = { G[0][0] * md.x + G[0][1] * md.y + G[0][2] * md.z,
+                       G[1][0] * md.x + G[1][1] * md.y + G[1][2] * md.z,
+                       G[2][0] * md.x + G[2][1] * md.y + G[2][2] * md.z };
+        float moonVis = SkySmooth(-0.03f, 0.05f, md.y) * (1.0f - 0.75f * day);
+        struct { Mat4 viewProj; float sun[4]; float params[4]; float moon[4]; float ghost[4]; float rows[3][4]; } cb = {
             skyViewProj,
             { sky.sunDir.x, sky.sunDir.y, sky.sunDir.z, 0 },
-            { (sky.daylight - NIGHT_LIGHT) / (1.0f - NIGHT_LIGHT), sky.starsVisible, sky.sunLight, 0 },
+            { day, sky.starsVisible, sky.sunLight, 0 },
+            { md.x, md.y, md.z, moonVis },
+            { ghost.x, ghost.y, ghost.z, 0.22f * g_line.intensity * moonVis }, // always fainter than the moon
+            { { M[0][0], M[0][1], M[0][2], 0 }, { M[1][0], M[1][1], M[1][2], 0 }, { M[2][0], M[2][1], M[2][2], 0 } },
         };
         g_context->OMSetDepthStencilState(g_uiDepthState, 0);
         g_context->VSSetShader(g_skyVS, nullptr, 0);
@@ -563,6 +639,7 @@ void RenderScene(World& w, const Mat4& view, const Mat4& proj, Vec3 eye, Vec3 fo
         ID3D11ShaderResourceView* srvs[2] = { g_blockTexSRV, shadows ? g_shadowSRV : nullptr };
         g_context->PSSetShaderResources(0, 2, srvs);
         DrawChunks(w, ExtractFrustum(viewProj), true);
+        if (g_lineDebug) DrawLineDebug(viewProj, eye);
     }
     ProfAdd(PROF_WORLD, ProfNow() - worldStart);
 
@@ -890,7 +967,7 @@ bool InitD3D(HWND hwnd) {
 
     D3D11_BUFFER_DESC skyCbd = {};
     skyCbd.Usage = D3D11_USAGE_DYNAMIC;
-    skyCbd.ByteWidth = sizeof(Mat4) + 2 * 4 * sizeof(float); // viewProj, sun, params
+    skyCbd.ByteWidth = sizeof(Mat4) + 7 * 4 * sizeof(float); // viewProj + 7 float4s (SkyCB)
     skyCbd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
     skyCbd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
     g_device->CreateBuffer(&skyCbd, nullptr, &g_skyCBuffer);
@@ -950,7 +1027,79 @@ bool InitD3D(HWND hwnd) {
         g_device->CreateSamplerState(&ps, &g_pointClampSampler);
         g_postAvailable = g_postVS && g_postPS && g_postCB && g_pointClampSampler;
     }
+
+    // --- Debug line pipeline (optional).
+    {
+        ID3DBlob* dv = CompileShader(g_debugShaderSrc, "VSMain", "vs_4_0");
+        ID3DBlob* dp = CompileShader(g_debugShaderSrc, "PSMain", "ps_4_0");
+        if (dv && dp) {
+            g_device->CreateVertexShader(dv->GetBufferPointer(), dv->GetBufferSize(), nullptr, &g_debugVS);
+            g_device->CreatePixelShader(dp->GetBufferPointer(), dp->GetBufferSize(), nullptr, &g_debugPS);
+            D3D11_INPUT_ELEMENT_DESC dl[] = {
+                { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+                { "COLOR", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 12, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+            };
+            g_device->CreateInputLayout(dl, 2, dv->GetBufferPointer(), dv->GetBufferSize(), &g_debugLayout);
+            D3D11_BUFFER_DESC vb = {};
+            vb.Usage = D3D11_USAGE_DYNAMIC; vb.ByteWidth = DEBUG_VB_CAPACITY * sizeof(DebugVertex);
+            vb.BindFlags = D3D11_BIND_VERTEX_BUFFER; vb.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+            g_device->CreateBuffer(&vb, nullptr, &g_debugVB);
+            D3D11_BUFFER_DESC cb = {};
+            cb.Usage = D3D11_USAGE_DYNAMIC; cb.ByteWidth = sizeof(Mat4);
+            cb.BindFlags = D3D11_BIND_CONSTANT_BUFFER; cb.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+            g_device->CreateBuffer(&cb, nullptr, &g_debugCB);
+        }
+        if (dv) dv->Release();
+        if (dp) dp->Release();
+    }
     return true;
+}
+
+// The Line's debug marker: the line across the loaded area at its height
+// (cyan = counterclockwise, orange = clockwise), short strokes showing
+// which way it's sweeping, and a white pole at the pivot.
+static void DrawLineDebug(const Mat4& viewProj, Vec3 player) {
+    if (!g_debugVS || !g_debugPS || !g_debugLayout || !g_debugVB || !g_debugCB) return;
+    const LineState& L = g_line;
+    Vec3 u = LineDirection(L);
+    float halfLen = (float)((g_loadRadius + 1) * CHUNK_SIZE);
+    float along = (player.x - L.pivotX) * u.x + (player.z - L.pivotZ) * u.z;
+    float cx = L.pivotX + u.x * along, cz = L.pivotZ + u.z * along, y = L.lineY;
+    float r = L.spin > 0 ? 0.3f : 1.0f, g = L.spin > 0 ? 0.9f : 0.6f, b = L.spin > 0 ? 1.0f : 0.2f;
+    DebugVertex v[DEBUG_VB_CAPACITY];
+    UINT n = 0;
+    auto seg = [&](float x0, float y0, float z0, float x1, float y1, float z1, float cr, float cg, float cb) {
+        if (n + 2 > DEBUG_VB_CAPACITY) return;
+        v[n++] = { x0, y0, z0, cr, cg, cb, 1 };
+        v[n++] = { x1, y1, z1, cr, cg, cb, 1 };
+    };
+    seg(cx - u.x * halfLen, y, cz - u.z * halfLen, cx + u.x * halfLen, y, cz + u.z * halfLen, r, g, b);
+    // Sweep strokes every 8 blocks: the line moves perpendicular to itself,
+    // opposite ways on either side of the pivot.
+    for (float t = -halfLen; t <= halfLen; t += 8.0f) {
+        float px = cx + u.x * t, pz = cz + u.z * t;
+        float side = ((px - L.pivotX) * u.x + (pz - L.pivotZ) * u.z) >= 0 ? 1.0f : -1.0f;
+        float nx = -u.z * L.spin * side, nz = u.x * L.spin * side;
+        seg(px, y, pz, px + nx * 1.2f, y, pz + nz * 1.2f, r, g, b);
+    }
+    seg(L.pivotX, y - 3.0f, L.pivotZ, L.pivotX, y + 12.0f, L.pivotZ, 1, 1, 1);
+
+    D3D11_MAPPED_SUBRESOURCE mapped;
+    g_context->Map(g_debugVB, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
+    memcpy(mapped.pData, v, n * sizeof(DebugVertex));
+    g_context->Unmap(g_debugVB, 0);
+    g_context->Map(g_debugCB, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
+    memcpy(mapped.pData, &viewProj, sizeof(Mat4));
+    g_context->Unmap(g_debugCB, 0);
+    g_context->VSSetShader(g_debugVS, nullptr, 0);
+    g_context->PSSetShader(g_debugPS, nullptr, 0);
+    g_context->IASetInputLayout(g_debugLayout);
+    g_context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_LINELIST);
+    g_context->VSSetConstantBuffers(0, 1, &g_debugCB);
+    UINT stride = sizeof(DebugVertex), offset = 0;
+    g_context->IASetVertexBuffers(0, 1, &g_debugVB, &stride, &offset);
+    g_context->Draw(n, 0);
+    g_context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 }
 
 // assets/textures, looked for next to the working directory first (a

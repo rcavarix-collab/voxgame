@@ -14,6 +14,7 @@
 #include "../shapes.h"
 #include "../icons.h"
 #include "../sky.h"
+#include "../theline.h"
 #include <cstdio>
 #include <cstring>
 #include <cmath>
@@ -146,7 +147,8 @@ static void TestSaveRoundTrip() {
     Player p; p.x = 1.5f; p.y = 13; p.z = 2.5f; p.yaw = 0.7f; p.hotbarIndex = 3;
     std::vector<uint8_t> buf;
     std::vector<PendingUpdate> pend = { { 7, 20, 7, UPD_GRAVITY, 3 }, { -1, 5, 9, UPD_GRAVITY, 0 } };
-    EncodeSave(p, 1234.5f, g_worldGen, w, g_evictedChunks, pend, buf);
+    LineSaveData ld; ld.dwell = { { 5, 12.5f }, { -3, 600.0f } }; ld.angMom = -42.5; ld.theta = 1.25f;
+    EncodeSave(p, 1234.5f, g_worldGen, w, g_evictedChunks, pend, ld, buf);
     printf("    %zu generated chunks, 2 modified -> %zu bytes\n", generated, buf.size());
     CHECK(buf.size() < 3000);
 
@@ -158,6 +160,7 @@ static void TestSaveRoundTrip() {
     CHECK(d.gen.type == GEN_FLAT && d.gen.seed == g_worldGen.seed);
     CHECK(d.chunks.size() == 2);
     CHECK(d.updates.size() == 2 && d.updates[0].x == 7 && d.updates[0].delay == 3 && d.updates[1].y == 5);
+    CHECK(d.line.dwell.size() == 2 && d.line.dwell[1].first == -3 && d.line.dwell[1].second == 600.0f && d.line.angMom == -42.5 && d.line.theta == 1.25f);
     for (auto& kv : d.chunks) {
         Chunk* orig = w.FindChunk(kv.first);
         CHECK(orig && orig->modified && ChunksEqual(*orig, *kv.second));
@@ -457,6 +460,85 @@ static void TestSky() {
     CHECK(fabsf(lvp2.m[3][0] - lvp.m[3][0]) < 1e-3f || fabsf(lvp2.m[3][0] - lvp.m[3][0]) > 2.0f / 2048 * 0.9f);
 }
 
+static void TestTheLine() {
+    printf("the line\n");
+    LineTuning t;
+    const float dt = 1.0f / 60.0f;
+
+    // Pivot: an hour lived at A outweighs a minute passing through B.
+    LineState s;
+    for (int i = 0; i < 3600 * 60 / 10; i++) UpdateLine(s, t, 100.0f, 13.0f, 100.0f, dt * 10); // 1 h at A
+    for (int i = 0; i < 60 * 60; i++) UpdateLine(s, t, 900.0f, 13.0f, 100.0f, dt);           // 1 min at B
+    CHECK(fabsf(s.pivotX - 112.0f) < 2.0f && fabsf(s.pivotZ - 112.0f) < 2.0f); // A's cell centre (96..128)
+
+    // Spin follows the sense of movement around one's own centre.
+    auto circle = [&](int dir) {
+        LineState c;
+        for (int i = 0; i < 600 * 60; i++) UpdateLine(c, t, 16.0f, 13.0f, 16.0f, dt); // settle a pivot
+        float r = 10.0f, w = 0.3f * dir;
+        for (int i = 0; i < 120 * 60; i++) {
+            float a = w * i * dt;
+            UpdateLine(c, t, c.pivotX + r * cosf(a), 13.0f, c.pivotZ + r * sinf(a), dt);
+        }
+        return c.spin;
+    };
+    CHECK(circle(+1) == +1); // angle increasing from +X toward +Z: counterclockwise from above
+    CHECK(circle(-1) == -1);
+
+    // The line sweeps in the spin's direction.
+    LineState sw; sw.player.angMom = -5; sw.player.weight = 1; sw.player.wx = 0; sw.player.wz = 0;
+    float before = 1.0f; sw.theta = before;
+    UpdateLine(sw, t, 0.0f, 13.0f, 0.0f, 1.0f);
+    CHECK(sw.spin == -1 && sw.theta < before);
+
+    // Falloff: standing still, one decade of intensity per blocksPerDecade,
+    // flat treads between steps.
+    auto settle = [&](float dist) {
+        LineState a; a.player.weight = 1e12; a.player.wx = 0; a.player.wz = 0; a.theta = 0; // a dominant pivot at the origin; line along +X
+        t.turnSeconds = 1e9f; // freeze the sweep for this test
+        for (int i = 0; i < 600; i++) UpdateLine(a, t, 5.0f, 13.0f, dist, dt);
+        t.turnSeconds = 3600.0f;
+        return a;
+    };
+    LineState on = settle(0.0f), near = settle(3.0f), dec1 = settle(6.3f), tread = settle(9.0f), dec2 = settle(12.3f);
+    printf("    intensity at 0/3/6.3/9/12.3 blocks: %.3f %.3f %.3f %.3f %.4f\n", on.intensity, near.intensity, dec1.intensity, tread.intensity, dec2.intensity);
+    CHECK(on.intensity > 0.99f);
+    CHECK(fabsf(near.intensity - 1.0f) < 0.02f);          // still on the first tread
+    CHECK(fabsf(dec1.intensity - 0.1f) < 0.01f);          // one decade down
+    CHECK(fabsf(tread.intensity - 0.1f) < 0.01f);         // flat until the next riser
+    CHECK(fabsf(dec2.intensity - 0.01f) < 0.002f);
+
+    // Asymmetry: moving with the sweep stretches the falloff, against shrinks it.
+    auto walk = [&](float vz) {
+        LineState a; a.player.weight = 1e12; a.player.wx = 0; a.player.wz = 0; a.theta = 0; a.player.angMom = 1e9; // dominant pivot, ccw
+        float z = 4.0f;
+        for (int i = 0; i < 10; i++) { UpdateLine(a, t, 20.0f, 13.0f, z, dt); z += vz * dt; }
+        return a.blocksPerDecade;
+    };
+    // Line along +X, ccw spin: at x = +20 it sweeps toward +Z.
+    float with = walk(+4.5f), against = walk(-4.5f), still = walk(0.0f);
+    printf("    blocks per decade: with %.2f, still %.2f, against %.2f\n", with, still, against);
+    CHECK(with > still && still > against);
+    CHECK(fabsf(with - t.decadeWith) < 0.5f && fabsf(against - t.decadeAgainst) < 0.2f);
+
+    // Sky wobble: a rotation (orthonormal), none at zero intensity, and the
+    // moon's ghost always weaker than the stars.
+    float m[3][3];
+    LineState q; q.intensity = 0; LineSkyWobble(q, t, 1.0f, m);
+    CHECK(fabsf(m[0][0] - 1) < 1e-6f && fabsf(m[1][1] - 1) < 1e-6f && fabsf(m[0][1]) < 1e-6f);
+    q.intensity = 1; q.theta = 0.7f; q.wobblePhase = 0.3f;
+    float stars[3][3], ghost[3][3];
+    LineSkyWobble(q, t, 1.0f, stars); LineSkyWobble(q, t, t.moonGhostScale, ghost);
+    float det = stars[0][0] * (stars[1][1] * stars[2][2] - stars[1][2] * stars[2][1]) - stars[0][1] * (stars[1][0] * stars[2][2] - stars[1][2] * stars[2][0]) + stars[0][2] * (stars[1][0] * stars[2][1] - stars[1][1] * stars[2][0]);
+    CHECK(fabsf(det - 1) < 1e-4f);
+    CHECK(acosf(ghost[1][1]) < acosf(stars[1][1])); // smaller tilt of the vertical
+
+    // Save/restore keeps pivot, spin and angle.
+    LineSaveData d = SnapshotLine(s);
+    LineState r; RestoreLine(r, t, d);
+    CHECK(fabsf(r.pivotX - s.pivotX) < 1e-3f && fabsf(r.pivotZ - s.pivotZ) < 1e-3f && r.spin == s.spin && r.theta == s.theta);
+}
+
 int main() {
     TestVtex();
     TestBlockTextures();
@@ -469,6 +551,7 @@ int main() {
     TestIcons();
     TestScheduledUpdates();
     TestSky();
+    TestTheLine();
     printf("\n%d checks, %d failed\n", g_checks, g_failures);
     return g_failures ? 1 : 0;
 }

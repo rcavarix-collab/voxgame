@@ -9,6 +9,7 @@
 #include <shlobj.h> // SHGetKnownFolderPath
 #include "persist.h"
 #include "worldfile.h"
+#include "theline.h"
 #include "profiler.h"
 #include "audio.h"
 #include <cstdio>
@@ -268,7 +269,7 @@ void LoadSettings() {
 
 bool SaveGame(World& w, Player& p, int slot) {
     std::vector<uint8_t> buf;
-    EncodeSave(p, g_dayTimeSeconds, g_worldGen, w, g_evictedChunks, SnapshotScheduledUpdates(), buf);
+    EncodeSave(p, g_dayTimeSeconds, g_worldGen, w, g_evictedChunks, SnapshotScheduledUpdates(), SnapshotLine(g_line), buf);
 
     // Crash-safe write sequence (Section 7.3): write to .tmp, only then
     // rotate the previous save to .bak and rename .tmp into place.
@@ -364,6 +365,7 @@ bool LoadGame(World& w, Player& p, int slot) {
     g_residentColumns.clear();
     ClearScheduledUpdates();
     RestoreScheduledUpdates(d.updates); // unknown kinds are dropped
+    RestoreLine(g_line, g_lineTuning, d.line); // empty history for pre-v7 saves
     g_pendingColumns.clear();
     g_pendingColumnSet.clear();
     g_pendingEvictions.clear();

@@ -11,6 +11,8 @@
 //     data (flag 2): u16 count, then (u16 cell, u32 length, bytes) each
 //   u32 updateCount, then per update (v6+):
 //     i32 x, y, z; u8 kind; u32 delay (ticks from now)
+//   The Line (v7+): u32 cellCount, then (i64 cell, f32 seconds) each;
+//     f64 angular momentum; f32 angle
 //   u32 FNV-1a checksum of everything before it
 //
 // Cells run in Chunk::LocalIndex order (x fastest, then z, then y), so
@@ -36,6 +38,7 @@ struct Writer {
     void U16(uint16_t v) { b.push_back((uint8_t)v); b.push_back((uint8_t)(v >> 8)); }
     void U32(uint32_t v) { for (int i = 0; i < 4; i++) b.push_back((uint8_t)(v >> (8 * i))); }
     void U64(uint64_t v) { for (int i = 0; i < 8; i++) b.push_back((uint8_t)(v >> (8 * i))); }
+    void F64(double v) { uint64_t bits; memcpy(&bits, &v, 8); U64(bits); }
     void I32(int32_t v) { U32((uint32_t)v); }
     void F32(float v) { uint32_t bits; memcpy(&bits, &v, 4); U32(bits); }
     void Str(const char* s) {
@@ -54,6 +57,7 @@ struct Reader {
     uint64_t U64() { if (!need(8)) return 0; uint64_t v = 0; for (int i = 0; i < 8; i++) v |= (uint64_t)data[pos + i] << (8 * i); pos += 8; return v; }
     int32_t I32() { return (int32_t)U32(); }
     float F32() { uint32_t bits = U32(); float f; memcpy(&f, &bits, 4); return f; }
+    double F64() { uint64_t bits = U64(); double d; memcpy(&d, &bits, 8); return d; }
     std::string Str() {
         uint16_t n = U16();
         if (!need(n)) return "";
@@ -181,7 +185,7 @@ const char* DecodeResultText(DecodeResult r) {
 
 void EncodeSave(const Player& p, float dayTime, const WorldGenParams& gen,
                 const World& world, const ChunkMap& evicted, const std::vector<PendingUpdate>& updates,
-                std::vector<uint8_t>& out) {
+                const LineSaveData& line, std::vector<uint8_t>& out) {
     out.clear();
     Writer w{ out };
     w.U32(MAGIC);
@@ -204,6 +208,12 @@ void EncodeSave(const Player& p, float dayTime, const WorldGenParams& gen,
     w.U32((uint32_t)updates.size());
     for (const PendingUpdate& u : updates) { w.I32(u.x); w.I32(u.y); w.I32(u.z); w.U8(u.kind); w.U32(u.delay); }
 
+    // The Line (Part XVIII): only its history -- everything else re-derives.
+    w.U32((uint32_t)line.dwell.size());
+    for (const auto& kv : line.dwell) { w.U64((uint64_t)kv.first); w.F32(kv.second); }
+    w.F64(line.angMom);
+    w.F32(line.theta);
+
     w.U32(Fnv1a(out.data(), out.size()));
 }
 
@@ -217,8 +227,8 @@ DecodeResult DecodeSave(const uint8_t* data, size_t size, SaveData& out) {
     if (r.U32() != MAGIC) return DecodeResult::BadMagic;
     out.version = r.U32();
     // v2 embedded preferences, v3 moved them out, v4 added the day clock,
-    // v5 added the generator and per-chunk storage, v6 pending updates
-    // (Section 7.2).
+    // v5 added the generator and per-chunk storage, v6 pending updates,
+    // v7 The Line (Section 7.2).
     if (out.version < 2 || out.version > SAVE_VERSION) return DecodeResult::UnsupportedVersion;
 
     Player& p = out.player;
@@ -279,6 +289,15 @@ DecodeResult DecodeSave(const uint8_t* data, size_t size, SaveData& out) {
                 u.x = r.I32(); u.y = r.I32(); u.z = r.I32();
                 u.kind = (UpdateKind)r.U8(); u.delay = r.U32();
             }
+            if (!r.ok) return DecodeResult::Truncated;
+        }
+        if (out.version >= 7) {
+            uint32_t n = r.U32();
+            if (!r.ok || n > (r.size - r.pos) / 12) return DecodeResult::Corrupt;
+            out.line.dwell.resize(n);
+            for (auto& kv : out.line.dwell) { kv.first = (long long)r.U64(); kv.second = r.F32(); }
+            out.line.angMom = r.F64();
+            out.line.theta = r.F32();
             if (!r.ok) return DecodeResult::Truncated;
         }
     } else {

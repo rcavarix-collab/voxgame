@@ -68,3 +68,18 @@ static inline Mat4 ShadowLightViewProj(Vec3 eye, Vec3 sun, float extent, float d
     ly = floorf(ly / texel) * texel;
     return MatMul(MatMul(view, MatTranslation(-lx, -ly, -(lz - depthHalf))), MatOrthoLH(2 * extent, 2 * extent, 0.0f, 2 * depthHalf));
 }
+
+// Rotation by `angle` about unit `axis` (Rodrigues), for column vectors:
+// v' = m * v.
+static inline void AxisAngleMatrix(Vec3 axis, float angle, float m[3][3]) {
+    float c = cosf(angle), s = sinf(angle), k = 1 - c;
+    float x = axis.x, y = axis.y, z = axis.z;
+    m[0][0] = c + x * x * k;     m[0][1] = x * y * k - z * s; m[0][2] = x * z * k + y * s;
+    m[1][0] = y * x * k + z * s; m[1][1] = c + y * y * k;     m[1][2] = y * z * k - x * s;
+    m[2][0] = z * x * k - y * s; m[2][1] = z * y * k + x * s; m[2][2] = c + z * z * k;
+}
+
+// The celestial pole: perpendicular to the sun's path (ComputeSky), so the
+// stars turn about the same axis, in the same sense, as the sun does --
+// the normal east-to-west streaming.
+static inline Vec3 CelestialPole() { return Normalize({ 0.0f, 0.35f, 1.0f }); }

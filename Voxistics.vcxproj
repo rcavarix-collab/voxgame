@@ -110,6 +110,7 @@
     <ClCompile Include="mesher.cpp" />
     <ClCompile Include="shapes.cpp" />
     <ClCompile Include="icons.cpp" />
+    <ClCompile Include="theline.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="common.h" />
@@ -127,6 +128,8 @@
     <ClInclude Include="mesher.h" />
     <ClInclude Include="shapes.h" />
     <ClInclude Include="icons.h" />
+    <ClInclude Include="theline.h" />
+    <ClInclude Include="sky.h" />
   </ItemGroup>
   <ItemGroup>
     <None Include="DESIGN.md" />
