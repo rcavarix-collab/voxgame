@@ -85,8 +85,6 @@ enum BlockID : uint8_t {
     BLOCK_CORRUPTED_BULB,
     BLOCK_MEMBRANE_SAC,
     BLOCK_SNOW_DRIFT,
-    BLOCK_PEBBLE_BOULDER,
-    BLOCK_COASTAL_BOULDER,
     BLOCK_STONE_SHARD,
     BLOCK_BASALT_SHARD,
     BLOCK_MAGMA_SHARD,
@@ -95,7 +93,6 @@ enum BlockID : uint8_t {
     BLOCK_ORE_SHARD,
     BLOCK_GLACIER_SHARD,
     BLOCK_WATER_RIPPLE,
-    BLOCK_PEBBLE_BREAKER,
     BLOCK_LEAF_PAD,
     BLOCK_LOG_BEAM,
     BLOCK_WOOD_BEAM,
@@ -103,8 +100,6 @@ enum BlockID : uint8_t {
     BLOCK_STONE_CORBEL,
     BLOCK_WOOD_SHUTTER,
     BLOCK_WOOD_AWNING,
-    BLOCK_STONE_CHIMNEY_CAP,
-    BLOCK_CLAY_CHIMNEY_CAP,
     BLOCK_CONDUIT_PIPE,
     BLOCK_LATTICE_PIPE,
     BLOCK_MACHINE_GEAR,
@@ -112,10 +107,6 @@ enum BlockID : uint8_t {
     BLOCK_ORE_HOPPER,
     BLOCK_WOOD_STRUT,
     BLOCK_LATTICE_STRUT,
-    BLOCK_GLOWCAP,
-    BLOCK_MOSS_CANOPY,
-    BLOCK_FERN_COIL,
-    BLOCK_SPROUT_COIL,
     // Pulse logistics (DESIGN.md Part VI)
     BLOCK_PULSE_HARVESTER,
     BLOCK_PULSE_PIPE,
@@ -151,7 +142,6 @@ enum BlockShape : uint8_t {
     SHAPE_BEAM,          // a diagonal rafter, rising away; chains corner to corner
     SHAPE_CORBEL,        // a stepped right-angle bracket off a wall
     SHAPE_SHUTTER,       // a thin louvered panel flush on a face
-    SHAPE_CHIMNEY_CAP,   // a tiered, squared cap for a column
     SHAPE_AWNING,        // a thin sloped overhang off a wall
     // Industry
     SHAPE_PIPE,          // an octagonal conduit along the clicked axis
@@ -160,10 +150,9 @@ enum BlockShape : uint8_t {
     SHAPE_HOPPER,        // an open inverted frustum that catches what falls in
     SHAPE_STRUT,         // an X-brace in the plane facing the player
     // Landmarks: distinctive, meant to be placed deliberately and sparingly
-    SHAPE_CANOPY_CAP,    // a stalk under a broad faceted cap
-    SHAPE_COIL_STALK,    // a stem curling over at the top, like a fern's head
     // Logistics
     SHAPE_PULSE_PIPE,    // a pipe that joins whatever is beside it: straight runs, bends, junctions (mesher)
+    SHAPE_BEVEL_CUBE,    // a full block with its edges chamfered: machines, softened (26 polygons)
     SHAPE_COUNT
 };
 
@@ -241,7 +230,7 @@ inline const BlockDef g_blocks[BLOCK_COUNT] = {
     { "dirt",               true,  false, true,  false, false, SHAPE_CUBE,         PLACE_PLAIN, GLOW_NONE, false,        TEX("dirt", nullptr, nullptr, nullptr, nullptr) },
     { "wood",               true,  false, true,  false, false, SHAPE_CUBE,         PLACE_PLAIN, GLOW_NONE, false,        TEX("wood", nullptr, nullptr, nullptr, nullptr) },
     { "chest",              true,  true,  true,  true,  true,  SHAPE_CUBE,         PLACE_FACE_PLAYER, GLOW_NONE, false,  TEX("chest", nullptr, nullptr, nullptr, "chest_front") },
-    { "machine",            true,  true,  true,  true,  true,  SHAPE_CUBE,         PLACE_FACE_PLAYER, GLOW_NONE, false,  TEX("machine", nullptr, nullptr, nullptr, "machine_front") },
+    { "machine",            true,  true,  true,  true,  true,  SHAPE_BEVEL_CUBE,       PLACE_FACE_PLAYER, GLOW_NONE, false,  TEX("machine", nullptr, nullptr, nullptr, "machine_front") },
     // Shape test blocks (the Prismative.cpp primitives), foundational for
     // now so a test build doesn't collapse while it's being looked at.
     { "stone_slab",         true,  true,  true,  false, false, SHAPE_SLAB,         PLACE_SLAB_HALF, GLOW_NONE, false,    TEX("stone", nullptr, nullptr, nullptr, nullptr) },
@@ -322,8 +311,6 @@ inline const BlockDef g_blocks[BLOCK_COUNT] = {
     { "corrupted_bulb",        true,  true,  true,  false, false, SHAPE_SWELL_BULB,    PLACE_CLICKED_AXIS, GLOW_NONE,  false, TEX("corrupted_flesh", nullptr, nullptr, nullptr, nullptr) },
     { "membrane_sac",          true,  true,  true,  false, false, SHAPE_SWELL_BULB,    PLACE_CLICKED_AXIS, GLOW_PULSE, false, TEX("pulsing_membrane", nullptr, nullptr, nullptr, nullptr) },
     { "snow_drift",            true,  true,  true,  false, false, SHAPE_SWELL_BOULDER, PLACE_CLICKED_AXIS, GLOW_NONE,  false, TEX("snow", nullptr, nullptr, nullptr, nullptr) },
-    { "pebble_boulder",        true,  true,  true,  false, false, SHAPE_SWELL_BOULDER, PLACE_CLICKED_AXIS, GLOW_NONE,  false, TEX("river_pebble", nullptr, nullptr, nullptr, nullptr) },
-    { "coastal_boulder",       true,  true,  true,  false, false, SHAPE_SWELL_BOULDER, PLACE_CLICKED_AXIS, GLOW_NONE,  false, TEX("coastal_sand", nullptr, nullptr, nullptr, nullptr) },
     { "stone_shard",           true,  true,  true,  false, false, SHAPE_SHARD,         PLACE_CLICKED_AXIS, GLOW_NONE,  false, TEX("stone", nullptr, nullptr, nullptr, nullptr) },
     { "basalt_shard",          true,  true,  true,  false, false, SHAPE_SHARD,         PLACE_CLICKED_AXIS, GLOW_NONE,  false, TEX("basalt", nullptr, nullptr, nullptr, nullptr) },
     { "magma_shard",           true,  true,  true,  false, false, SHAPE_SHARD,         PLACE_CLICKED_AXIS, GLOW_EMBER, false, TEX("magma_rock", nullptr, nullptr, nullptr, nullptr) },
@@ -333,7 +320,6 @@ inline const BlockDef g_blocks[BLOCK_COUNT] = {
     { "glacier_shard",         true,  true,  true,  false, false, SHAPE_SHARD,         PLACE_CLICKED_AXIS, GLOW_NONE,  true,  TEX("glacier_ice", nullptr, nullptr, nullptr, nullptr) },
     // On a water surface: a lapping edge for shorelines, and things breaking the surface.
     { "water_ripple",          true,  true,  true,  false, false, SHAPE_RIPPLE_LIP,    PLACE_AWAY,         GLOW_NONE,  true,  TEX("shallow_water", nullptr, nullptr, nullptr, nullptr) },
-    { "pebble_breaker",        true,  true,  true,  false, false, SHAPE_SWELL_BREAKER, PLACE_CLICKED_AXIS, GLOW_NONE,  false, TEX("river_pebble", nullptr, nullptr, nullptr, nullptr) },
     { "leaf_pad",              true,  true,  true,  false, false, SHAPE_SWELL_BREAKER, PLACE_CLICKED_AXIS, GLOW_NONE,  false, TEX("jungle_canopy", nullptr, nullptr, nullptr, nullptr) },
     // Dwelling pieces.
     { "log_beam",              true,  true,  true,  false, false, SHAPE_BEAM,          PLACE_AWAY,         GLOW_NONE,  false, TEX(nullptr, "log_top", "log_top", "log_bark", nullptr) },
@@ -342,8 +328,6 @@ inline const BlockDef g_blocks[BLOCK_COUNT] = {
     { "stone_corbel",          true,  true,  true,  false, false, SHAPE_CORBEL,        PLACE_CLICKED_AXIS, GLOW_NONE,  false, TEX("stone", nullptr, nullptr, nullptr, nullptr) },
     { "wood_shutter",          true,  true,  true,  false, false, SHAPE_SHUTTER,       PLACE_CLICKED_AXIS, GLOW_NONE,  false, TEX("wood", nullptr, nullptr, nullptr, nullptr) },
     { "wood_awning",           true,  true,  true,  false, false, SHAPE_AWNING,        PLACE_CLICKED_AXIS, GLOW_NONE,  false, TEX("wood", nullptr, nullptr, nullptr, nullptr) },
-    { "stone_chimney_cap",     true,  true,  true,  false, false, SHAPE_CHIMNEY_CAP,   PLACE_PLAIN,        GLOW_NONE,  false, TEX("stone", nullptr, nullptr, nullptr, nullptr) },
-    { "clay_chimney_cap",      true,  true,  true,  false, false, SHAPE_CHIMNEY_CAP,   PLACE_PLAIN,        GLOW_NONE,  false, TEX("clay", nullptr, nullptr, nullptr, nullptr) },
     // Industry pieces.
     { "conduit_pipe",          true,  true,  true,  false, false, SHAPE_PIPE,          PLACE_CLICKED_AXIS, GLOW_NONE,  false, TEX("tube", nullptr, nullptr, nullptr, nullptr) },
     { "lattice_pipe",          true,  true,  true,  false, false, SHAPE_PIPE,          PLACE_CLICKED_AXIS, GLOW_NONE,  false, TEX("custodian_lattice", nullptr, nullptr, nullptr, nullptr) },
@@ -353,14 +337,10 @@ inline const BlockDef g_blocks[BLOCK_COUNT] = {
     { "wood_strut",            true,  true,  true,  false, false, SHAPE_STRUT,         PLACE_FACE_PLAYER,  GLOW_NONE,  false, TEX("wood", nullptr, nullptr, nullptr, nullptr) },
     { "lattice_strut",         true,  true,  true,  false, false, SHAPE_STRUT,         PLACE_FACE_PLAYER,  GLOW_NONE,  false, TEX("custodian_lattice", nullptr, nullptr, nullptr, nullptr) },
     // Landmarks (4.15): deliberate, low-frequency shapes -- not scatter.
-    { "glowcap",               true,  true,  true,  false, false, SHAPE_CANOPY_CAP,    PLACE_CLICKED_AXIS, GLOW_PULSE, false, TEX("pulsing_membrane", nullptr, nullptr, nullptr, nullptr) },
-    { "moss_canopy",           true,  true,  true,  false, false, SHAPE_CANOPY_CAP,    PLACE_CLICKED_AXIS, GLOW_NONE,  false, TEX(nullptr, "moss", "log_top", "log_bark", nullptr) },
-    { "fern_coil",             true,  true,  true,  false, false, SHAPE_COIL_STALK,    PLACE_CLICKED_AXIS, GLOW_NONE,  false, TEX("meadow_grass", nullptr, nullptr, nullptr, nullptr) },
-    { "sprout_coil",           true,  true,  true,  false, false, SHAPE_COIL_STALK,    PLACE_CLICKED_AXIS, GLOW_NONE,  false, TEX("seedling_sprout", nullptr, nullptr, nullptr, nullptr) },
     // Pulse logistics (Part VI): a harvester gathers pulse on the beat, pipes carry it, stores keep count.
-    { "pulse_harvester",       true,  true,  true,  false, true,  SHAPE_CUBE,          PLACE_PLAIN,        GLOW_NONE,  false, TEX("pulse_harvester_side", "pulse_harvester_top", "pulse_plate", nullptr, nullptr) },
+    { "pulse_harvester",       true,  true,  true,  false, true,  SHAPE_BEVEL_CUBE,         PLACE_PLAIN,        GLOW_NONE,  false, TEX("pulse_harvester_side", "pulse_harvester_top", "pulse_plate", nullptr, nullptr) },
     { "pulse_pipe",            true,  true,  true,  false, false, SHAPE_PULSE_PIPE,    PLACE_CLICKED_AXIS, GLOW_NONE,  false, TEX("pulse_pipe", nullptr, nullptr, nullptr, nullptr) },
-    { "pulse_store",           true,  true,  true,  false, true,  SHAPE_CUBE,          PLACE_PLAIN,        GLOW_NONE,  false, TEX("pulse_store_side", "pulse_store_top", "pulse_plate", nullptr, nullptr) },
+    { "pulse_store",           true,  true,  true,  false, true,  SHAPE_BEVEL_CUBE,         PLACE_PLAIN,        GLOW_NONE,  false, TEX("pulse_store_side", "pulse_store_top", "pulse_plate", nullptr, nullptr) },
     { "pulse_pipe_cw",         true,  true,  true,  false, false, SHAPE_PULSE_PIPE,    PLACE_CLICKED_AXIS, GLOW_NONE,  false, TEX("pulse_pipe_cw", nullptr, nullptr, nullptr, nullptr) },
     { "pulse_pipe_ccw",        true,  true,  true,  false, false, SHAPE_PULSE_PIPE,    PLACE_CLICKED_AXIS, GLOW_NONE,  false, TEX("pulse_pipe_ccw", nullptr, nullptr, nullptr, nullptr) },
 };

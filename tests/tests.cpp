@@ -1033,6 +1033,23 @@ static void TestPulse() {
     };
     auto place = [](World& w, PulseSystem& p, int x, int y, int z, BlockID id, uint8_t st = 0) { w.Set(x, y, z, id, st); p.OnPlaced(x, y, z, id); };
 
+    // Machines' softened block: 26 polygons, closed and wound outward (the
+    // signed volume is a whole block less the chamfers: 512 - 12 edge
+    // prisms of 6 x 1/2 - 8 corner cubes less the 1/6 tetrahedron each
+    // keeps, in 1/8-block units).
+    {
+        ShapePoly polys[MAX_SHAPE_POLYS];
+        int np = ShapePolys(SHAPE_BEVEL_CUBE, 0, polys);
+        double vol = 0;
+        for (int i = 0; i < np; i++)
+            for (int k = 1; k + 1 < polys[i].count; k++) {
+                const ShapeVertex &a = polys[i].v[0], &b = polys[i].v[k], &c = polys[i].v[k + 1];
+                vol += (a.x * (b.y * (double)c.z - b.z * (double)c.y) - a.y * (b.x * (double)c.z - b.z * (double)c.x) + a.z * (b.x * (double)c.y - b.y * (double)c.x)) / 6.0;
+            }
+        printf("    bevelled block: %d polygons, volume %.2f (of 512)\n", np, vol);
+        CHECK(np == 26 && fabs(vol - (512.0 - 12 * 3.0 - 8 * 5.0 / 6.0)) < 1e-6);
+    }
+
     // The pipe's shape: a run is one bar, a bend a node with two arms, and
     // an end joined on one side only has a mouth (with a collar) opposite.
     {

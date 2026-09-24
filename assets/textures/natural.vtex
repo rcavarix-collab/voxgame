@@ -1435,85 +1435,88 @@ height
   tuvvvutsqmohiiijjjjjihggggghhnnm
 end
 
-# Meadow grass: blades, the odd yellow or blue flower
+# Meadow grass: clumped tufts over shaded gaps, blades throughout
 texture meadow_grass
 size 32
 palette
-  a 3e6b2e
-  b 427031
-  c 467535
-  d 4a7a38
-  e 4f7f3b
-  f 53853f
-  g d8bd3b
-  h e0c840
-  i e5d050
+  a 35632b
+  b 38672d
+  c 3a6a2e
+  d 416f30
+  e 457432
+  f 487834
+  g 4b7c36
+  h 4f8038
+  i 52843a
+  j 56883d
+  k 5a8c3f
+  l 5e9042
 pixels
-  eedeeddehiccbbcbcdcccddfeeeffeee
-  dddeedddhicbbbcaccdccddeeeefffed
-  ddddfdcdcbcbbccabcdcccdcdedefeed
-  dddeeededcbcbbbabddcbcdcccddeeed
-  eedeeeeedcccbbbabdccbcdccbdddefd
-  eedddeeeeccdcbbabddbbcedbbdddfee
-  eddedfeeddcccbbcbddcccdcccdceffd
-  eddeeeeedddcbbccbdccccdcccdcdeee
-  eeeeeeeedddcbbcdcdccccddccdddeee
-  fdeeededdeecbccccdddccdddcddcdef
-  eeeeeecddeeccdddeeedccdeececcdef
-  edeeeeddddecccddddedccdeecdcbdef
-  fdeededdddedccdccdddccdeeddccdef
-  feddcddcccedccdcddddccdeddddddee
-  dihceedcccddddcdddedddcdddddcded
-  digddeecbcddedcdedeccccdddddcddd
-  eccddeecbccdddcdededccddedddcdde
-  edddeeeccccdcccdddddccdddddcceee
-  dddeeeecdccdccdddddddcddcddedddd
-  dddeeeeddccccddddddcccdddedddddd
-  ddddeeedeccccdddddccdcdddeddeddd
-  ddddfeededccdddddcbddcddcdddeddd
-  ddeeffeddddccccdcdcdeccdccdhhdde
-  eeefeeeddddccccdccddedccccdhheee
-  eeefededccddccccccddddcbccdefeee
-  edeeededcbcddccbcccdcdccccdeeeef
-  eeeedeedcbbccccccccccdcccbceedde
-  eeeedeedcbbcccbcccccddccdcceeede
-  dddeeeedcbbcccbbbccccccdddceeeee
-  dddeeeddcbcdcccbacdcihddecdeedef
-  eddeedeeccccbdcbccdbhgddeddffede
-  eedeedeecbccbccbcdcccdeeeeeffeee
+  bgghhfbgfebaaegffbfijibcccbcccbb
+  fhikjgfbbabafhihhgbhihbbbbccggfb
+  fhjkjjgffghfgikihgbbabbabbbfijhf
+  bghiihgbhjjhgijihgbbabbabbbfhihf
+  gbfggccbghhgaggggbbaaabbafbfhjji
+  hbbbbccbbabghgaaabbaabcghhhgiklj
+  hghgehhfbbbgigaaabbafgghjkigijki
+  fikifiigbbbaeabbabbfhiighiigghhg
+  bhihbffbbbbaaabbabbgijjhfgfbffbb
+  cbcchhhgbccaffbbbbbghhigfabghhgc
+  hhghjkjhgbchjihgfccbfffcbafhijhh
+  jjhhjkjigbbhihjigbbbabbghhgfghhi
+  kjhghiigbbbbaghhfbbbaabhjjifabhj
+  ihgffggeabbbabeebbbbaabhijhbbbfh
+  bbbfhjigeabbbbahigbbbbegiihfafgg
+  gaegikigeghbbbahjgggfeegiigffhii
+  hfafhihfgjjhbbabfghihgffgffbgikj
+  hbbbfggfgihgbaabbgijigfbbbbbgiii
+  bbbbcgiihfbhigbbbfhhhggggbbbbggf
+  fghhfgiihfaikighgbeffghjihbbbfgg
+  ghkigcgggaaghhikibaagijjjhbbfhji
+  ghhhgcbbbbbabbghgaabghhhgfbbbgih
+  bbfcccbbbbbaaghhgbbghgebbeebbbff
+  bbbccbcbbbbgghjjiggikigefgggfbgb
+  ggfcbbghgfhiiijjighjkigegiihgiji
+  iihfbfhjigikkihhgfbhhhaeghhhfijj
+  jkigbfhihfhiihaabaabbbabffffcfgh
+  hhghfbfgfefggbaaababbbabbaabbggg
+  ghijhgbbeaababaaaabfggghhfbbgjjg
+  ghjkigfggfhgaafeeaghiihkjgbcghhc
+  ghhihfhijhigdghhgfhikjiihfbccbbc
+  bbfgbbgiigfeagiihfghiihccbbccbbb
 height
-  llimmkmpuvmkikmilpolmopsqomrrnmk
-  jiinnklnuvmkjkmhlnqllnmpoooqroki
-  iiijqkjolikjhllfimpmkmmjlnknpmli
-  iijloompmjjkikkeioomilmijiklllnj
-  jkjlmpppokkmjjifipnlgkokhfkiimnj
-  klhjkoqopjmokhhghonjgmqngfjiholj
-  jhimlroqnnlkkijlhoojjlnjjgihkonj
-  jjimmpopmnmkhhlmjnlikjlkhhkhinkj
-  lkkmnnoolookghmmknljkilliikhhljl
-  njnnnknnlqqjhjlllommjimlliiifjlo
-  mmmmonjlooqiklnnoprmkklqohmhejno
-  nlooonllnnojjklmmopmhjmqoilfeinp
-  pmnomnnklmoliklkknomhimpojjggjmq
-  qokljmnhjkpnjkljlnnlihmnmlkjklmp
-  nwtknqmkijnonmjmmmoklkjklmllimnm
-  nusmnqojfkmmpmilpmokiijkmklmjmmn
-  ojinnqoifkkmolhkomokhhklnkkljnno
-  ollnpqohhjilkiimlmnkjhllmljjjooo
-  lnknppniliklkjknmlnllilkimjnlmlk
-  kkmnpookmhijjklmnnljjilkknlmmllk
-  kjlmponlnihhjmllomijkilkknllnjlk
-  lljlqommnkjhknkkmjhknjllilklmkml
-  klnoprmlmklhjjjnkmklojjmjjjstkln
-  mmnronnkjlmkjkknlknnplhiijktumnm
-  nlmqnlnkijlmlklllknoonihhjkpqmnn
-  ollnmkmljfhlnmljlllomnkhhilpomlq
-  nonoimolhfgjmlkknklmmnikjghpokkn
-  lnloknnlifgjmmjklllmnnkklihmnmkn
-  jkkomonljhjllmkjimnlmmlmmkimnmkn
-  iiknnnnmiimnlmmhhlqlutmnojloojko
-  mjiommooikmkjonklmqktsnnpmmqqlkn
-  mlhmmlnpljmkilmjlpokmnprqomrqmml
+  bhjkjgbijiba9hkljdgnrmdedcbddbba
+  gkoromkca8bahlnmkgdmpkbccccdiki9
+  hlpsqunhhllhjosqmicbabb9bcahoroi
+  9jlnlnkckrrkjnqomicb9ab999ahnqoi
+  iaghgddchlmhaikkiccb8aca8gagknol
+  ka9aacdcd9blpm888cc98bdilmlimsto
+  jikjgmmhccalqmab9ccaijjkptojlpqm
+  gntoirrjbbbah9bb9cbimpolmomhhjki
+  bknlbiicacca89bbacakotrmhhg9hgab
+  c9cbjkkhbddahgbbbcbilnnkg99knnjc
+  lkhjorplhcdkqnmlhddbhiidc9hmrrmj
+  rplkptrmhcckpntqkccb99bgkkijmmjo
+  tqlhlnmjbbca9koniccb89bkqrmg89jp
+  mligjkjhaacb9aggbbca99bjopl9abgk
+  cb9korpkg9bccb9lojcaaahmrrmh9hih
+  k9glpurlhkjbcb9nrkikjhhmqqmhimon
+  mg9imonjlrqkcb9ahjnpolhikkhakpur
+  kaabhijjjonia99bbkptrmibbaaajnpo
+  bbaccjoqoiajmjabbilonkgiibabahji
+  gkmkgjproi9nunjlicgiilmqokbbbilk
+  kotpjcjkj99iliounb99lrsrpkbagmsq
+  jlomicbbbaa9acjli98aknokjgaablpo
+  abhcddbbbaa89iklibaijhgb9hhbaahh
+  bbbdcbca9abghmqrnijornihkmmkgbhb
+  ijhdbajmmjknmnrrnijpsoijnrrnimqm
+  ppmhbhnrrmntrmmljgajljaimqqminrn
+  rsnh9hmppllookaabaabbc9aikkicgil
+  lljkhbhjjhgiibaaababcbaaa98bbiii
+  hmpqmicbg89bbba99bbhiijmlg9bjrph
+  instojilmmolabiihbimonnuqjacgllc
+  gknnlhlqspsmgjopmhkouqmnmhbddaab
+  bbhhbakoqnkh9kqsoihlonjedcbddbbb
 end
 
 # Shallow water: see-through, rippling, glossy

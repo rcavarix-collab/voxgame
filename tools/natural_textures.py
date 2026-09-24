@@ -372,17 +372,22 @@ def m_moss_stone():
 
 
 def m_meadow():
+    # Clumped tufts, not a flat lawn (owner: no flowers; it read flat):
+    # scattered tufts stand up -- raised, lighter at the tips -- over
+    # darker, lower gaps between them, with thin blades running through
+    # both and a slow wash of colour across the ground.
     blades = fbm(251, (16, 32, 64), [1, 0.7, 0.5], aspect=0.375)   # thin upright blades
     n = fbm(252, (2, 4))
-    flowers = scatter(253, 0.22, 0.45, 3.2)
+    tufts = scatter(254, 0.9, 1.25, 2.4, squash=(1.0, 0.8))
     def f(u, v):
         b = blades(u, v)
-        t = 0.5 * n(u, v) + 0.5 * b
-        fl, fid = flowers(u, v)
-        if fl > 0:
-            pal = ["c8a830", "e0c840", "f0e070"] if fid < 0.6 else ["4a6fb0", "6a8fd0", "90b0e8"]
-            return ramp(pal, 0.4 + 0.6 * fl), 1, 0.8 + 0.2 * fl, 0.05, 0
-        return ramp(["2e5a22", "3e6b2e", "4a7a38", "588a42", "6a9a50"], t), 1, 0.3 + 0.6 * b, 0.04, 0
+        tf, tid = tufts(u, v)
+        wash = n(u, v)
+        if tf > 0:  # a tuft: taller toward its middle, sunlit at the tips
+            t = 0.35 + 0.45 * tf + 0.25 * b + 0.15 * (tid - 0.5)
+            return ramp(["34602a", "3e6b2e", "487834", "52843a", "5e9042"], t + 0.15 * (wash - 0.5)), 1, 0.45 + 0.5 * tf * (0.7 + 0.3 * b), 0.05, 0
+        t = 0.2 + 0.4 * b + 0.3 * wash  # the gaps: a little shaded, lower
+        return ramp(["2c5424", "33602a", "3a6a2e", "427432"], t), 1, 0.15 + 0.3 * b, 0.02, 0
     return f
 
 
@@ -852,7 +857,7 @@ TEXTURES = [
     ("log_top", "Log, ends: growth rings, a bark rim", m_log_top()),
     ("moss", "Moss: soft cushions", m_moss()),
     ("moss_stone", "Mossy cobble: domed stones, moss in the gaps and over some", m_moss_stone()),
-    ("meadow_grass", "Meadow grass: blades, the odd yellow or blue flower", m_meadow()),
+    ("meadow_grass", "Meadow grass: clumped tufts over shaded gaps, blades throughout", m_meadow()),
     ("shallow_water", "Shallow water: see-through, rippling, glossy", m_water()),
     ("glacier_ice", "Glacier ice: see-through, glossy, a few deep cracks and bubbles", m_ice()),
     ("volcanic_ash", "Volcanic ash: fine and dark, rare smouldering embers", m_ash()),

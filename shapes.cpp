@@ -264,12 +264,6 @@ Canon BuildCanon(BlockShape shape) {
         Box(p, 0, 0, 0, 8, 1, 8); AddHull(c, p);
         for (int z : { 1, 4, 7 }) { p.clear(); Box(p, 1, 1, z - 1, 7, 2, z); AddHull(c, p); }
         break;
-    case SHAPE_CHIMNEY_CAP:   // stepped: neck, overhanging lip, crown, finial
-        c.anchor = ANCHOR_UPRIGHT; c.turns = false;
-        Box(p, 1, 0, 1, 7, 3, 7); AddHull(c, p); p.clear();
-        Box(p, 0, 3, 0, 8, 5, 8); AddHull(c, p); p.clear();
-        Box(p, 2, 5, 2, 6, 7, 6); AddHull(c, p); p.clear();
-        Box(p, 3, 7, 3, 5, 8, 5); AddHull(c, p); break;
     case SHAPE_AWNING:        // off a wall: a plate sloping down (+Z) as it reaches out (+Y)
         c.turns = false;
         Add(p, { { 0, 0, 0 }, { 8, 0, 0 }, { 0, 0, 1 }, { 8, 0, 1 }, { 0, 6, 3 }, { 8, 6, 3 }, { 0, 6, 4 }, { 8, 6, 4 } });
@@ -312,14 +306,6 @@ Canon BuildCanon(BlockShape shape) {
         AddHull(c, p); p.clear();
         for (int z : { 3, 5 }) { p.push_back({ 8, 0, z }); p.push_back({ 7, 0, z }); p.push_back({ 0, 7, z }); p.push_back({ 0, 8, z }); p.push_back({ 1, 8, z }); p.push_back({ 8, 1, z }); }
         AddHull(c, p); break;
-    case SHAPE_CANOPY_CAP:    // a stalk, and a broad cap overhanging it (its underside shows)
-        Ring(p, 0, 4, 4, 2, 1); Ring(p, 5, 4, 4, 2, 1); AddHull(c, p); p.clear();
-        Ring(p, 4, 4, 4, 4, 2); Ring(p, 6, 4, 4, 4, 2); Ring(p, 8, 4, 4, 2, 1); AddHull(c, p); break;
-    case SHAPE_COIL_STALK:    // a square stem rising, then curling over toward +Z and back in
-        Box(p, 3, 0, 3, 5, 6, 5); AddHull(c, p); p.clear();
-        Box(p, 3, 6, 3, 5, 8, 6); AddHull(c, p); p.clear();
-        Box(p, 3, 5, 6, 5, 8, 8); AddHull(c, p); p.clear();
-        Box(p, 3, 3, 5, 5, 5, 7); AddHull(c, p); break;
     default: break;
     }
     return c;
@@ -455,6 +441,78 @@ ShapeBox PropBox(BlockShape shape, uint8_t state) {
 
 } // namespace
 
+// A full block with every edge chamfered by an eighth: machines with the
+// hard corners taken off, cheaply -- six inset faces (still flat on the
+// block's sides, so a neighbouring solid block hides them), twelve slanted
+// bevels and eight corner triangles, lit by their true normals. Each bevel
+// wears the texture of the side it turns from, so frames run round it.
+static int BevelCube(ShapePoly* out) {
+    int n = 0;
+    auto orient = [](ShapePoly& p, int ox, int oy, int oz) {
+        int e1[3] = { p.v[1].x - p.v[0].x, p.v[1].y - p.v[0].y, p.v[1].z - p.v[0].z };
+        int e2[3] = { p.v[2].x - p.v[0].x, p.v[2].y - p.v[0].y, p.v[2].z - p.v[0].z };
+        int c[3] = { e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0] };
+        if (c[0] * ox + c[1] * oy + c[2] * oz < 0) {
+            if (p.count == 4) std::swap(p.v[1], p.v[3]); else std::swap(p.v[1], p.v[2]);
+        }
+    };
+    // Faces, inset to 1..7 across.
+    for (int f = 0; f < FACE_COUNT; f++) {
+        ShapePoly& p = out[n++];
+        p.count = 4; p.texFace = (uint8_t)f; p.shade = (uint8_t)f; p.boundary = (int8_t)f;
+        for (int k = 0; k < 4; k++) {
+            const int* c = kCorners[f][k];
+            int q[3];
+            for (int a = 0; a < 3; a++) {
+                bool normalAxis = (f / 2) == a;
+                q[a] = normalAxis ? c[a] * S : (c[a] ? S - 1 : 1);
+            }
+            p.v[k] = { (uint8_t)q[0], (uint8_t)q[1], (uint8_t)q[2], 0, 0 };
+            ProjectUV(f, p.v[k]);
+        }
+    }
+    auto in = [](int side) { return side ? S - 1 : 1; };
+    // Bevels along the edges: for each axis a, the four edges parallel to it.
+    for (int a = 0; a < 3; a++) {
+        int b = (a + 1) % 3, c = (a + 2) % 3;
+        for (int sb = 0; sb <= 1; sb++)
+            for (int sc = 0; sc <= 1; sc++) {
+                ShapePoly& p = out[n++];
+                p.count = 4; p.boundary = -1; p.shade = SHADE_SLOPE_UP;
+                // The face it turns from: a side (not top or bottom) where there is one.
+                int faceB = b * 2 + (sb ? 0 : 1), faceC = c * 2 + (sc ? 0 : 1);
+                int tex = (b == 1) ? faceC : faceB;
+                p.texFace = (uint8_t)tex;
+                int pts[4][3];
+                for (int k = 0; k < 4; k++) {
+                    int along = (k == 0 || k == 3) ? 1 : S - 1;
+                    bool onB = k < 2; // first two on face B's plane, last two on face C's
+                    pts[k][a] = along;
+                    pts[k][b] = onB ? sb * S : in(sb);
+                    pts[k][c] = onB ? in(sc) : sc * S;
+                }
+                for (int k = 0; k < 4; k++) { p.v[k] = { (uint8_t)pts[k][0], (uint8_t)pts[k][1], (uint8_t)pts[k][2], 0, 0 }; ProjectUV(tex, p.v[k]); }
+                int o[3] = { 0, 0, 0 }; o[b] = sb ? 1 : -1; o[c] = sc ? 1 : -1;
+                orient(p, o[0], o[1], o[2]);
+            }
+    }
+    // Corners.
+    for (int sx = 0; sx <= 1; sx++)
+        for (int sy = 0; sy <= 1; sy++)
+            for (int sz = 0; sz <= 1; sz++) {
+                ShapePoly& p = out[n++];
+                p.count = 3; p.boundary = -1; p.shade = SHADE_SLOPE_UP;
+                int tex = sx ? FACE_POS_X : FACE_NEG_X;
+                p.texFace = (uint8_t)tex;
+                p.v[0] = { (uint8_t)(sx * S), (uint8_t)in(sy), (uint8_t)in(sz), 0, 0 };
+                p.v[1] = { (uint8_t)in(sx), (uint8_t)(sy * S), (uint8_t)in(sz), 0, 0 };
+                p.v[2] = { (uint8_t)in(sx), (uint8_t)in(sy), (uint8_t)(sz * S), 0, 0 };
+                for (int k = 0; k < 3; k++) ProjectUV(tex, p.v[k]);
+                orient(p, sx ? 1 : -1, sy ? 1 : -1, sz ? 1 : -1);
+            }
+    return n;
+}
+
 int ShapeBoxes(BlockShape shape, uint8_t state, ShapeBox* out) {
     switch (shape) {
     case SHAPE_SLAB:
@@ -524,6 +582,7 @@ int ShapePolys(BlockShape shape, uint8_t state, ShapePoly* out, int variant) {
     case SHAPE_PYRAMID_HALF: return Pointed(0, 4, out);
     case SHAPE_FUNNEL:       return Pointed(8, 0, out);
     case SHAPE_FUNNEL_HALF:  return Pointed(8, 4, out);
+    case SHAPE_BEVEL_CUBE:   return BevelCube(out);
     case SHAPE_CARD:         return 0; // a plant card is built by the mesher itself (4.14)
     default:                 return 0;
     }
