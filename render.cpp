@@ -4,6 +4,11 @@
 
 #include "render.h"
 #include "profiler.h"
+#include "blocktex.h"
+#include "vtex.h"
+#include <filesystem>
+#include <fstream>
+#include <sstream>
 #include <d3dcompiler.h>
 #include <cstring>
 #include <algorithm>
@@ -13,15 +18,12 @@
 #pragma comment(lib, "d3dcompiler.lib")
 
 // ---------------------------------------------------------------------
-// textures.cpp entry points (procedural texture generation via GDI+).
+// textures.cpp entry points (the GDI+ UI font atlas).
 // Kept as plain extern declarations since the project has no shared
 // header enforcing this contract with textures.cpp itself (a .cpp
 // can't include another .cpp's header without one existing); the two
 // agree on it by convention, same as before the multi-file split.
 // ---------------------------------------------------------------------
-extern "C" bool GenerateGameTextures(
-    int tileSize, int atlasCols, int atlasRows,
-    uint8_t** outAtlasPixelsBGRA, int* outAtlasW, int* outAtlasH);
 extern "C" void FreeGeneratedPixels(uint8_t* p);
 extern "C" bool GenerateUIAtlas(
     int atlasW, int atlasH, int whiteH, int cols, int bandCount,
@@ -41,7 +43,9 @@ ID3D11Buffer* g_cbuffer = nullptr;
 ID3D11SamplerState* g_sampler = nullptr;
 ID3D11RasterizerState* g_rasterState = nullptr;
 ID3D11DepthStencilState* g_depthState = nullptr;
-ID3D11ShaderResourceView* g_atlasSRV = nullptr;
+ID3D11Buffer* g_chunkCBuffer = nullptr;
+ID3D11ShaderResourceView* g_blockTexSRV = nullptr;
+ID3D11ShaderResourceView* g_iconSRV = nullptr;
 
 ID3D11VertexShader* g_uiVS = nullptr;
 ID3D11PixelShader* g_uiPS = nullptr;
@@ -61,14 +65,32 @@ ID3D11Buffer* g_skyVB = nullptr;
 ID3D11Buffer* g_skyIB = nullptr;
 UINT g_skyIndexCount = 0;
 
+// World pass shader (Section 4.2). Vertices arrive packed (mesher.h):
+// chunk-local position plus a per-draw chunk origin, a texture-array
+// layer, and bits for u/v, ambient occlusion and face. Lighting is a
+// fixed brightness per face direction times an AO darkening, both
+// decided at mesh time -- the pixel shader just multiplies.
 static const char* g_shaderSrc =
     "cbuffer CB : register(b0) { row_major matrix mvp; };\n"
-    "struct VSIn { float3 pos:POSITION; float2 uv:TEXCOORD0; };\n"
-    "struct PSIn { float4 pos:SV_POSITION; float2 uv:TEXCOORD0; };\n"
-    "PSIn VSMain(VSIn input) { PSIn o; o.pos = mul(float4(input.pos,1.0f), mvp); o.uv = input.uv; return o; }\n"
-    "Texture2D tex0 : register(t0);\n"
+    "cbuffer ChunkCB : register(b1) { float4 chunkOrigin; };\n"
+    "struct VSIn { uint4 pos:POSITION; uint2 attr:TEXCOORD0; };\n"
+    "struct PSIn { float4 pos:SV_POSITION; float3 uvl:TEXCOORD0; float light:TEXCOORD1; };\n"
+    // +X -X +Y -Y +Z -Z: top brightest, bottom darkest, X and Z sides
+    // distinct so edges between two side faces still read.
+    "static const float faceShade[6] = { 0.80f, 0.80f, 1.00f, 0.55f, 0.68f, 0.68f };\n"
+    "static const float aoCurve[4] = { 0.50f, 0.66f, 0.83f, 1.00f };\n"
+    "PSIn VSMain(VSIn i) {\n"
+    "    PSIn o;\n"
+    "    float3 p = float3(i.pos.xyz) + chunkOrigin.xyz;\n"
+    "    o.pos = mul(float4(p, 1.0f), mvp);\n"
+    "    uint b = i.attr.y;\n"
+    "    o.uvl = float3((float)(b & 31u), (float)((b >> 5) & 31u), (float)i.attr.x);\n"
+    "    o.light = faceShade[(b >> 12) & 7u] * aoCurve[(b >> 10) & 3u];\n"
+    "    return o;\n"
+    "}\n"
+    "Texture2DArray tex0 : register(t0);\n"
     "SamplerState samp0 : register(s0);\n"
-    "float4 PSMain(PSIn input) : SV_TARGET { return tex0.Sample(samp0, input.uv); }\n";
+    "float4 PSMain(PSIn i) : SV_TARGET { float4 c = tex0.Sample(samp0, i.uvl); return float4(c.rgb * i.light, 1.0f); }\n";
 
 // UI pass shader: takes vertex positions already in pixel space and
 // maps them to NDC directly (an orthographic projection in all but
@@ -118,73 +140,10 @@ static const char* g_skyShaderSrc =
     "}\n";
 
 // Emits one cube face (4 verts + 6 indices) for the given corners.
-static void EmitFace(std::vector<Vertex>& verts, std::vector<uint32_t>& indices,
-                      float x, float y, float z,
-                      float c0x, float c0y, float c0z,
-                      float c1x, float c1y, float c1z,
-                      float c2x, float c2y, float c2z,
-                      float c3x, float c3y, float c3z,
-                      float u0, float v0, float u1, float v1) {
-    uint32_t base = (uint32_t)verts.size();
-    verts.push_back({ x + c0x, y + c0y, z + c0z, u0, v1 });
-    verts.push_back({ x + c1x, y + c1y, z + c1z, u0, v0 });
-    verts.push_back({ x + c2x, y + c2y, z + c2z, u1, v0 });
-    verts.push_back({ x + c3x, y + c3y, z + c3z, u1, v1 });
-    indices.push_back(base + 0); indices.push_back(base + 1); indices.push_back(base + 2);
-    indices.push_back(base + 0); indices.push_back(base + 2); indices.push_back(base + 3);
-}
-
-// Neighbor solidity for face culling during meshing. The overwhelming
-// majority of a chunk's blocks (the 14x14x14 interior, ~67% of all
-// cells) have all 6 neighbors inside the same chunk -- reading straight
-// out of `c.blocks[]` for that case skips World::Solid's ToChunk
-// (a floor-divide per axis) plus an unordered_map lookup entirely, only
-// paying that cost for the minority of checks that actually cross a
-// chunk boundary. This is the single biggest cost in RebuildChunkMesh:
-// unconditionally routing every one of a chunk's up-to-24576 neighbor
-// checks (4096 cells x 6 faces) through the generic hash-map lookup was
-// real, measurable, and entirely avoidable work.
-static bool NeighborSolid(World& w, Chunk& c, int lx, int ly, int lz, int dx, int dy, int dz, int wx, int wy, int wz) {
-    int nlx = lx + dx, nly = ly + dy, nlz = lz + dz;
-    if ((unsigned)nlx < CHUNK_SIZE && (unsigned)nly < CHUNK_SIZE && (unsigned)nlz < CHUNK_SIZE) {
-        BlockID id = (BlockID)c.blocks[Chunk::LocalIndex(nlx, nly, nlz)];
-        return id != BLOCK_AIR && g_info[id].solid;
-    }
-    return w.Solid(wx, wy, wz);
-}
-
 static void RebuildChunkMesh(World& w, const ChunkCoord& cc, Chunk& c) {
-    std::vector<Vertex> verts;
-    std::vector<uint32_t> indices;
-
-    int baseX = cc.x * CHUNK_SIZE, baseY = cc.y * CHUNK_SIZE, baseZ = cc.z * CHUNK_SIZE;
-
-    for (int ly = 0; ly < CHUNK_SIZE; ly++) {
-        for (int lz = 0; lz < CHUNK_SIZE; lz++) {
-            for (int lx = 0; lx < CHUNK_SIZE; lx++) {
-                BlockID id = (BlockID)c.blocks[Chunk::LocalIndex(lx, ly, lz)];
-                if (id == BLOCK_AIR) continue;
-                int wx = baseX + lx, wy = baseY + ly, wz = baseZ + lz;
-
-                float u0, v0, u1, v1;
-                AtlasRect(g_info[id].tex, u0, v0, u1, v1);
-                float x = (float)wx, y = (float)wy, z = (float)wz;
-
-                if (!NeighborSolid(w, c, lx, ly, lz, 1,0,0, wx + 1, wy, wz))
-                    EmitFace(verts, indices, x, y, z, 1,0,0, 1,1,0, 1,1,1, 1,0,1, u0,v0,u1,v1);
-                if (!NeighborSolid(w, c, lx, ly, lz, -1,0,0, wx - 1, wy, wz))
-                    EmitFace(verts, indices, x, y, z, 0,0,1, 0,1,1, 0,1,0, 0,0,0, u0,v0,u1,v1);
-                if (!NeighborSolid(w, c, lx, ly, lz, 0,1,0, wx, wy + 1, wz))
-                    EmitFace(verts, indices, x, y, z, 0,1,0, 0,1,1, 1,1,1, 1,1,0, u0,v0,u1,v1);
-                if (!NeighborSolid(w, c, lx, ly, lz, 0,-1,0, wx, wy - 1, wz))
-                    EmitFace(verts, indices, x, y, z, 0,0,1, 0,0,0, 1,0,0, 1,0,1, u0,v0,u1,v1);
-                if (!NeighborSolid(w, c, lx, ly, lz, 0,0,1, wx, wy, wz + 1))
-                    EmitFace(verts, indices, x, y, z, 1,0,1, 1,1,1, 0,1,1, 0,0,1, u0,v0,u1,v1);
-                if (!NeighborSolid(w, c, lx, ly, lz, 0,0,-1, wx, wy, wz - 1))
-                    EmitFace(verts, indices, x, y, z, 0,0,0, 0,1,0, 1,1,0, 1,0,0, u0,v0,u1,v1);
-            }
-        }
-    }
+    static std::vector<Vertex> verts;     // reused across rebuilds: no per-rebuild allocation once warm
+    static std::vector<uint16_t> indices;
+    BuildChunkMesh(w, cc, c, verts, indices);
 
     if (c.vb) { c.vb->Release(); c.vb = nullptr; }
     if (c.ib) { c.ib->Release(); c.ib = nullptr; }
@@ -192,7 +151,7 @@ static void RebuildChunkMesh(World& w, const ChunkCoord& cc, Chunk& c) {
 
     if (!verts.empty()) {
         D3D11_BUFFER_DESC vbd = {};
-        vbd.Usage = D3D11_USAGE_DEFAULT;
+        vbd.Usage = D3D11_USAGE_IMMUTABLE;
         vbd.ByteWidth = (UINT)(verts.size() * sizeof(Vertex));
         vbd.BindFlags = D3D11_BIND_VERTEX_BUFFER;
         D3D11_SUBRESOURCE_DATA vinit = {};
@@ -200,8 +159,8 @@ static void RebuildChunkMesh(World& w, const ChunkCoord& cc, Chunk& c) {
         g_device->CreateBuffer(&vbd, &vinit, &c.vb);
 
         D3D11_BUFFER_DESC ibd = {};
-        ibd.Usage = D3D11_USAGE_DEFAULT;
-        ibd.ByteWidth = (UINT)(indices.size() * sizeof(uint32_t));
+        ibd.Usage = D3D11_USAGE_IMMUTABLE;
+        ibd.ByteWidth = (UINT)(indices.size() * sizeof(uint16_t));
         ibd.BindFlags = D3D11_BIND_INDEX_BUFFER;
         D3D11_SUBRESOURCE_DATA iinit = {};
         iinit.pSysMem = indices.data();
@@ -237,9 +196,16 @@ void RebuildDirtyChunks(World& w, int camCx, int camCy, int camCz) {
     struct Pending { long long d2; ChunkCoord cc; };
     static std::vector<Pending> pending; // reused: no per-frame allocation once warm
     pending.clear();
-    for (const ChunkCoord& cc : w.dirtyChunks) {
+    for (auto it = w.dirtyChunks.begin(); it != w.dirtyChunks.end();) {
+        const ChunkCoord& cc = *it;
+        // A chunk's mesh reads all 8 neighbouring columns (culling, AO);
+        // until they exist it waits outside the set, still flagged dirty,
+        // and GenerateColumn re-queues it when the last neighbour arrives.
+        // One build per chunk instead of one per neighbour arrival.
+        if (!ColumnNeighborhoodResident(cc.x, cc.z)) { it = w.dirtyChunks.erase(it); continue; }
         long long dx = cc.x - camCx, dy = cc.y - camCy, dz = cc.z - camCz;
         pending.push_back({ dx * dx + dy * dy + dz * dz, cc });
+        ++it;
     }
     size_t n = std::min<size_t>(MAX_CHUNK_REBUILDS_PER_FRAME, pending.size());
     auto nearer = [](const Pending& a, const Pending& b) { return a.d2 < b.d2; };
@@ -306,6 +272,39 @@ void UpdateCBuffer(const Mat4& mvp) {
     CBData* data = (CBData*)mapped.pData;
     data->mvp = mvp;
     g_context->Unmap(g_cbuffer, 0);
+}
+
+void DrawWorld(World& w, const Mat4& viewProj) {
+    Frustum frustum = ExtractFrustum(viewProj);
+    g_context->VSSetShader(g_vs, nullptr, 0);
+    g_context->PSSetShader(g_ps, nullptr, 0);
+    g_context->IASetInputLayout(g_layout);
+    g_context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    ID3D11Buffer* cbs[2] = { g_cbuffer, g_chunkCBuffer };
+    g_context->VSSetConstantBuffers(0, 2, cbs);
+    g_context->PSSetSamplers(0, 1, &g_sampler);
+    UpdateCBuffer(viewProj);
+    g_context->PSSetShaderResources(0, 1, &g_blockTexSRV);
+
+    UINT stride = sizeof(Vertex), offset = 0;
+    for (auto& kv : w.chunks) {
+        Chunk& c = *kv.second;
+        if (c.indexCount == 0) continue;
+        const ChunkCoord& cc = kv.first;
+        Vec3 minB = { (float)(cc.x * CHUNK_SIZE), (float)(cc.y * CHUNK_SIZE), (float)(cc.z * CHUNK_SIZE) };
+        Vec3 maxB = { minB.x + CHUNK_SIZE, minB.y + CHUNK_SIZE, minB.z + CHUNK_SIZE };
+        if (!FrustumIntersectsAABB(frustum, minB, maxB)) continue;
+        D3D11_MAPPED_SUBRESOURCE mapped;
+        g_context->Map(g_chunkCBuffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
+        float* o = (float*)mapped.pData;
+        o[0] = minB.x; o[1] = minB.y; o[2] = minB.z; o[3] = 0.0f;
+        g_context->Unmap(g_chunkCBuffer, 0);
+        g_context->IASetVertexBuffers(0, 1, &c.vb, &stride, &offset);
+        g_context->IASetIndexBuffer(c.ib, DXGI_FORMAT_R16_UINT, 0);
+        g_context->DrawIndexed(c.indexCount, 0, 0);
+        ProfAddCounter(PCOUNT_CHUNKS_DRAWN, 1);
+        ProfAddCounter(PCOUNT_TRIANGLES_DRAWN, c.indexCount / 3);
+    }
 }
 
 // =======================================================================
@@ -410,9 +409,9 @@ bool InitD3D(HWND hwnd) {
     g_device->CreateVertexShader(vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(), nullptr, &g_vs);
     g_device->CreatePixelShader(psBlob->GetBufferPointer(), psBlob->GetBufferSize(), nullptr, &g_ps);
 
-    D3D11_INPUT_ELEMENT_DESC layoutDesc[] = {
-        { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0 },
-        { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 12, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+    D3D11_INPUT_ELEMENT_DESC layoutDesc[] = { // mesher.h's packed Vertex
+        { "POSITION", 0, DXGI_FORMAT_R8G8B8A8_UINT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+        { "TEXCOORD", 0, DXGI_FORMAT_R16G16_UINT, 0, 4, D3D11_INPUT_PER_VERTEX_DATA, 0 },
     };
     g_device->CreateInputLayout(layoutDesc, 2, vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(), &g_layout);
     vsBlob->Release();
@@ -424,12 +423,19 @@ bool InitD3D(HWND hwnd) {
     cbd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
     cbd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
     g_device->CreateBuffer(&cbd, nullptr, &g_cbuffer);
+    cbd.ByteWidth = 16; // float4 chunk origin
+    g_device->CreateBuffer(&cbd, nullptr, &g_chunkCBuffer);
 
+    // Point-sampled up close (crisp pixel art), blended between mip levels
+    // so distant blocks don't shimmer. Wrap addressing: each block face
+    // is its own whole texture layer, so there's no neighbour to bleed
+    // into, and merged quads can repeat a texture across blocks.
     D3D11_SAMPLER_DESC sampDesc = {};
-    sampDesc.Filter = D3D11_FILTER_MIN_MAG_MIP_POINT;
-    sampDesc.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP;
-    sampDesc.AddressV = D3D11_TEXTURE_ADDRESS_CLAMP;
-    sampDesc.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
+    sampDesc.Filter = D3D11_FILTER_MIN_MAG_POINT_MIP_LINEAR;
+    sampDesc.AddressU = D3D11_TEXTURE_ADDRESS_WRAP;
+    sampDesc.AddressV = D3D11_TEXTURE_ADDRESS_WRAP;
+    sampDesc.AddressW = D3D11_TEXTURE_ADDRESS_WRAP;
+    sampDesc.MaxLOD = D3D11_FLOAT32_MAX;
     sampDesc.ComparisonFunc = D3D11_COMPARISON_NEVER;
     g_device->CreateSamplerState(&sampDesc, &g_sampler);
 
@@ -548,27 +554,107 @@ bool InitD3D(HWND hwnd) {
     return true;
 }
 
-bool InitTextures() {
-    uint8_t* atlasPixels = nullptr; int atlasW = 0, atlasH = 0;
-    if (!GenerateGameTextures(TILE_SIZE, ATLAS_COLS, ATLAS_ROWS, &atlasPixels, &atlasW, &atlasH))
-        return false;
+// assets/textures, looked for next to the working directory first (a
+// Visual Studio run starts in the project folder), then beside the exe
+// and up to three folders above it (bin/Debug layouts).
+static std::filesystem::path FindTextureDirectory() {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    std::vector<fs::path> roots = { fs::current_path(ec) };
+    wchar_t exe[MAX_PATH];
+    DWORD n = GetModuleFileNameW(nullptr, exe, MAX_PATH);
+    if (n > 0 && n < MAX_PATH) {
+        fs::path dir = fs::path(exe).parent_path();
+        for (int i = 0; i < 4 && !dir.empty(); i++) { roots.push_back(dir); dir = dir.parent_path(); }
+    }
+    for (const fs::path& r : roots) {
+        fs::path candidate = r / "assets" / "textures";
+        if (fs::is_directory(candidate, ec)) return candidate;
+    }
+    return {};
+}
 
+// Parses every .vtex file (sorted by name, so a later file's duplicate
+// wins predictably), writes any problems to _errors.txt beside them, and
+// removes a stale _errors.txt when there are none.
+static void LoadAuthoredTextures(VtexSet& set, std::vector<std::string>& problems) {
+    namespace fs = std::filesystem;
+    fs::path dir = FindTextureDirectory();
+    if (dir.empty()) return;
+    std::error_code ec;
+    std::vector<fs::path> files;
+    for (const auto& e : fs::directory_iterator(dir, ec))
+        if (e.is_regular_file(ec) && e.path().extension() == ".vtex") files.push_back(e.path());
+    std::sort(files.begin(), files.end());
+    for (const fs::path& f : files) {
+        std::ifstream in(f, std::ios::binary);
+        std::stringstream ss; ss << in.rdbuf();
+        ParseVtex(ss.str(), f.filename().string(), set);
+    }
+    problems.insert(problems.end(), set.errors.begin(), set.errors.end());
+}
+
+static void WriteTextureProblems(const std::vector<std::string>& problems) {
+    namespace fs = std::filesystem;
+    fs::path dir = FindTextureDirectory();
+    if (dir.empty()) return;
+    std::error_code ec;
+    fs::path log = dir / "_errors.txt";
+    if (problems.empty()) { fs::remove(log, ec); return; }
+    std::ofstream out(log, std::ios::trunc);
+    out << "Texture problems found at startup (the rest loaded normally):\n\n";
+    for (const std::string& p : problems) out << p << "\n";
+}
+
+bool InitTextures(std::string& problemSummary) {
+    VtexSet authored;
+    std::vector<std::string> problems;
+    LoadAuthoredTextures(authored, problems);
+    BlockTextureSet set;
+    BuildBlockTextures(authored, set);
+    problems.insert(problems.end(), set.warnings.begin(), set.warnings.end());
+    WriteTextureProblems(problems);
+    if (!problems.empty())
+        problemSummary = std::to_string(problems.size()) + " TEXTURE PROBLEM" + (problems.size() == 1 ? "" : "S") +
+                         " - SEE ASSETS\\TEXTURES\\_ERRORS.TXT";
+    memcpy(g_blockFaceLayer, set.faceLayer, sizeof(g_blockFaceLayer));
+
+    // Block faces: one Texture2DArray, a layer per distinct face texture,
+    // full mip chain uploaded from the CPU-built mips.
     D3D11_TEXTURE2D_DESC td = {};
-    td.Width = atlasW; td.Height = atlasH;
-    td.MipLevels = 1; td.ArraySize = 1;
+    td.Width = BLOCK_TEX_SIZE; td.Height = BLOCK_TEX_SIZE;
+    td.MipLevels = set.mipCount; td.ArraySize = set.layerCount;
     td.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
     td.SampleDesc.Count = 1;
     td.Usage = D3D11_USAGE_IMMUTABLE;
     td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-    D3D11_SUBRESOURCE_DATA sd = {};
-    sd.pSysMem = atlasPixels;
-    sd.SysMemPitch = atlasW * 4;
-    ID3D11Texture2D* atlasTex = nullptr;
-    g_device->CreateTexture2D(&td, &sd, &atlasTex);
-    g_device->CreateShaderResourceView(atlasTex, nullptr, &g_atlasSRV);
-    atlasTex->Release();
+    std::vector<D3D11_SUBRESOURCE_DATA> init((size_t)set.layerCount * set.mipCount);
+    for (int L = 0; L < set.layerCount; L++)
+        for (int m = 0; m < set.mipCount; m++) {
+            int sz = BLOCK_TEX_SIZE >> m;
+            D3D11_SUBRESOURCE_DATA& sd = init[(size_t)L * set.mipCount + m]; // D3D11CalcSubresource order
+            sd.pSysMem = set.mips[m].data() + (size_t)L * sz * sz * 4;
+            sd.SysMemPitch = sz * 4;
+        }
+    ID3D11Texture2D* blockTex = nullptr;
+    if (FAILED(g_device->CreateTexture2D(&td, init.data(), &blockTex))) return false;
+    g_device->CreateShaderResourceView(blockTex, nullptr, &g_blockTexSRV);
+    blockTex->Release();
 
-    FreeGeneratedPixels(atlasPixels);
+    D3D11_TEXTURE2D_DESC itd = {};
+    itd.Width = set.iconsW; itd.Height = set.iconsH;
+    itd.MipLevels = 1; itd.ArraySize = 1;
+    itd.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    itd.SampleDesc.Count = 1;
+    itd.Usage = D3D11_USAGE_IMMUTABLE;
+    itd.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+    D3D11_SUBRESOURCE_DATA isd = {};
+    isd.pSysMem = set.icons.data();
+    isd.SysMemPitch = set.iconsW * 4;
+    ID3D11Texture2D* iconTex = nullptr;
+    if (FAILED(g_device->CreateTexture2D(&itd, &isd, &iconTex))) return false;
+    g_device->CreateShaderResourceView(iconTex, nullptr, &g_iconSRV);
+    iconTex->Release();
 
     int bandW[UI_FONT_BAND_COUNT], bandH[UI_FONT_BAND_COUNT], bandY[UI_FONT_BAND_COUNT];
     float bandPx[UI_FONT_BAND_COUNT];

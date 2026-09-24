@@ -8,6 +8,7 @@
 #include <windows.h>
 #include <shlobj.h> // SHGetKnownFolderPath
 #include "persist.h"
+#include "worldfile.h"
 #include "profiler.h"
 #include "audio.h"
 #include <cstdio>
@@ -48,7 +49,8 @@ float g_musicIntensity = 1.0f;
 // Part VII - Save / load (crash-safe, versioned, name-indexed)
 // =======================================================================
 
-static const uint32_t SAVE_VERSION = 4; // v3 dropped the embedded settings block (Section 7.2.3); v4 adds the day-clock field (Section 13). Both v2 and v3 files remain loadable -- see LoadGame's version handling.
+// The byte format itself (and SAVE_VERSION) lives in worldfile.cpp; this
+// file handles the disk side and applying a decoded save to live state.
 
 // Shared by GetSaveDirectory and GetSavesDirectory below: checks
 // exists()&&!is_directory() before create_directories() specifically to
@@ -254,94 +256,9 @@ void LoadSettings() {
     ClampSettingsToValidRanges();
 }
 
-static uint32_t Fnv1a(const uint8_t* data, size_t len) {
-    uint32_t h = 2166136261u;
-    for (size_t i = 0; i < len; i++) { h ^= data[i]; h *= 16777619u; }
-    return h;
-}
-
-static void AppendU8(std::vector<uint8_t>& b, uint8_t v) { b.push_back(v); }
-static void AppendU16(std::vector<uint8_t>& b, uint16_t v) {
-    b.push_back((uint8_t)(v & 0xFF)); b.push_back((uint8_t)((v >> 8) & 0xFF));
-}
-static void AppendU32(std::vector<uint8_t>& b, uint32_t v) {
-    for (int i = 0; i < 4; i++) b.push_back((uint8_t)((v >> (8 * i)) & 0xFF));
-}
-static void AppendI32(std::vector<uint8_t>& b, int32_t v) { AppendU32(b, (uint32_t)v); }
-static void AppendF32(std::vector<uint8_t>& b, float v) {
-    uint32_t bits; memcpy(&bits, &v, 4); AppendU32(b, bits);
-}
-static void AppendStr(std::vector<uint8_t>& b, const char* s) {
-    uint16_t len = (uint16_t)strlen(s);
-    AppendU16(b, len);
-    for (uint16_t i = 0; i < len; i++) b.push_back((uint8_t)s[i]);
-}
-
-struct Reader {
-    const uint8_t* data; size_t size; size_t pos = 0;
-    bool ok = true;
-    bool need(size_t n) { if (pos + n > size) { ok = false; return false; } return true; }
-    uint8_t ReadU8() { if (!need(1)) return 0; return data[pos++]; }
-    uint16_t ReadU16() { if (!need(2)) return 0; uint16_t v = data[pos] | (data[pos+1] << 8); pos += 2; return v; }
-    uint32_t ReadU32() { if (!need(4)) return 0; uint32_t v = 0; for (int i = 0; i < 4; i++) v |= (uint32_t)data[pos+i] << (8*i); pos += 4; return v; }
-    int32_t ReadI32() { return (int32_t)ReadU32(); }
-    float ReadF32() { uint32_t bits = ReadU32(); float f; memcpy(&f, &bits, 4); return f; }
-    std::string ReadStr() {
-        uint16_t len = ReadU16();
-        if (!need(len)) return "";
-        std::string s((const char*)&data[pos], len);
-        pos += len;
-        return s;
-    }
-};
-
 bool SaveGame(World& w, Player& p, int slot) {
     std::vector<uint8_t> buf;
-    AppendU32(buf, ('G' << 24) | ('L' << 16) | ('X' << 8) | 'V'); // magic "VXLG" (little-endian on disk)
-    AppendU32(buf, SAVE_VERSION);
-
-    AppendF32(buf, p.x); AppendF32(buf, p.y); AppendF32(buf, p.z);
-    AppendF32(buf, p.yaw); AppendF32(buf, p.pitch);
-    AppendI32(buf, p.hotbarIndex);
-    AppendF32(buf, g_dayTimeSeconds); // Section 13 -- world state, not a settings.cfg preference
-
-    // No settings block as of v3 -- gameplay/UI preferences live in the
-    // separate global settings.cfg (Section 7.2.3) now, not here.
-
-    AppendU32(buf, BLOCK_COUNT);
-    for (int i = 0; i < BLOCK_COUNT; i++) AppendStr(buf, g_blockNames[i]);
-
-    // Count non-air blocks first. Walks both World::chunks (currently
-    // resident) and g_evictedChunks (out-of-radius but real, Section
-    // 2.4-perf) -- a chunk is in exactly one of the two at any time, and
-    // skipping the second would silently drop whatever the player built
-    // in any area they've since walked away from.
-    uint32_t blockCount = 0;
-    auto countBlocks = [&](const uint8_t* blocks) {
-        for (int i = 0; i < CHUNK_CELLS; i++) if (blocks[i] != BLOCK_AIR) blockCount++;
-    };
-    for (auto& kv : w.chunks) countBlocks(kv.second->blocks);
-    for (auto& kv : g_evictedChunks) countBlocks(kv.second->blocks);
-    AppendU32(buf, blockCount);
-
-    auto writeBlocks = [&](const ChunkCoord& cc, const uint8_t* blocks) {
-        int baseX = cc.x * CHUNK_SIZE, baseY = cc.y * CHUNK_SIZE, baseZ = cc.z * CHUNK_SIZE;
-        for (int ly = 0; ly < CHUNK_SIZE; ly++)
-            for (int lz = 0; lz < CHUNK_SIZE; lz++)
-                for (int lx = 0; lx < CHUNK_SIZE; lx++) {
-                    uint8_t id = blocks[Chunk::LocalIndex(lx, ly, lz)];
-                    if (id == BLOCK_AIR) continue;
-                    AppendI32(buf, baseX + lx);
-                    AppendI32(buf, baseY + ly);
-                    AppendI32(buf, baseZ + lz);
-                    AppendU8(buf, id);
-                }
-    };
-    for (auto& kv : w.chunks) writeBlocks(kv.first, kv.second->blocks);
-    for (auto& kv : g_evictedChunks) writeBlocks(kv.first, kv.second->blocks);
-
-    uint32_t checksum = Fnv1a(buf.data(), buf.size());
-    AppendU32(buf, checksum);
+    EncodeSave(p, g_dayTimeSeconds, g_worldGen, w, g_evictedChunks, buf);
 
     // Crash-safe write sequence (Section 7.3): write to .tmp, only then
     // rotate the previous save to .bak and rename .tmp into place.
@@ -369,130 +286,46 @@ bool LoadGame(World& w, Player& p, int slot) {
     std::ifstream in(GetSaveFilePath(slot), std::ios::binary | std::ios::ate);
     if (!in) return false;
     std::streamsize size = in.tellg();
-    if (size < 12) return false;
+    if (size <= 0) return false;
     in.seekg(0);
     std::vector<uint8_t> buf((size_t)size);
     in.read((char*)buf.data(), size);
     if (!in) return false;
 
-    if (buf.size() < 4) return false;
-    uint32_t storedChecksum;
-    memcpy(&storedChecksum, buf.data() + buf.size() - 4, 4);
-    uint32_t computed = Fnv1a(buf.data(), buf.size() - 4);
-    if (storedChecksum != computed) {
-        OutputDebugStringA("LoadGame: checksum mismatch, aborting load\n");
+    // Decoded into a scratch SaveData; nothing live changes unless the
+    // whole file is valid.
+    SaveData d;
+    DecodeResult res = DecodeSave(buf.data(), buf.size(), d);
+    if (res != DecodeResult::Ok) {
+        char msg[160];
+        snprintf(msg, sizeof(msg), "LoadGame: %s, aborting load\n", DecodeResultText(res));
+        OutputDebugStringA(msg);
         return false;
     }
-
-    Reader r{ buf.data(), buf.size() - 4 };
-    uint32_t magic = r.ReadU32();
-    uint32_t expectedMagic = ('G' << 24) | ('L' << 16) | ('X' << 8) | 'V';
-    if (magic != expectedMagic) {
-        OutputDebugStringA("LoadGame: bad magic, aborting load\n");
-        return false;
-    }
-    uint32_t version = r.ReadU32();
-    // v2 (settings embedded in the save) and v3 (settings moved out, no
-    // day clock yet) are both still loadable, not just the current v4
-    // (Section 7.2.3/13) -- each older version's world/player data is a
-    // strict prefix of the newer format, just missing fields added
-    // since. Loading an older save fills those in with sensible
-    // defaults (below) rather than refusing an otherwise-fine world.
-    if (version != 2 && version != 3 && version != SAVE_VERSION) {
-        OutputDebugStringA("LoadGame: unsupported version, aborting load\n");
-        return false;
-    }
-    bool hasLegacySettings = (version == 2);
-    bool hasDayTime = (version >= 4);
-
-    Player loaded;
-    loaded.x = r.ReadF32(); loaded.y = r.ReadF32(); loaded.z = r.ReadF32();
-    loaded.yaw = r.ReadF32(); loaded.pitch = r.ReadF32();
-    loaded.hotbarIndex = r.ReadI32();
-
-    // Day clock (Section 13): absent on v2/v3 saves made before it
-    // existed -- those resume at dawn (0.0) rather than needing a
-    // meaningless stored value.
-    float loadedDayTime = 0.0f;
-    if (hasDayTime) loadedDayTime = r.ReadF32();
-
-    // Legacy (v2-only) settings block: read into locals first, same as
-    // the rest of this function -- nothing gets applied to live state
-    // until the whole load is known to be valid. Absent entirely on v3.
-    float loadedSensX = 0, loadedSensY = 0;
-    bool loadedInvertX = false, loadedInvertY = false;
-    int32_t loadedRenderDist = 0;
-    bool loadedShowFPS = false;
-    float loadedVolume = 0;
-    std::vector<std::pair<std::string, int32_t>> loadedBindings;
-    if (hasLegacySettings) {
-        loadedSensX = r.ReadF32(); loadedSensY = r.ReadF32();
-        loadedInvertX = r.ReadU8() != 0; loadedInvertY = r.ReadU8() != 0;
-        loadedRenderDist = r.ReadI32();
-        loadedShowFPS = r.ReadU8() != 0;
-        loadedVolume = r.ReadF32();
-        uint32_t bindCount = r.ReadU32();
-        loadedBindings.resize(bindCount);
-        for (uint32_t i = 0; i < bindCount; i++) {
-            loadedBindings[i].first = r.ReadStr();
-            loadedBindings[i].second = r.ReadI32();
-        }
-        if (!r.ok) return false;
+    for (const std::string& name : d.unknownBlockNames) {
+        char msg[256];
+        snprintf(msg, sizeof(msg), "LoadGame: unknown block name '%s', mapping to air\n", name.c_str());
+        OutputDebugStringA(msg);
     }
 
-    uint32_t nameCount = r.ReadU32();
-    std::vector<std::string> savedNames(nameCount);
-    for (uint32_t i = 0; i < nameCount; i++) savedNames[i] = r.ReadStr();
-    if (!r.ok) return false;
-
-    // Remap saved name index -> current BlockID. Anything no longer
-    // present maps to AIR with a logged warning (Section 7.4) rather
-    // than silently reinterpreting whatever ID occupies that slot today.
-    std::vector<BlockID> remap(nameCount, BLOCK_AIR);
-    for (uint32_t i = 0; i < nameCount; i++) {
-        bool found = false;
-        for (int b = 0; b < BLOCK_COUNT; b++) {
-            if (savedNames[i] == g_blockNames[b]) { remap[i] = (BlockID)b; found = true; break; }
-        }
-        if (!found) {
-            char msg[256];
-            snprintf(msg, sizeof(msg), "LoadGame: unknown block name '%s', mapping to air\n", savedNames[i].c_str());
-            OutputDebugStringA(msg);
-        }
-    }
-
-    uint32_t blockCount = r.ReadU32();
-    if (!r.ok) return false;
-
-    World fresh; // build into a scratch world; only swap in if fully valid
-    for (uint32_t i = 0; i < blockCount; i++) {
-        int32_t x = r.ReadI32(), y = r.ReadI32(), z = r.ReadI32();
-        uint8_t nameIdx = r.ReadU8();
-        if (!r.ok) return false;
-        BlockID id = (nameIdx < remap.size()) ? remap[nameIdx] : BLOCK_AIR;
-        fresh.SetRaw(x, y, z, id); // bulk load path, no gravity (Section 5.2)
-    }
-
-    // The placeable roster can shrink between builds (pipes were removed),
-    // so a save made with a now-nonexistent hotbar slot selected must not
-    // index past the end of g_placeable.
-    if (loaded.hotbarIndex < 0 || loaded.hotbarIndex >= g_placeableCount) loaded.hotbarIndex = 0;
+    Player loaded = d.player;
+    // The placeable roster can shrink between builds, so a save made with
+    // a now-nonexistent hotbar slot selected must not index past the end.
+    if (loaded.hotbarIndex < 0 || loaded.hotbarIndex >= g_placeableList.count) loaded.hotbarIndex = 0;
     p = loaded;
-    g_dayTimeSeconds = loadedDayTime;
+    g_dayTimeSeconds = d.dayTime;
+    g_worldGen = d.gen;
 
-    if (hasLegacySettings) {
-        g_sensitivityMultX = loadedSensX; g_sensitivityMultY = loadedSensY;
-        g_invertX = loadedInvertX; g_invertY = loadedInvertY;
-        g_loadRadius = loadedRenderDist;
+    if (d.hasLegacySettings) {
+        g_sensitivityMultX = d.legacySensX; g_sensitivityMultY = d.legacySensY;
+        g_invertX = d.legacyInvertX; g_invertY = d.legacyInvertY;
+        g_loadRadius = d.legacyRenderDist;
         ClampSettingsToValidRanges();
-        g_showFPS = loadedShowFPS;
-        g_masterVolume = loadedVolume;
+        g_showFPS = d.legacyShowFPS;
+        g_masterVolume = d.legacyVolume;
         // Remap saved keybinding action names -> current GameAction indices,
-        // the same name-indexed pattern as the block remap above (Section
-        // 3.1): an unrecognized action name is skipped with a warning
-        // instead of corrupting some other action's binding, and any action
-        // absent from the save simply keeps its pre-load value.
-        for (auto& kv : loadedBindings) {
+        // the same name-indexed pattern as block names (Section 3.1).
+        for (auto& kv : d.legacyBindings) {
             bool found = false;
             for (int a = 0; a < ACT_COUNT; a++) {
                 if (kv.first == g_actionNames[a]) { g_keyBindings[a] = kv.second; found = true; break; }
@@ -504,38 +337,21 @@ bool LoadGame(World& w, Player& p, int slot) {
             }
         }
         ApplyAudioVolumes();
-
         // One-time migration (Section 7.2.3): seed the new global config
         // from this legacy save's settings, but only if nothing has
-        // created settings.cfg yet -- once it exists, it's the source of
-        // truth and this block never overwrites it again.
+        // created settings.cfg yet.
         if (!std::filesystem::exists(GetSettingsFilePath())) {
             SaveSettings();
         }
     }
 
-    // Every column in the save is marked generated, so terrain-gen never
-    // re-runs over it and stomps edits. Only columns near the loaded
-    // player become resident; the rest go straight to the eviction store
-    // rather than all being meshed on the first frames and then evicted
-    // (a large save would otherwise stall the view around the player
-    // behind thousands of far-away rebuilds). Placed after the legacy
-    // settings block since that can change g_loadRadius.
+    // Every saved chunk goes to the modified-chunk store; the normal
+    // streaming path then generates the columns around the player and
+    // overlays these onto them (Section 2.4), so loading costs only the
+    // decode, however large the world.
     w.ClearChunks();
-    g_evictedChunks.clear();
-    g_generatedColumns.clear();
+    g_evictedChunks = std::move(d.chunks);
     g_residentColumns.clear();
-    int pcx = FloorDiv16((int)floorf(p.x)), pcz = FloorDiv16((int)floorf(p.z));
-    for (auto& kv : fresh.chunks) {
-        long long key = ColumnKey(kv.first.x, kv.first.z);
-        g_generatedColumns.insert(key);
-        if (ColumnDistance(kv.first.x, kv.first.z, pcx, pcz) <= g_loadRadius + CHUNK_EVICT_MARGIN) {
-            g_residentColumns.insert(key);
-            w.AdoptChunk(kv.first, std::move(kv.second));
-        } else {
-            g_evictedChunks.emplace(kv.first, std::move(kv.second));
-        }
-    }
     ClearFallQueue();
     g_pendingColumns.clear();
     g_pendingColumnSet.clear();

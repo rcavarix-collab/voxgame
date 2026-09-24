@@ -104,6 +104,10 @@
     <ClCompile Include="textures.cpp" />
     <ClCompile Include="music_synth.cpp" />
     <ClCompile Include="profiler.cpp" />
+    <ClCompile Include="worldfile.cpp" />
+    <ClCompile Include="vtex.cpp" />
+    <ClCompile Include="blocktex.cpp" />
+    <ClCompile Include="mesher.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="common.h" />
@@ -114,6 +118,11 @@
     <ClInclude Include="game.h" />
     <ClInclude Include="music_synth.h" />
     <ClInclude Include="profiler.h" />
+    <ClInclude Include="blocks.h" />
+    <ClInclude Include="worldfile.h" />
+    <ClInclude Include="vtex.h" />
+    <ClInclude Include="blocktex.h" />
+    <ClInclude Include="mesher.h" />
   </ItemGroup>
   <ItemGroup>
     <None Include="DESIGN.md" />

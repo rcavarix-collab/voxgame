@@ -59,7 +59,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
     bool comInitialized = SUCCEEDED(comHr);
 
     if (!InitD3D(g_hwnd)) return -1;
-    if (!InitTextures()) return -1;
+    std::string textureProblems;
+    if (!InitTextures(textureProblems)) return -1;
+    if (!textureProblems.empty()) ShowToast(textureProblems, 8.0f);
     InitAudio(); // a machine with no usable audio device still gets a silent but playable game (Section 10)
     BuildSkyMesh();
 
@@ -208,7 +210,6 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
         float fovRadians = g_fov * (3.14159265359f / 180.0f);
         Mat4 proj = MatPerspectiveFovLH(fovRadians, (float)SCREEN_W / SCREEN_H, 0.1f, 500.0f);
         Mat4 viewProj = MatMul(view, proj);
-        Frustum frustum = ExtractFrustum(viewProj);
 
         // Sky pass: depth off (reusing the UI pass's depth-disabled
         // state), drawn before the opaque world pass so normal depth-
@@ -236,29 +237,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
             g_context->OMSetDepthStencilState(g_depthState, 0);
         }
 
-        g_context->VSSetShader(g_vs, nullptr, 0);
-        g_context->PSSetShader(g_ps, nullptr, 0);
-        g_context->IASetInputLayout(g_layout);
-        g_context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-        g_context->VSSetConstantBuffers(0, 1, &g_cbuffer);
-        g_context->PSSetSamplers(0, 1, &g_sampler);
-
-        UpdateCBuffer(viewProj);
-        g_context->PSSetShaderResources(0, 1, &g_atlasSRV);
-        UINT stride = sizeof(Vertex), offset = 0;
-        for (auto& kv : g_world.chunks) {
-            Chunk& c = *kv.second;
-            if (c.indexCount == 0) continue;
-            const ChunkCoord& cc = kv.first;
-            Vec3 minB = { (float)(cc.x * CHUNK_SIZE), (float)(cc.y * CHUNK_SIZE), (float)(cc.z * CHUNK_SIZE) };
-            Vec3 maxB = { minB.x + CHUNK_SIZE, minB.y + CHUNK_SIZE, minB.z + CHUNK_SIZE };
-            if (!FrustumIntersectsAABB(frustum, minB, maxB)) continue;
-            g_context->IASetVertexBuffers(0, 1, &c.vb, &stride, &offset);
-            g_context->IASetIndexBuffer(c.ib, DXGI_FORMAT_R32_UINT, 0);
-            g_context->DrawIndexed(c.indexCount, 0, 0);
-            ProfAddCounter(PCOUNT_CHUNKS_DRAWN, 1);
-            ProfAddCounter(PCOUNT_TRIANGLES_DRAWN, c.indexCount / 3);
-        }
+        DrawWorld(g_world, viewProj);
         ProfAdd(PROF_WORLD, ProfNow() - worldStart);
 
         {

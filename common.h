@@ -1,7 +1,7 @@
 // common.h
 //
 // Shared foundation for every other file in the project: minimal linear
-// algebra and the block model (identity, metadata table, atlas layout).
+// algebra, world-size constants, and (via blocks.h) the block registry.
 // No Windows/D3D/XAudio2 dependency here on purpose -- this is the one
 // header every other module includes, so it stays free of anything that
 // would force an unrelated module to pull in a graphics or audio API it
@@ -103,72 +103,6 @@ static const int Y_MIN = 0;
 static const int Y_MAX = 255;
 static const int MAX_FALLS = 64;  // capped per-tick gravity work (Section 5.1)
 
-enum BlockID : uint8_t {
-    BLOCK_AIR = 0,
-    BLOCK_FOUNDATION,
-    BLOCK_STONE,
-    BLOCK_DIRT,
-    BLOCK_WOOD,
-    BLOCK_CHEST,
-    BLOCK_MACHINE,
-    BLOCK_COUNT
-};
-
-// Identity written to disk is the name below, never the enum value
-// (Section 3.1) -- this is what lets the roster grow without corrupting
-// old saves.
-static const char* g_blockNames[BLOCK_COUNT] = {
-    "air",
-    "foundation",
-    "stone",
-    "dirt",
-    "wood",
-    "chest",
-    "machine",
-};
-
-struct BlockInfo {
-    bool foundational; // never falls, always supports (Part V)
-    bool solid;         // collision / raycast / face-culling participant
-    int tex;              // atlas slot
-};
-
-// Single source of truth per block (Section 3.2) -- no virtual dispatch
-// in the hot paths (meshing, gravity, picking) reads this table instead.
-static const BlockInfo g_info[BLOCK_COUNT] = {
-    /* air            */ { false, false, -1 },
-    /* foundation     */ { true,  true,   0 },
-    /* stone          */ { false, true,   1 },
-    /* dirt           */ { false, true,   2 },
-    /* wood           */ { false, true,   3 },
-    /* chest          */ { true,  true,   4 },
-    /* machine        */ { true,  true,   5 },
-};
-
-// Atlas layout. NOTE: this order (foundation, stone, dirt, wood, chest,
-// machine) must match the tile draw order in textures.cpp's
-// GenerateGameTextures -- there is no shared header enforcing this, so
-// changing the order here means changing it there too.
-static const int ATLAS_COLS = 3;
-static const int ATLAS_ROWS = 2;
-static const int TILE_SIZE = 64;
-
-static inline void AtlasRect(int slot, float& u0, float& v0, float& u1, float& v1) {
-    int col = slot % ATLAS_COLS;
-    int row = slot / ATLAS_COLS;
-    float texW = (float)(ATLAS_COLS * TILE_SIZE);
-    float texH = (float)(ATLAS_ROWS * TILE_SIZE);
-    // A 1/64-texel inset: just enough that float error at a face's very
-    // edge can never floor into the neighbouring tile, far too small to
-    // shift any texel. (This used to be a half-texel inset, which under
-    // point sampling maps each face onto texel centres 0.5..63.5 -- so
-    // the first and last texel column of every tile drew at half width,
-    // a visible 1px seam on every block. No MSAA, so pixel centres never
-    // extrapolate past the face and a tiny margin is all that's needed.)
-    float insetU = (1.0f / 64.0f) / texW;
-    float insetV = (1.0f / 64.0f) / texH;
-    u0 = (float)(col * TILE_SIZE) / texW + insetU;
-    u1 = (float)((col + 1) * TILE_SIZE) / texW - insetU;
-    v0 = (float)(row * TILE_SIZE) / texH + insetV;
-    v1 = (float)((row + 1) * TILE_SIZE) / texH - insetV;
-}
+// The block registry (IDs, names, flags, per-face textures) lives in
+// blocks.h -- one row per block type (Part III).
+#include "blocks.h"

@@ -153,8 +153,15 @@ static void PickAndAct(bool breakBlock) {
                            && py + 1 > p.y && py < p.y + PLAYER_HEIGHT
                            && pz + 1 > p.z - PLAYER_HALFW && pz < p.z + PLAYER_HALFW;
         if (overlapsPlayer) return;
-        BlockID toPlace = g_placeable[g_player.hotbarIndex];
-        LiveEdit(g_world, px, py, pz, toPlace);
+        BlockID toPlace = g_placeableList.ids[g_player.hotbarIndex];
+        // Orientable blocks turn their front toward the player: the
+        // opposite of the dominant horizontal axis they're looking along.
+        uint8_t state = 0;
+        if (g_blocks[toPlace].orientable) {
+            if (fabsf(f.x) > fabsf(f.z)) state = f.x > 0 ? FACE_NEG_X : FACE_POS_X;
+            else state = f.z > 0 ? FACE_NEG_Z : FACE_POS_Z;
+        }
+        LiveEdit(g_world, px, py, pz, toPlace, state);
     }
 }
 
@@ -476,6 +483,11 @@ static void BeginSliderDrag(int id, int mx) {
 // Wrap Save/Load so every call site (F5/F9-equivalent bound inputs and
 // the pause-menu buttons) gets the same on-screen confirmation instead
 // of failing or succeeding silently.
+void ShowToast(const std::string& message, float seconds) {
+    g_toastMessage = message;
+    g_toastTimer = seconds;
+}
+
 static void DoSave() {
     bool ok = SaveGame(g_world, g_player, g_currentSlot);
     g_toastMessage = ok ? "GAME SAVED" : "SAVE FAILED";
@@ -574,6 +586,7 @@ static void HandleKeybindingsClick(int mx, int my) {
 static void ResetWorldForNewGame() {
     g_world = World();
     g_player = Player();
+    g_worldGen = DefaultNewWorldGen(); // TerrainHeight below reads it
     // Start standing on the surface (terrain height is a pure function
     // of x/z, so this needs no generated chunks), taking the highest of
     // the cells the player's footprint overlaps.
@@ -583,7 +596,6 @@ static void ResetWorldForNewGame() {
             top = std::max(top, TerrainHeight((int)floorf(g_player.x + ox), (int)floorf(g_player.z + oz)));
     g_player.y = (float)(top + 1);
     g_dayTimeSeconds = 0.0f; // dawn -- first light in a land they've never seen (Section 13)
-    g_generatedColumns.clear();
     g_residentColumns.clear();
     g_evictedChunks.clear();
     ClearFallQueue();
@@ -806,7 +818,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         }
         if (wParam >= '1' && wParam <= '9' && g_menuScreen == MenuScreen::None) {
             int idx = (int)(wParam - '1');
-            if (idx < g_placeableCount) g_player.hotbarIndex = idx;
+            if (idx < g_placeableList.count) g_player.hotbarIndex = idx;
             return 0;
         }
         // Toggle-to-move (Accessibility, Section 11): genuine presses only --
@@ -890,7 +902,7 @@ void RenderUIPass() {
     // sample the one block atlas and share a single batch (drawn between
     // the HUD and menu glyph runs -- see the end of this function).
     const int SLOT = 48, GAP = 4;
-    int hotbarN = g_placeableCount;
+    int hotbarN = g_placeableList.count;
     int totalW = hotbarN * SLOT + (hotbarN - 1) * GAP;
     float hbStartX = floorf((SCREEN_W - totalW) / 2.0f); // whole pixels: icons are point-sampled
     float hbY0 = SCREEN_H - SLOT - 16.0f;
@@ -902,16 +914,16 @@ void RenderUIPass() {
         if (selected) UIDrawRect(glyphVerts, x0 - 4, y0 - 4, x1 + 4, y1 + 4, 1.0f, 0.9f, 0.2f, 0.9f);
         UIDrawRect(glyphVerts, x0, y0, x1, y1, 0.12f, 0.12f, 0.12f, 0.75f);
 
-        BlockID b = g_placeable[i];
+        BlockID b = g_placeableList.ids[i];
         float iu0, iv0, iu1, iv1;
-        AtlasRect(g_info[b].tex, iu0, iv0, iu1, iv1);
+        IconRect(b, iu0, iv0, iu1, iv1);
         // 32px icon = exactly half the 64px tile, so point sampling keeps
         // every other texel evenly instead of an irregular 64->36 pick.
         UIAddQuad(iconVerts, x0 + 8, y0 + 8, x1 - 8, y1 - 8, iu0, iv0, iu1, iv1, 1, 1, 1, 1);
     }
 
     if (!menuIsOpen) {
-        std::string name = g_blockNames[g_placeable[g_player.hotbarIndex]];
+        std::string name = g_blocks[g_placeableList.ids[g_player.hotbarIndex]].name;
         float scale = 0.8f;
         float tw = UITextWidth(name, scale);
         UIDrawText(glyphVerts, name, (SCREEN_W - tw) / 2.0f, hbY0 - 26.0f, scale, 1, 1, 1, 0.9f);
@@ -1188,7 +1200,7 @@ void RenderUIPass() {
     }
 
     UIDrawBatch(glyphVerts.data(), hudVertCount, g_uiSRV);
-    UIDrawBatch(iconVerts.data(), iconVerts.size(), g_atlasSRV);
+    UIDrawBatch(iconVerts.data(), iconVerts.size(), g_iconSRV);
     UIDrawBatch(glyphVerts.data() + hudVertCount, glyphVerts.size() - hudVertCount, g_uiSRV);
 
     // Restore world-pass defaults so next frame's world draws don't

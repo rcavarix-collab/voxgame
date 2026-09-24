@@ -11,6 +11,8 @@
 #include <cmath>
 #include <cfloat>
 #include <algorithm>
+#include <cstring>
+#include <windows.h> // QueryPerformanceCounter for new-world seeds
 
 Chunk::~Chunk() {
     if (vb) vb->Release();
@@ -41,8 +43,8 @@ void MaybeQueueFall(World& w, int x, int y, int z) {
     if (y < Y_MIN || y > Y_MAX) return;
     BlockID id = w.Get(x, y, z);
     if (id == BLOCK_AIR) return;
-    if (g_info[id].foundational) return;
-    if (!g_info[id].solid) return;
+    if (g_blocks[id].foundational) return;
+    if (!g_blocks[id].solid) return;
     if (y - 1 < Y_MIN) return;         // resting on the world floor
     if (w.Solid(x, y - 1, z)) return;  // supported
     g_fallQueue.push_back({ x, y, z });
@@ -58,11 +60,14 @@ void ProcessFalls(World& w) {
         if (fc != g_fallsPerColumn.end() && --fc->second <= 0) g_fallsPerColumn.erase(fc);
 
         BlockID id = w.Get(e.x, e.y, e.z);
-        if (id == BLOCK_AIR || g_info[id].foundational) continue; // stale entry
+        if (id == BLOCK_AIR || g_blocks[id].foundational) continue; // stale entry
         if (e.y - 1 < Y_MIN) continue;
         if (w.Solid(e.x, e.y - 1, e.z)) continue; // became supported since queued
 
-        w.SetRaw(e.x, e.y - 1, e.z, id);
+        // The state byte travels with the block. (A per-block data record
+        // wouldn't -- every block that has one is foundational today, so
+        // none can fall; a falling data block would need its record moved.)
+        w.SetRaw(e.x, e.y - 1, e.z, id, w.GetState(e.x, e.y, e.z));
         w.SetRaw(e.x, e.y, e.z, BLOCK_AIR);
 
         MaybeQueueFall(w, e.x, e.y + 1, e.z); // whatever was resting on top
@@ -70,8 +75,8 @@ void ProcessFalls(World& w) {
     }
 }
 
-void LiveEdit(World& w, int x, int y, int z, BlockID id) {
-    w.Set(x, y, z, id);
+void LiveEdit(World& w, int x, int y, int z, BlockID id, uint8_t state) {
+    w.Set(x, y, z, id, state);
     MaybeQueueFall(w, x, y + 1, z);
 }
 
@@ -79,16 +84,56 @@ void LiveEdit(World& w, int x, int y, int z, BlockID id) {
 // World generation and chunk loading
 // =======================================================================
 
-// TEMPORARY, for testing: a dead-flat world (surface at y = 12, so every
-// column is a single chunk tall). Set false for the rolling hills below.
-// Existing saves keep whatever terrain they already stored; only newly
-// generated columns follow this switch, so an old hilly save will show
-// cliffs where it meets new flat ground.
-static const bool FLAT_TEST_WORLD = true;
-static const int FLAT_TEST_HEIGHT = 12;
+// Generators (Section 2.5). Each (type, version) must keep producing
+// exactly the same terrain forever, because saves store only what the
+// player changed and regenerate the rest -- so an output-changing edit
+// to a generator means a new version alongside the old one, not an
+// in-place change.
+WorldGenParams g_worldGen;
+
+const char* WorldGenName(WorldGenType t) {
+    switch (t) {
+    case GEN_HILLS: return "hills";
+    case GEN_FLAT: return "flat";
+    default: return "?";
+    }
+}
+bool WorldGenFromName(const char* name, WorldGenType& out) {
+    for (int t = 0; t < GEN_TYPE_COUNT; t++)
+        if (strcmp(name, WorldGenName((WorldGenType)t)) == 0) { out = (WorldGenType)t; return true; }
+    return false;
+}
+uint32_t WorldGenLatestVersion(WorldGenType t) {
+    switch (t) {
+    case GEN_HILLS: return 1;
+    case GEN_FLAT: return 1;
+    default: return 0;
+    }
+}
+
+// TEMPORARY, for testing: new worlds are dead flat (surface at y = 12,
+// every column a single chunk tall). Switch back to GEN_HILLS when
+// testing is done -- existing worlds keep the generator they were made
+// with either way, since it's stored in each save.
+WorldGenParams DefaultNewWorldGen() {
+    WorldGenParams p;
+    p.type = GEN_FLAT;
+    p.version = WorldGenLatestVersion(p.type);
+    // Nothing reads the seed yet (both generators are seedless), but
+    // every world gets one now so a seeded generator needs no format
+    // change. Mixed from the clock so worlds differ.
+    LARGE_INTEGER t; QueryPerformanceCounter(&t);
+    uint64_t x = (uint64_t)t.QuadPart * 0x9E3779B97F4A7C15ull;
+    x ^= x >> 31; x *= 0xBF58476D1CE4E5B9ull; x ^= x >> 29;
+    p.seed = x;
+    return p;
+}
+
+static const int FLAT_V1_HEIGHT = 12;
 
 int TerrainHeight(int wx, int wz) {
-    if (FLAT_TEST_WORLD) return FLAT_TEST_HEIGHT;
+    if (g_worldGen.type == GEN_FLAT) return FLAT_V1_HEIGHT;
+    // hills v1 -- the original terrain (every pre-v5 save was made with it).
     double h = 40.0 + 6.0 * sin(wx * 0.15) + 4.0 * cos(wz * 0.13);
     int ih = (int)h;
     if (ih < 20) ih = 20;
@@ -96,7 +141,6 @@ int TerrainHeight(int wx, int wz) {
     return ih;
 }
 
-std::unordered_set<long long> g_generatedColumns;
 std::unordered_set<long long> g_residentColumns;
 std::unordered_map<ChunkCoord, std::unique_ptr<Chunk>, ChunkCoordHash> g_evictedChunks;
 
@@ -115,42 +159,41 @@ int ColumnDistance(int cx, int cz, int playerChunkX, int playerChunkZ) {
     return d > INT32_MAX ? INT32_MAX : (int)d;
 }
 
-// Faces on a chunk's side toward a neighbor column are culled while that
-// neighbor is resident and solid there (and emitted while it's absent),
-// so any column appearing or disappearing changes the correct mesh of
-// the resident chunks beside it.
-static void MarkHorizontalNeighborsDirty(World& w, const ChunkCoord& cc) {
-    w.MarkChunkDirty({ cc.x - 1, cc.y, cc.z });
-    w.MarkChunkDirty({ cc.x + 1, cc.y, cc.z });
-    w.MarkChunkDirty({ cc.x, cc.y, cc.z - 1 });
-    w.MarkChunkDirty({ cc.x, cc.y, cc.z + 1 });
+static const int COLUMN_CHUNKS = Y_MAX / CHUNK_SIZE + 1;
+
+bool ColumnNeighborhoodResident(int cx, int cz) {
+    for (int dz = -1; dz <= 1; dz++)
+        for (int dx = -1; dx <= 1; dx++)
+            if (!g_residentColumns.count(ColumnKey(cx + dx, cz + dz))) return false;
+    return true;
 }
 
-// Moves each resident chunk of this column into g_evictedChunks as-is
-// (no copy of its block data), releasing only its GPU buffers. The
-// inverse of RestoreColumnToWorld below.
+// A column arriving changes what the meshes of every chunk in the 3x3
+// columns around it should be (face culling across shared faces,
+// ambient occlusion across edges and corners) -- and may be the last
+// neighbour a waiting chunk needed before it can be meshed at all.
+static void MarkColumnNeighborhoodDirty(World& w, int cx, int cz) {
+    for (int dz = -1; dz <= 1; dz++)
+        for (int dx = -1; dx <= 1; dx++)
+            for (int cy = 0; cy < COLUMN_CHUNKS; cy++)
+                w.MarkChunkDirty({ cx + dx, cy, cz + dz });
+}
+
+// Evicting frees unmodified chunks outright (the generator rebuilds them
+// bit-for-bit on return) and keeps only modified ones, minus their GPU
+// buffers, in g_evictedChunks -- so memory held for places the player
+// has left scales with what they changed there, not with distance
+// walked.
 static void EvictColumnFromWorld(World& w, int cx, int cz) {
-    for (int cy = 0; cy <= FloorDiv16(Y_MAX); cy++) {
+    for (int cy = 0; cy < COLUMN_CHUNKS; cy++) {
         ChunkCoord cc{ cx, cy, cz };
         std::unique_ptr<Chunk> c = w.TakeChunk(cc);
-        if (!c) continue;
+        if (!c || !c->modified) continue; // unmodified: destroyed here
         if (c->vb) { c->vb->Release(); c->vb = nullptr; }
         if (c->ib) { c->ib->Release(); c->ib = nullptr; }
         c->indexCount = 0;
-        c->dirty = true; // its mesh is gone; rebuild whenever it comes back
-        g_evictedChunks.emplace(cc, std::move(c));
-        MarkHorizontalNeighborsDirty(w, cc);
-    }
-}
-
-static void RestoreColumnToWorld(World& w, int cx, int cz) {
-    for (int cy = 0; cy <= FloorDiv16(Y_MAX); cy++) {
-        ChunkCoord cc{ cx, cy, cz };
-        auto it = g_evictedChunks.find(cc);
-        if (it == g_evictedChunks.end()) continue;
-        w.AdoptChunk(cc, std::move(it->second)); // still flagged dirty from eviction
-        g_evictedChunks.erase(it);
-        MarkHorizontalNeighborsDirty(w, cc);
+        c->dirty = true;
+        g_evictedChunks[cc] = std::move(c);
     }
 }
 
@@ -162,26 +205,20 @@ static bool ColumnHasPendingFalls(int cx, int cz) {
     return g_fallsPerColumn.count(ColumnKey(cx, cz)) != 0;
 }
 
-void GenerateColumn(World& w, int cx, int cz) {
-    long long key = ColumnKey(cx, cz);
-    if (g_residentColumns.count(key)) return; // already resident -- nothing to do
-    if (g_generatedColumns.count(key)) {
-        // Real data exists for this column, just not resident right now
-        // (it was evicted after the player left, Section 2.4-perf) --
-        // restore it rather than re-running terrain generation, which
-        // would silently overwrite any edits with fresh terrain.
-        RestoreColumnToWorld(w, cx, cz);
-        g_residentColumns.insert(key);
-        return;
-    }
-    g_generatedColumns.insert(key);
-    g_residentColumns.insert(key);
+static inline BlockID TerrainBlockAt(int wy, int surface) {
+    if (wy == 0) return BLOCK_FOUNDATION;
+    if (wy >= surface - 2) return BLOCK_DIRT;
+    return BLOCK_STONE;
+}
 
+// Fills a column's terrain straight into fresh chunk arrays -- no
+// per-block World::Set (and its per-block hash lookups and dirty
+// marking), since nothing else can be in these chunks yet.
+static void GenerateColumnTerrain(World& w, int cx, int cz) {
     int baseX = cx * CHUNK_SIZE, baseZ = cz * CHUNK_SIZE;
 
-    // Cached per column and reused below for every vertical chunk level
-    // (both the anyContent check and the fill pass) instead of calling
-    // TerrainHeight -- and re-running its trig -- once per level.
+    // Cached per column and reused for every vertical chunk level
+    // instead of re-running TerrainHeight once per level.
     int heights[CHUNK_SIZE][CHUNK_SIZE];
     int maxHeightInColumn = 0;
     for (int lx = 0; lx < CHUNK_SIZE; lx++) {
@@ -192,34 +229,44 @@ void GenerateColumn(World& w, int cx, int cz) {
         }
     }
 
-    int maxCy = FloorDiv16(maxHeightInColumn);
+    int maxCy = FloorDiv16(std::min(maxHeightInColumn, Y_MAX));
     for (int cy = 0; cy <= maxCy; cy++) {
         int chunkYLow = cy * CHUNK_SIZE;
-        // Skip chunks that would contain nothing but air anywhere in this
-        // column -- chunks only exist when they hold real content
-        // (Section 2.1).
+        // Chunks only exist when they hold real content (Section 2.1).
         bool anyContent = false;
         for (int lx = 0; lx < CHUNK_SIZE && !anyContent; lx++)
             for (int lz = 0; lz < CHUNK_SIZE && !anyContent; lz++)
                 if (chunkYLow <= heights[lx][lz]) anyContent = true;
         if (!anyContent) continue;
 
-        for (int lx = 0; lx < CHUNK_SIZE; lx++) {
-            for (int lz = 0; lz < CHUNK_SIZE; lz++) {
-                int wx = baseX + lx, wz = baseZ + lz;
-                int h = heights[lx][lz];
-                for (int ly = 0; ly < CHUNK_SIZE; ly++) {
-                    int wy = chunkYLow + ly;
+        Chunk* c = w.GetOrCreateChunk({ cx, cy, cz });
+        for (int ly = 0; ly < CHUNK_SIZE; ly++) {
+            int wy = chunkYLow + ly;
+            for (int lz = 0; lz < CHUNK_SIZE; lz++)
+                for (int lx = 0; lx < CHUNK_SIZE; lx++) {
+                    int h = heights[lx][lz];
                     if (wy > h) continue;
-                    BlockID id;
-                    if (wy == 0) id = BLOCK_FOUNDATION;
-                    else if (wy >= h - 2) id = BLOCK_DIRT;
-                    else id = BLOCK_STONE;
-                    w.SetRaw(wx, wy, wz, id);
+                    c->blocks[Chunk::LocalIndex(lx, ly, lz)] = (uint8_t)TerrainBlockAt(wy, h);
                 }
-            }
         }
     }
+}
+
+void GenerateColumn(World& w, int cx, int cz) {
+    long long key = ColumnKey(cx, cz);
+    if (g_residentColumns.count(key)) return; // already resident -- nothing to do
+    g_residentColumns.insert(key);
+
+    GenerateColumnTerrain(w, cx, cz);
+    // Whatever the player changed here (kept from an eviction, or read
+    // from the save) replaces the generated chunk wholesale.
+    for (int cy = 0; cy < COLUMN_CHUNKS; cy++) {
+        auto it = g_evictedChunks.find({ cx, cy, cz });
+        if (it == g_evictedChunks.end()) continue;
+        w.AdoptChunk(it->first, std::move(it->second));
+        g_evictedChunks.erase(it);
+    }
+    MarkColumnNeighborhoodDirty(w, cx, cz);
 }
 
 int g_lastPlayerChunkX = INT32_MIN, g_lastPlayerChunkZ = INT32_MIN;
@@ -248,7 +295,12 @@ void EnsureChunksLoaded(int playerChunkX, int playerChunkZ) {
     // to be a corner-to-corner raster order, which put the player's own
     // column halfway down the queue -- dozens of ticks at spawn, long
     // enough to fall into where the ground was about to appear.)
-    for (int ring = 0; ring <= g_loadRadius; ring++) {
+    // Generation runs one ring past the view radius: a chunk is only
+    // meshed once all 8 neighbouring columns exist (face culling and AO
+    // read across them -- see RebuildDirtyChunks), so this extra ring is
+    // what lets the outermost visible ring be meshed.
+    int genRadius = g_loadRadius + 1;
+    for (int ring = 0; ring <= genRadius; ring++) {
         for (int dx = -ring; dx <= ring; dx++) {
             for (int dz = -ring; dz <= ring; dz++) {
                 if (dx != -ring && dx != ring && dz != -ring && dz != ring) continue; // ring edge only
@@ -272,7 +324,7 @@ void EnsureChunksLoaded(int playerChunkX, int playerChunkZ) {
     for (long long key : g_residentColumns) {
         int cx, cz; DecodeColumnKey(key, cx, cz);
         int dist = ColumnDistance(cx, cz, playerChunkX, playerChunkZ);
-        if (dist > g_loadRadius + CHUNK_EVICT_MARGIN && !g_pendingEvictionSet.count(key)) {
+        if (dist > genRadius + CHUNK_EVICT_MARGIN && !g_pendingEvictionSet.count(key)) {
             g_pendingEvictionSet.insert(key);
             g_pendingEvictions.push_back({ cx, cz });
         }
@@ -285,6 +337,9 @@ void ProcessColumnGeneration(World& w) {
         auto col = g_pendingColumns.front();
         g_pendingColumns.pop_front();
         g_pendingColumnSet.erase(ColumnKey(col.first, col.second));
+        // Queued back when the player was elsewhere and they've since
+        // moved on: don't generate a column only to evict it again.
+        if (ColumnDistance(col.first, col.second, g_lastPlayerChunkX, g_lastPlayerChunkZ) > g_loadRadius + 1) continue;
         GenerateColumn(w, col.first, col.second);
     }
 }
@@ -301,7 +356,7 @@ void ProcessColumnEviction(World& w) {
         // evicting then would punch a hole inside the load radius that
         // nothing refills until the next chunk crossing.
         if (ColumnDistance(col.first, col.second, g_lastPlayerChunkX, g_lastPlayerChunkZ)
-                <= g_loadRadius + CHUNK_EVICT_MARGIN) continue;
+                <= g_loadRadius + 1 + CHUNK_EVICT_MARGIN) continue;
         if (ColumnHasPendingFalls(col.first, col.second)) {
             g_pendingEvictionSet.insert(key);
             g_pendingEvictions.push_back(col); // retry once the cascade drains

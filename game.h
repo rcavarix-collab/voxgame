@@ -15,6 +15,7 @@
 
 #include "world.h"
 #include "persist.h" // GameAction
+#include <string>
 
 // The two top-level state machines main.cpp's loop itself branches on
 // (freezing the simulation accumulator while a menu is open, gating the
@@ -49,3 +50,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
 // menus, toasts, FPS counter. Assumes the world pass already ran this
 // frame.
 void RenderUIPass();
+
+// A transient centred message (save/load confirmations, startup problems).
+void ShowToast(const std::string& message, float seconds);

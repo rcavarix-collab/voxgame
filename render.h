@@ -11,9 +11,11 @@
 #define NOMINMAX // MSVC's windows.h (pulled in via d3d11.h) defines min/max macros unless this precedes it
 #include "common.h"
 #include "world.h"
+#include "mesher.h"
 #include <d3d11.h>
 #include <cstdint>
 #include <vector>
+#include <string>
 
 // ---- Core device/pipeline objects (world pass) ----
 extern HWND g_hwnd;
@@ -29,9 +31,18 @@ extern ID3D11Buffer* g_cbuffer;
 extern ID3D11SamplerState* g_sampler;
 extern ID3D11RasterizerState* g_rasterState;
 extern ID3D11DepthStencilState* g_depthState;
-extern ID3D11ShaderResourceView* g_atlasSRV;
+extern ID3D11Buffer* g_chunkCBuffer;          // per-draw chunk origin (b1)
+extern ID3D11ShaderResourceView* g_blockTexSRV; // Texture2DArray: one layer per block face texture, mipped
+extern ID3D11ShaderResourceView* g_iconSRV;     // hotbar icon strip, one cell per BlockID
 
 struct CBData { Mat4 mvp; };
+
+// UVs of block `id`'s cell in the icon strip.
+static inline void IconRect(BlockID id, float& u0, float& v0, float& u1, float& v1) {
+    const float e = 1.0f / 64.0f / 64.0f; // 1/64 texel: float-error guard only
+    u0 = (float)id / BLOCK_COUNT + e; u1 = (float)(id + 1) / BLOCK_COUNT - e;
+    v0 = e; v1 = 1.0f - e;
+}
 
 // ---- UI pass objects (Section 4.6): own shaders/layout/cbuffer/
 // sampler/blend/depth state, fully separate from the world pass's. ----
@@ -101,9 +112,15 @@ extern ID3D11Buffer* g_skyIB;
 extern UINT g_skyIndexCount;
 
 bool InitD3D(HWND hwnd);
-bool InitTextures();
+// Builds block textures (authored .vtex art from assets/textures plus
+// procedural fallbacks) and the UI atlas. `problems` receives a one-line
+// summary if any .vtex file had errors (details are written to
+// assets/textures/_errors.txt), else stays empty.
+bool InitTextures(std::string& problems);
 void BuildSkyMesh();
 void UpdateCBuffer(const Mat4& mvp);
+// World pass: every resident chunk whose bounds touch the frustum.
+void DrawWorld(World& w, const Mat4& viewProj);
 
 // Capped per-frame chunk mesh rebuild (Section 4.2/4-perf) -- see
 // render.cpp for the full reasoning; this is the single entry point

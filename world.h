@@ -47,13 +47,22 @@ struct ChunkCoordHash {
     }
 };
 
-struct Vertex {
-    float px, py, pz;
-    float u, v;
-};
-
 struct Chunk {
     uint8_t blocks[CHUNK_CELLS] = {};
+    // Per-block state byte (blocks.h: facing in the low bits), parallel
+    // to blocks[]. Always 0 for blocks that don't use it.
+    uint8_t state[CHUNK_CELLS] = {};
+    // Per-block data records (a chest's contents, a machine's buffers),
+    // keyed by LocalIndex. Sparse and usually absent entirely -- the
+    // pointer stays null for the vast majority of chunks, which hold no
+    // such block. A record is dropped whenever its cell's block changes.
+    std::unique_ptr<std::unordered_map<uint16_t, std::vector<uint8_t>>> data;
+    // True once this chunk differs from what the world's generator
+    // produces for it (any edit, fall, or load). Unmodified chunks are
+    // never saved and are simply dropped on eviction: the generator
+    // rebuilds them bit-for-bit (Section 7.5), so only real changes cost
+    // memory or disk.
+    bool modified = false;
     bool dirty = true;
     ID3D11Buffer* vb = nullptr;
     ID3D11Buffer* ib = nullptr;
@@ -64,22 +73,35 @@ struct Chunk {
     static int LocalIndex(int lx, int ly, int lz) {
         return (ly * CHUNK_SIZE + lz) * CHUNK_SIZE + lx;
     }
+
+    // Writes one cell; drops any data record there if the block changed.
+    void SetCell(int idx, BlockID id, uint8_t st) {
+        if (blocks[idx] != id && data) {
+            data->erase((uint16_t)idx);
+            if (data->empty()) data.reset();
+        }
+        blocks[idx] = (uint8_t)id;
+        state[idx] = st;
+    }
 };
 
 class World {
 public:
     std::unordered_map<ChunkCoord, std::unique_ptr<Chunk>, ChunkCoordHash> chunks;
-    // Exactly the resident chunks whose `dirty` flag is set, so the mesh
-    // rebuilder only ever looks at chunks that need work (none at all
-    // while nothing is changing) instead of scanning every resident
-    // chunk each frame. Chunks enter and leave `chunks` only through
-    // GetOrCreateChunk / AdoptChunk / TakeChunk / ClearChunks, which
-    // keep the two in step.
+    // Resident chunks waiting for a mesh rebuild, so the rebuilder only
+    // ever looks at chunks that need work (none at all while nothing is
+    // changing) instead of scanning every resident chunk each frame.
+    // Every member has its `dirty` flag set; a flagged chunk may sit
+    // outside the set while it waits for neighbouring columns. Chunks
+    // enter and leave `chunks` only through GetOrCreateChunk /
+    // AdoptChunk / TakeChunk / ClearChunks, which keep the two in step.
     std::unordered_set<ChunkCoord, ChunkCoordHash> dirtyChunks;
 
+    // Replaces any chunk already at cc.
     void AdoptChunk(const ChunkCoord& cc, std::unique_ptr<Chunk> c) {
-        bool d = c->dirty;
-        if (chunks.emplace(cc, std::move(c)).second && d) dirtyChunks.insert(cc);
+        c->dirty = true; // new to the world: needs a mesh
+        chunks[cc] = std::move(c);
+        dirtyChunks.insert(cc);
     }
     std::unique_ptr<Chunk> TakeChunk(const ChunkCoord& cc) {
         auto it = chunks.find(cc);
@@ -118,47 +140,59 @@ public:
         int lx = LocalOf(x, cc.x), ly = LocalOf(y, cc.y), lz = LocalOf(z, cc.z);
         return (BlockID)c->blocks[Chunk::LocalIndex(lx, ly, lz)];
     }
+    uint8_t GetState(int x, int y, int z) {
+        if (y < Y_MIN || y > Y_MAX) return 0;
+        ChunkCoord cc = ToChunk(x, y, z);
+        Chunk* c = FindChunk(cc);
+        if (!c) return 0;
+        int lx = LocalOf(x, cc.x), ly = LocalOf(y, cc.y), lz = LocalOf(z, cc.z);
+        return c->state[Chunk::LocalIndex(lx, ly, lz)];
+    }
 
     bool Solid(int x, int y, int z) {
-        BlockID id = Get(x, y, z);
-        return id != BLOCK_AIR && g_info[id].solid;
+        return BlockSolid(Get(x, y, z));
     }
 
-    // Marks the owning chunk dirty, plus any neighbor whose visible
-    // boundary faces could be affected by this edit (Section 4.2).
+    // Marks the owning chunk dirty, plus every neighbour -- face, edge
+    // or corner -- whose mesh this cell can affect: face culling reaches
+    // across a shared face, and ambient occlusion (Section 4.2) reaches
+    // across edges and corners too.
     void MarkDirtyForEdit(const ChunkCoord& cc, int lx, int ly, int lz) {
-        MarkChunkDirty(cc);
-        if (lx == 0) MarkChunkDirty({ cc.x - 1, cc.y, cc.z });
-        if (lx == CHUNK_SIZE - 1) MarkChunkDirty({ cc.x + 1, cc.y, cc.z });
-        if (ly == 0) MarkChunkDirty({ cc.x, cc.y - 1, cc.z });
-        if (ly == CHUNK_SIZE - 1) MarkChunkDirty({ cc.x, cc.y + 1, cc.z });
-        if (lz == 0) MarkChunkDirty({ cc.x, cc.y, cc.z - 1 });
-        if (lz == CHUNK_SIZE - 1) MarkChunkDirty({ cc.x, cc.y, cc.z + 1 });
+        int x0 = lx == 0 ? -1 : 0, x1 = lx == CHUNK_SIZE - 1 ? 1 : 0;
+        int y0 = ly == 0 ? -1 : 0, y1 = ly == CHUNK_SIZE - 1 ? 1 : 0;
+        int z0 = lz == 0 ? -1 : 0, z1 = lz == CHUNK_SIZE - 1 ? 1 : 0;
+        for (int dy = y0; dy <= y1; dy++)
+            for (int dz = z0; dz <= z1; dz++)
+                for (int dx = x0; dx <= x1; dx++)
+                    MarkChunkDirty({ cc.x + dx, cc.y + dy, cc.z + dz });
     }
 
+    // Always (re)inserts: a chunk can be flagged dirty but parked outside
+    // the set while it waits for neighbouring columns (RebuildDirtyChunks),
+    // and this is how it gets back in.
     void MarkChunkDirty(const ChunkCoord& cc) {
         Chunk* c = FindChunk(cc);
-        if (c && !c->dirty) { c->dirty = true; dirtyChunks.insert(cc); }
+        if (c) { c->dirty = true; dirtyChunks.insert(cc); }
     }
 
-    // Bulk-load / worldgen path: no gravity trigger, no live-support
-    // check. See Section 5.2 -- running gravity checks against a
-    // partially-reconstructed world corrupts structures because
-    // unordered_map iteration order is not spatial.
-    void SetRaw(int x, int y, int z, BlockID id) {
+    // Bulk path (falls, and anything else that must not trigger live
+    // gravity checks -- Section 5.2): writes the cell, marks the chunk
+    // modified (it no longer matches the generator) and dirty.
+    void SetRaw(int x, int y, int z, BlockID id, uint8_t st = 0) {
         if (y < Y_MIN || y > Y_MAX) return;
         ChunkCoord cc = ToChunk(x, y, z);
         Chunk* c = GetOrCreateChunk(cc);
         int lx = LocalOf(x, cc.x), ly = LocalOf(y, cc.y), lz = LocalOf(z, cc.z);
-        c->blocks[Chunk::LocalIndex(lx, ly, lz)] = (uint8_t)id;
+        c->SetCell(Chunk::LocalIndex(lx, ly, lz), id, st);
+        c->modified = true;
         MarkDirtyForEdit(cc, lx, ly, lz);
     }
 
     // Live edit path used during play; gravity re-evaluation happens
     // via the caller invoking MaybeQueueFall after this (kept separate
     // so World has no dependency on the fall-queue globals).
-    void Set(int x, int y, int z, BlockID id) {
-        SetRaw(x, y, z, id);
+    void Set(int x, int y, int z, BlockID id, uint8_t st = 0) {
+        SetRaw(x, y, z, id, st);
     }
 };
 
@@ -184,7 +218,7 @@ void MaybeQueueFall(World& w, int x, int y, int z);
 // many ticks instead (Section 5.1).
 void ProcessFalls(World& w);
 // A live world edit that could have removed support underneath a block.
-void LiveEdit(World& w, int x, int y, int z, BlockID id);
+void LiveEdit(World& w, int x, int y, int z, BlockID id, uint8_t state = 0);
 
 // =======================================================================
 // World generation and chunk loading -- deterministic terrain, bypassing
@@ -192,16 +226,32 @@ void LiveEdit(World& w, int x, int y, int z, BlockID id);
 // 2.1/2.4. Not a numbered Part of its own in the design doc.
 // =======================================================================
 
-int TerrainHeight(int wx, int wz);
+// Every world records which generator made it (Section 2.5), because
+// unmodified terrain is never saved -- it's regenerated on demand, so a
+// save is only readable with the exact generator (type + version) that
+// produced it. A generator's output must therefore be a pure function of
+// (params, coordinates), and a change to it that alters output needs a
+// new version number, with the old version kept for existing worlds.
+enum WorldGenType : uint8_t { GEN_HILLS = 0, GEN_FLAT = 1, GEN_TYPE_COUNT };
+struct WorldGenParams {
+    WorldGenType type = GEN_FLAT;
+    uint32_t version = 1;
+    uint64_t seed = 0;
+};
+extern WorldGenParams g_worldGen;
+const char* WorldGenName(WorldGenType t);
+bool WorldGenFromName(const char* name, WorldGenType& out);
+// Highest generator version this build can reproduce, per type.
+uint32_t WorldGenLatestVersion(WorldGenType t);
+// New worlds use this. TEMPORARY: flat while testing (see world.cpp).
+WorldGenParams DefaultNewWorldGen();
+
+int TerrainHeight(int wx, int wz); // for g_worldGen
 long long ColumnKey(int cx, int cz);
+// Makes a column resident: generates its terrain from g_worldGen, then
+// overlays any modified chunks held in g_evictedChunks for it.
 void GenerateColumn(World& w, int cx, int cz);
 
-// Once true, always true: "real data exists for this column somewhere"
-// (either resident in World::chunks or evicted below), so terrain-gen
-// never re-runs over it and stomps player edits. Never shrinks, and
-// deliberately not iterated per-frame anywhere -- only ever a set of
-// int64 keys, checked by O(1) lookup.
-extern std::unordered_set<long long> g_generatedColumns;
 extern std::deque<std::pair<int, int>> g_pendingColumns;
 extern std::unordered_set<long long> g_pendingColumnSet;
 // Reset directly by LoadGame (persist.cpp) after swapping in a loaded
@@ -210,21 +260,19 @@ extern std::unordered_set<long long> g_pendingColumnSet;
 extern int g_lastPlayerChunkX, g_lastPlayerChunkZ;
 static const int MAX_COLUMN_GENS_PER_TICK = 4;
 
-// Columns currently backing real Chunk objects in World::chunks --
-// unlike g_generatedColumns, this one DOES shrink (a column leaving the
-// load radius is evicted below) and stays bounded by roughly the loaded
-// area rather than growing with lifetime-explored area. This is what
-// keeps RebuildDirtyChunks's per-frame scan and the world draw loop
-// bounded by "near the player" instead of "everywhere ever visited"
-// (DESIGN.md Part 1.3) -- frustum culling alone only skipped the draw
-// call, not the growth of what there was to scan.
+// Columns currently backing real Chunk objects in World::chunks. Bounded
+// by roughly the loaded area rather than lifetime-explored area -- this
+// is what keeps the world draw loop bounded by "near the player" instead
+// of "everywhere ever visited" (DESIGN.md Part 1.3). A column that isn't
+// resident is simply (re)generated when it's needed again.
 extern std::unordered_set<long long> g_residentColumns;
-// Evicted (out-of-radius) chunks, moved here whole with their GPU
-// buffers released. A ChunkCoord is in World::chunks XOR here, never
-// both -- GenerateColumn and the evict/restore helpers in world.cpp
-// maintain that invariant. SaveGame (persist.cpp) must walk both maps
-// to capture the complete world, or anything currently evicted would
-// silently vanish from the save.
+// Modified chunks of non-resident columns: everything the generator
+// can't reproduce, and nothing it can. Evicting a column moves its
+// modified chunks here and simply frees the rest (Section 2.4); loading
+// a save puts every saved chunk here; GenerateColumn overlays them back
+// onto fresh terrain when the column becomes resident again. A
+// ChunkCoord is in World::chunks XOR here, never both. SaveGame
+// (persist.cpp) walks both to capture every modified chunk.
 extern std::unordered_map<ChunkCoord, std::unique_ptr<Chunk>, ChunkCoordHash> g_evictedChunks;
 extern std::deque<std::pair<int, int>> g_pendingEvictions;
 extern std::unordered_set<long long> g_pendingEvictionSet;
@@ -235,6 +283,10 @@ static const int CHUNK_EVICT_MARGIN = 2;
 // Chebyshev distance in columns; overflow-safe for the INT32_MIN
 // "unknown position" sentinel g_lastPlayerChunkX/Z start at.
 int ColumnDistance(int cx, int cz, int playerChunkX, int playerChunkZ);
+// True when the column and all 8 around it are resident -- the condition
+// for meshing its chunks (face culling and ambient occlusion both read
+// across neighbouring columns).
+bool ColumnNeighborhoodResident(int cx, int cz);
 
 // Only enqueues columns now (Section 5.1's queue pattern applied to
 // generation) -- it never touches World directly, unlike its
@@ -256,11 +308,6 @@ struct Player {
     int hotbarIndex = 0;
 };
 
-static const BlockID g_placeable[] = {
-    BLOCK_FOUNDATION, BLOCK_STONE, BLOCK_DIRT, BLOCK_WOOD,
-    BLOCK_CHEST, BLOCK_MACHINE
-};
-static const int g_placeableCount = sizeof(g_placeable) / sizeof(g_placeable[0]);
 
 static inline void GetCameraVectors(const Player& p, Vec3& forward, Vec3& right, Vec3& up) {
     float cp = cosf(p.pitch), sp = sinf(p.pitch);

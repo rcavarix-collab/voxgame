@@ -39,34 +39,46 @@ Y is bounded to a fixed range (0–255 suggested). Rationale: true unbounded ver
 - The loaded set is recomputed **only when the player's chunk coordinate actually changes**, not every frame — recomputing several hundred hash-set entries every single tick regardless of movement was an identified inefficiency in the reviewed prototype and is explicitly avoided.
 - Newly-visible columns are *enqueued*, not generated immediately — actual terrain generation drains a capped number of columns per tick, the same bounded-work-queue pattern Part V's falling-block system established (Section 5.1). Generating the whole load radius synchronously (unavoidable at least once, for the initial spawn) would otherwise stall the first frame while every chunk in range generates and meshes at once. Columns are queued **ring by ring outward from the player's own column**, so the ground underfoot always generates first (a corner-to-corner raster order once put the spawn column dozens of ticks down the queue).
 - **Player physics never runs on ground that doesn't exist yet.** Ungenerated space reads as air, so until the player's own column is resident they're held exactly in place (no gravity, no movement), and walking into a not-yet-resident column is refused like walking into a wall. A new game starts the player standing on the surface (terrain height is a pure function of x/z, so no chunk is needed to know it). As a backstop, a player whose box overlaps solid blocks — terrain appearing around an edge, a block falling onto them — is lifted one block per tick until free, and a placement that would overlap the player's own box is refused.
-- Chunks leaving the radius (past a small hysteresis margin, so a player oscillating right at the boundary doesn't thrash) are evicted: their raw block data moves from `World::chunks` into a separate `g_evictedChunks` map (releasing GPU buffers) rather than being dropped, and restored byte-for-byte if the player returns rather than being regenerated (which would silently overwrite edits). This is in-memory only, not disk-backed — a deliberate scope decision, since building a persistent on-disk streaming cache before the game's fundamental scale (voxel size itself is still an open question) is settled would risk being infrastructure for the wrong shape of world. It still bounds the two things that actually mattered: `RebuildDirtyChunks`'s per-frame dirty-scan and the world draw loop's per-frame iteration, both of which previously scaled with total lifetime-explored area rather than the currently-loaded area (Part 1.3). `SaveGame` walks both `World::chunks` and `g_evictedChunks` to capture the complete world regardless of what's currently resident.
+- Terrain is generated **one ring beyond the view radius**. A chunk's mesh reads all 8 neighbouring columns (face culling across shared faces, ambient occlusion across edges and corners — 4.2), so a chunk is only meshed once its whole 3×3 neighbourhood is resident; the extra ring is what lets the outermost visible ring be meshed, and waiting means each chunk is built once rather than once per neighbour arrival.
+- Every chunk carries a **`modified`** flag: set by any edit, fall or load, i.e. whenever it stops matching what the generator produces. Columns leaving the radius (past a small hysteresis margin, so a player oscillating at the boundary doesn't thrash) are evicted: **unmodified chunks are simply freed** — the generator rebuilds them bit-for-bit on return (2.5) — and only modified chunks move to `g_evictedChunks` (minus GPU buffers). When a column becomes resident again, `GenerateColumn` generates its terrain and overlays any modified chunks held for it. So memory spent on places the player has left scales with what they *changed* there, not with distance walked, and the draw loop and rebuild queue stay bounded by the loaded area (Part 1.3). This is in-memory only, not disk-backed — a deliberate scope decision until the world's scale is settled. `SaveGame` walks both maps for modified chunks (7.2).
+
+### 2.5 World generators
+Because unmodified terrain is regenerated rather than stored — on eviction and on load — a world is only reproducible with the exact generator that made it. Each world therefore records its generator (`WorldGenParams`: type, version, seed) in its save, and a generator's output must be a pure function of (params, coordinates). Changing a generator's output means adding a new *version* alongside the old one, which existing worlds keep using; a save naming a generator or version this build doesn't have is refused with a clear reason rather than loaded onto the wrong terrain. Two exist: `hills` v1 (the original sin/cos terrain, which every pre-v5 save is tagged with) and `flat` v1 (surface at y = 12). New worlds currently use `flat` for testing (`DefaultNewWorldGen`, world.cpp). Every world gets a seed now even though neither generator reads one yet, so a seeded noise generator needs no format change.
 
 ---
 
 ## Part III — Block Model
 
 ### 3.1 Identity: name-based, not position-based
-`BlockID` (an enum) is a *runtime* convenience only. The actual identity written to disk is the block's **string name** (`g_blockNames[]`). This single decision is what allows the block list to grow indefinitely during development — adding, removing, or reordering enum entries never corrupts an existing save, because loading remaps saved names onto whatever the current build's names are, substituting a safe "unknown" (air) for anything genuinely removed, with a logged warning rather than a silent misread.
+`BlockID` (an enum) is a *runtime* convenience only. The actual identity written to disk is the block's **string name** (`g_blocks[id].name`). This single decision is what allows the block list to grow indefinitely during development — adding, removing, or reordering enum entries never corrupts an existing save, because loading remaps saved names onto whatever the current build's names are, substituting a safe "unknown" (air) for anything genuinely removed, with a logged warning rather than a silent misread.
 
-### 3.2 Metadata table
-One flat array, `BlockInfo g_info[BLOCK_COUNT]`, is the single source of truth per block:
+### 3.2 The block registry
+`blocks.h` holds one row per block type in `g_blocks[BLOCK_COUNT]`, the single source of truth every system reads — meshing, gravity, picking, the hotbar (`g_placeableList` is derived from the `placeable` flag), the save format's name table and the texture builder:
 ```
-foundational : bool   — never falls, always supports (Section V)
-solid        : bool   — participates in collision and raycast hits
-tex          : int    — atlas slot
+name         — identity on disk (3.1)
+solid        — collision, raycast hits, hides neighbouring faces
+foundational — never falls, always supports (Part V)
+placeable    — appears on the hotbar
+orientable   — stores a facing; its `front` texture goes on that side
+hasData      — may carry a per-block data record
+texAll / texTop / texBottom / texSide / texFront — texture names (4.3)
 ```
-No virtual dispatch, no per-block class hierarchy — a block's behavior is entirely data-driven from this table plus the systems that read it. This is deliberate: virtual calls inside the meshing and simulation inner loops would violate the "no virtual dispatch in hot paths" resource rule.
+Adding a block is one enum entry plus one row. No virtual dispatch, no per-block class hierarchy — virtual calls inside the meshing and simulation inner loops would violate the "no virtual dispatch in hot paths" rule.
+
+**Per-block state.** Every chunk stores a state byte per cell alongside the block ID (and saves it). The low 3 bits are a facing (`BlockFace`) for orientable blocks — set on placement so the front faces the player; the other 5 bits are reserved (a machine's on/off, a slab's half...) so they can be claimed without a storage or format change. It travels with a block when it falls.
+
+**Per-block data.** A sparse map per chunk (`Chunk::data`, keyed by cell, null for the vast majority of chunks) holds variable-length records for blocks that need more than a byte — a chest's contents, a machine's buffers (the item-handler interface of Part VI will live here). A record is dropped automatically when its cell's block changes, and is saved with its chunk. Nothing writes one yet; the storage and save path exist so machines don't need a format change.
 
 ### 3.3 Prototype block roster
-| Block | Foundational | Shape | Purpose |
+| Block | Foundational | Orientable | Purpose |
 |---|---|---|---|
 | Air | — | — | Absence of a block |
-| Foundation | yes | cube | Never falls; the base layer of any build |
-| Stone | no | cube | Terrain, subject to gravity |
-| Dirt | no | cube | Terrain, subject to gravity |
-| Wood | no | cube | Building material |
-| Chest | yes | cube | Storage container (item-handler interface, Part VI) |
-| Machine | yes | cube | Placeholder processing block |
+| Foundation | yes | no | Never falls; the base layer of any build |
+| Stone | no | no | Terrain, subject to gravity |
+| Dirt | no | no | Terrain, subject to gravity |
+| Wood | no | no | Building material |
+| Chest | yes | yes | Storage container (item-handler interface, Part VI) |
+| Machine | yes | yes | Placeholder processing block |
 
 ---
 
@@ -80,23 +92,29 @@ Every exposed face of every cube-shaped block in a chunk is combined into one ve
 
 **Face culling:** a face is only emitted if the neighboring cell (in world space, across chunk boundaries where relevant) is not solid. This requires the mesher to query `World::Solid()`, not just the local chunk array, at chunk edges.
 
+**Mesher** (`mesher.cpp`, no D3D, tested natively): each rebuild first copies the solidity of the chunk plus a one-cell shell of its 26 neighbours into a padded 18³ grid, so every culling and ambient-occlusion test is a plain array read — no per-face hash lookups across chunk borders. Vertices are packed to **8 bytes** (chunk-local position as bytes; a texture-array layer; 5-bit u/v, 2-bit AO and 3-bit face in one `uint16`), with the chunk's world origin supplied per draw from a small constant buffer; indices are **16-bit** (the worst case, a 3D checkerboard, is 49,152 vertices). That's a 2.5× smaller vertex buffer and half the index buffer compared with the previous float format. u/v reach 16 so merged (greedy) quads can later tile a texture across several blocks with no format change.
+
+**Lighting, for free at draw time:** each face gets a fixed brightness by direction (top brightest, bottom darkest, X and Z sides distinct) times a per-corner **ambient occlusion** term (the classic voxel AO: the two edge neighbours and the diagonal of the open cell beside each corner), both baked at mesh time; quads are split along their brighter diagonal to avoid the AO anisotropy seam. The pixel shader does one multiply.
+
 **Mesh rebuild policy:** only when a chunk is marked `dirty` (an edit occurred inside it, or a neighbor's edit could have exposed/hidden one of its boundary faces). Never rebuilt speculatively, never rebuilt every frame. `World::dirtyChunks` holds exactly the resident chunks whose flag is set (chunks enter and leave `World::chunks` only through `GetOrCreateChunk`/`AdoptChunk`/`TakeChunk`/`ClearChunks`, which keep the two in step), so the rebuilder looks only at chunks that need work — nothing at all while the world is static — and picks the ones **nearest the camera** first. New ground, a load or a render-distance change fills in outward from the player rather than in hash-map order.
 
 **Per-frame cost controls, added after real play surfaced measurable stutter:**
-- **Neighbor-solidity fast path** (`NeighborSolid`, render.cpp) — the ~67% of a chunk's cells whose neighbor is in the same chunk read straight out of `blocks[]` instead of paying `World::Solid`'s floor-divide-plus-hash-lookup cost for every one of a chunk's up to 24,576 neighbor checks; only checks that actually cross a chunk boundary fall back to the general path.
-- **Capped mesh rebuilds per frame** (`MAX_CHUNK_REBUILDS_PER_FRAME = 6`, render.cpp) — entering unexplored terrain can mark several newly-generated columns dirty in the same tick; rebuilding all of them (each a full mesh pass plus two synchronous GPU `CreateBuffer` calls) in one frame is exactly the kind of single-frame spike this cap smooths across several frames instead, mirroring Part V's per-tick work-queue philosophy.
+- **Padded neighbour grid** (above) — superseded the older per-check fast path: no neighbour check pays a hash lookup at all.
+- **Capped mesh rebuilds per frame** (`MAX_CHUNK_REBUILDS_PER_FRAME = 6`, render.cpp), nearest the camera first, and only for chunks whose 8 neighbouring columns are resident (2.4) — entering unexplored terrain can mark several newly-generated columns dirty in the same tick; rebuilding all of them (each a full mesh pass plus two synchronous GPU `CreateBuffer` calls) in one frame is exactly the kind of single-frame spike this cap smooths across several frames instead, mirroring Part V's per-tick work-queue philosophy.
 - **View-frustum culling** (`ExtractFrustum`/`FrustumIntersectsAABB`, render.cpp) — the six view-frustum planes are extracted directly from the combined view-projection matrix each frame; a chunk whose AABB doesn't intersect it is skipped in the draw loop entirely. Bounds per-frame draw cost by what the camera can actually see rather than by how much of the world happens to be currently loaded.
 - **Chunk eviction** (Section 2.4) — the companion fix to the above: without it, "currently loaded" itself only ever grows, so even a perfectly culled draw loop and a capped rebuild budget would still be iterating (if not drawing or meshing) an ever-larger set every frame. Together, loaded-set size and per-frame draw/mesh work both now track the player's current position rather than their lifetime path through the world.
 
-### 4.3 Texture atlas — fixing the single hardcoded-texture bug
-The originally reviewed prototype's `RebuildMesh` merged cube geometry correctly but rendered the *entire merged mesh* with one hardcoded texture slot regardless of the actual block type at each face — meaning dirt, wood, and every other cube-shaped block visually rendered as stone. The fix: one shared atlas texture built once at startup (currently a 3-column × 2-row grid of tiles), with each emitted face's UV computed from *that voxel's own* atlas slot (`AtlasRect(slot, ...)`) rather than a single fixed rectangle. One draw call per chunk is preserved; per-voxel texture correctness is restored. The atlas layout constants in `common.h` (`ATLAS_COLS`/`ATLAS_ROWS`) and the tile order baked in `textures.cpp`'s `GenerateGameTextures()` must stay in agreement — documented explicitly in both files' comments so a future edit to one doesn't silently desync from the other.
+### 4.3 Block textures — a texture array, authored or procedural
+Every distinct block face texture is one layer of a `Texture2DArray` (64×64, full mip chain), and the mesher stamps each face with its layer from `g_blockFaceLayer[block][facing][face]` — resolved once at load, never per vertex. (This replaced a single atlas image, which is what made per-face textures, orientation and mipmaps practical: with one texture per layer there's no neighbouring tile to bleed into, so addressing can wrap and mips can't smear tiles together.) The sampler is point for magnification — crisp pixel art up close — with linear blending between mip levels so distant blocks don't shimmer.
 
-**Authored textures (planned):** block art comes in as plain-text `.vtex` files in `assets/textures/` (a palette plus a character grid per texture, plus `block` entries mapping textures onto `all`/`top`/`bottom`/`side`/`front` faces), specified in `assets/textures/TEXTURE_BRIEF.md`. That file doubles as the prompt handed to the art conversation, so the format the art is written in and the format the loader reads are the same document. It lands with the block registry (per-face textures) and the texture-array move; any block without an authored texture keeps its procedural one.
+`blocktex.cpp` builds the set (pure C++, tested natively): for each (block, facing, face) it picks a texture name from the registry (3.2: front > side > all; top/bottom > all), or — if an authored `block` entry exists for that block — from that entry, which replaces the registry's mapping outright so an authored block never mixes in a placeholder face. A name resolves to authored `.vtex` art if present (scaled up by whole pixels, so it stays exactly as drawn), else a procedural placeholder of that name (`foundation`, `stone`, `dirt`, `wood`, `chest`, `chest_front`, `machine`, `machine_front`), else the block's own placeholder, else a magenta checker. Hotbar icons come from the same set (the face a placed block shows the player).
 
-Two seam rules, both from a visible 1px line on every block: (1) tiles are plotted pixel-exact straight into the atlas buffer, each clipped to its own square — GDI+ pens (a 3px border centred on x+1, half-pixel offset mode) used to paint a strip into whichever neighbouring tile had been drawn first; (2) `AtlasRect` insets UVs by only 1/64 texel. A half-texel inset under point sampling maps a face onto texel centres 0.5–63.5, which draws the first and last texel column of every tile at half width. With no MSAA, pixel centres never extrapolate past a face, so a tiny guard against float error is all that's needed.
+**Authored art:** plain-text `.vtex` files in `assets/textures/` (a palette plus a character grid per texture, plus `block` entries mapping textures onto `all`/`top`/`bottom`/`side`/`front`), specified in `assets/textures/TEXTURE_BRIEF.md` — which doubles as the prompt handed to the art conversation, so the format the art is written in and the format the loader reads are the same document. The folder is found beside the working directory or up to three folders above the exe. A malformed entry is skipped (everything else still loads) and every problem — parse errors with file:line, unknown blocks, missing or unused textures — is written to `assets/textures/_errors.txt`, with a toast at startup saying how many; the file is deleted again once there are none.
 
-### 4.4 Non-cube shapes — removed pending direction
-Pipe blocks (straight/corner/junction) and their per-instance rendering were implemented in an earlier pass — drawn individually outside the merged chunk mesh, since their silhouette isn't a full cube face — but pulled back out of the prototype entirely (block types, meshes, texture, hotbar icons) while the game's actual direction is still being decided. The scaling problem that implementation ran into is still worth remembering if any non-cube geometry returns: per-instance draw calls reproduce the exact per-object cost problem the chunk-mesh fix (4.2) solved for cubes, so it doesn't scale past prototype density without either (a) baking oriented geometry into the chunk mesh with a per-instance transform at mesh-build time, or (b) instanced rendering (one draw call per shape across all loaded chunks via a transform buffer). Neither is implemented, and there's currently nothing in the block roster that needs either — every current block is a plain cube.
+Seam rule, from a visible 1px line on every block: procedural tiles are plotted pixel-exact, each clipped to its own square (GDI+ pens once painted a strip into neighbouring tiles), and face UVs span exactly 0..1 of a layer (a half-texel inset under point sampling once drew every tile's edge texels at half width).
+
+### 4.4 Non-cube shapes — removed pending direction (returning next)
+Pipe blocks (straight/corner/junction) and their per-instance rendering were implemented in an earlier pass — drawn individually outside the merged chunk mesh, since their silhouette isn't a full cube face — but pulled back out of the prototype entirely (block types, meshes, texture, hotbar icons) while the game's actual direction is still being decided. The scaling problem that implementation ran into is still worth remembering if any non-cube geometry returns: per-instance draw calls reproduce the exact per-object cost problem the chunk-mesh fix (4.2) solved for cubes, so it doesn't scale past prototype density without either (a) baking oriented geometry into the chunk mesh with a per-instance transform at mesh-build time, or (b) instanced rendering (one draw call per shape across all loaded chunks via a transform buffer). Neither is implemented yet. Option (a) is now the natural route: the per-block facing (3.2) supplies the orientation and the packed mesher (4.2) already bakes per-face geometry, so shapes from Prismative.cpp (slab, ramp, tube, pyramid, funnel...) come back as registry shapes baked into the chunk mesh — next on the list.
 
 ### 4.5 Block picking — GPU-exact, not CPU-approximate
 Two options were compared for "what block is the player looking at":
@@ -182,15 +200,23 @@ Fully designed, **not yet coded**, and now provisional rather than committed: th
 ### 7.1 Why the legacy approach was unacceptable
 All four reference files persisted state via `file.write(reinterpret_cast<const char*>(&block), sizeof(Block))` — a raw struct dump. This fails three ways: (1) any struct field change silently corrupts every old save with no error; (2) no corruption detection — an interrupted write loads however far it got with no signal anything's wrong; (3) block identity is positional (enum/array order *is* the format), so adding a new block type during ongoing development reinterprets every existing save's blocks as the wrong type. A concrete bug was also found in LG2.cpp: `LoadGame` clears the quadtree and never rebuilds it, and separately, the quadtree holds pointers invalidated by `blocks.insert`/`erase` elsewhere — save/load interacting with a raw-pointer spatial index made the whole system fragile in a way that would have been very hard to diagnose from symptoms alone.
 
-### 7.2 Format actually implemented
+### 7.2 Format actually implemented (v5)
+The byte format lives in `worldfile.cpp` (pure C++, no OS calls — tested natively); `persist.cpp` does the disk side and applies a decoded save to live state.
 ```
-magic (u32 "VXLG") | version (u32, currently 3)
-player: pos.x,y,z (f32×3)  yaw,pitch (f32×2)  hotbarSelection (i32)
-blockNameCount (u32) | [ nameLen(u16) nameBytes ] × count
-blockCount (u32) | [ x,y,z (i32×3)  nameTableIndex(u8) ] × count
+magic (u32 "VXLG") | version (u32, currently 5)
+player: pos.x,y,z (f32×3)  yaw,pitch (f32×2)  hotbarSelection (i32)  dayTime (f32)
+generator: name (str)  version (u32)  seed (u64)                      (2.5)
+blockNameCount (u32) | [ nameLen(u16) nameBytes ] × count             (3.1)
+chunkCount (u32) | per chunk:
+    cx, cy, cz (i32×3)  flags (u8: 1 = has state, 2 = has data)
+    blocks: runs of (length u16, nameIndex u16) covering all 4096 cells
+    state (if flag 1): runs of (length u16, value u8)
+    data  (if flag 2): count (u16), then (cell u16, length u32, bytes)
 checksum (u32)  — FNV-1a over every byte above
 ```
-Block identity is written and read via the **name table**, not the enum — this is the direct structural fix for the positional-ID corruption failure mode, and it's the reason `g_blockNames[]` exists as a parallel source of truth to `BlockID`. Version bumped from 1 to 2 when a settings block was first added inline here; bumped again to 3 when that block was pulled back out into the separate global settings file described in 7.2.2 below. A v2 file is still loaded rather than rejected — its world/player data is byte-identical to v3's, just followed by a settings block v3 no longer has — specifically so the migration described in 7.2.2 can run. Only something older than v2, or newer than the running build understands, is rejected cleanly by the version check (Section 7.4).
+**Only modified chunks are written** (2.4); everything else regenerates from the recorded generator. Cells run in `LocalIndex` order (x fastest, then z, then y), so the horizontal layers typical of terrain and buildings collapse into a handful of runs. The effect on size is large: the old format spent 13 bytes on every non-air block (x, y, z as i32 plus an ID), so a radius-8 hills world was tens of megabytes; now an untouched world is a few hundred bytes of header, and a modest build costs a few hundred bytes to a few KB per chunk it touched (the native test's two-chunk edit encodes to 209 bytes).
+
+**Older versions still load:** v2 (preferences embedded, 7.2.2), v3 (preferences moved out), v4 (added the day clock). Their block lists are all hills v1 terrain, so they load as hills worlds with every stored chunk flagged modified; because those formats stored only non-air blocks, a hills chunk the player had dug out entirely would be absent — so each stored column's chunk rows 0–3 (hills v1 tops out at y = 60) are filled in as explicit empty chunks rather than letting regeneration refill them. Saving such a world again writes v5.
 
 ### 7.2.1 Save location
 `Documents\My Games\Voxistics\` — the conventional PC-game save location (Skyrim and most Bethesda/Paradox titles use the same pattern), chosen over a hidden `%LOCALAPPDATA%` folder specifically because it's visible and easy for players to find, back up, or copy between machines. The directory is resolved fresh on every save/load (`SHGetKnownFolderPath(FOLDERID_Documents, ...)` plus the `My Games\Voxistics` subfolder, created if missing) rather than cached once, so a transient failure doesn't permanently strand the game on a fallback it no longer needs.
@@ -231,11 +257,11 @@ A crash or power loss at any point before step 3 completes leaves the previously
 2. Compute FNV-1a over everything except the trailing checksum field; compare. Mismatch → abort before touching any live game state, log the reason.
 3. Verify magic number and version — wrong magic or unsupported version aborts cleanly rather than attempting to interpret garbage as a world.
 4. Build the saved-name → current-`BlockID` remap table. A name no longer present in the current build maps to `AIR` (with a logged warning) rather than silently reinterpreting as whatever ID happens to occupy that slot today.
-5. Populate the world via `World::SetRaw()` — the gravity-bypassing bulk setter described in 5.2 — never the live `Set()` path, precisely because iteration order through the loaded records is not guaranteed to match spatial support order.
-6. Restore player position, facing, and hotbar selection last.
+5. Decode every chunk into a scratch map (never through the live `Set()` path — no gravity checks against a half-built world, 5.2); refuse the load on any structural error (a run overflowing its chunk, a bad cell index, an unknown generator).
+6. Only then apply: player, day clock and generator, and hand every saved chunk to the modified-chunk store. Streaming generates the columns around the player and overlays those chunks (2.4), so a load costs the decode, however large the world.
 
-### 7.5 Explicitly out of scope for the prototype, designed for later
-Per-region multi-chunk files (grouping a 16×16 column of chunks behind one small offset-table header, so entering a new area is one file open instead of hundreds) — noted as the natural extension once a single monolithic save file becomes slow to write at scale, requiring no format redesign since chunk records are already self-contained with their own bounds and would simply move into region-scoped files.
+### 7.5 Designed for later
+Per-region multi-chunk files (grouping a 16×16 column of chunks behind one small offset-table header) — the natural extension once one save file becomes slow to write at scale, requiring no format redesign since v5 chunk records are already self-contained and would simply move into region-scoped files. Palette compression of chunks in memory, and writing saves on a background thread, are the other two noted extensions.
 
 ---
 
@@ -390,21 +416,21 @@ Generation runs on the main thread, so it is budgeted like everything else: medi
 
 ## Part XV — Build
 
-Nine source files (`main.cpp world.cpp render.cpp audio.cpp persist.cpp game.cpp textures.cpp music_synth.cpp profiler.cpp`), one compiler invocation, no project file strictly needed (the checked-in `.vcxproj`/`.vcxproj.filters` list them all for Visual Studio):
+Thirteen source files (`main.cpp world.cpp render.cpp audio.cpp persist.cpp game.cpp textures.cpp music_synth.cpp profiler.cpp worldfile.cpp vtex.cpp blocktex.cpp mesher.cpp`), one compiler invocation, no project file strictly needed (the checked-in `.vcxproj`/`.vcxproj.filters` list them all for Visual Studio):
 
 ```
-cl main.cpp world.cpp render.cpp audio.cpp persist.cpp game.cpp textures.cpp music_synth.cpp profiler.cpp /link d3d11.lib dxgi.lib d3dcompiler.lib gdiplus.lib gdi32.lib user32.lib shell32.lib ole32.lib uuid.lib xaudio2.lib /SUBSYSTEM:WINDOWS
+cl main.cpp world.cpp render.cpp audio.cpp persist.cpp game.cpp textures.cpp music_synth.cpp profiler.cpp worldfile.cpp vtex.cpp blocktex.cpp mesher.cpp /link d3d11.lib dxgi.lib d3dcompiler.lib gdiplus.lib gdi32.lib user32.lib shell32.lib ole32.lib uuid.lib xaudio2.lib /SUBSYSTEM:WINDOWS
 ```
 
 or with MinGW-w64 (used during development to compile-check this prototype on a non-Windows host, since it ships full D3D11/DXGI/D3DCompiler/GDI+/XAudio2 headers and import libraries):
 
 ```
 x86_64-w64-mingw32-g++ -std=c++17 -O2 -mwindows -municode -DUNICODE -D_UNICODE \
-  main.cpp world.cpp render.cpp audio.cpp persist.cpp game.cpp textures.cpp music_synth.cpp profiler.cpp -o voxistics.exe \
+  main.cpp world.cpp render.cpp audio.cpp persist.cpp game.cpp textures.cpp music_synth.cpp profiler.cpp worldfile.cpp vtex.cpp blocktex.cpp mesher.cpp -o voxistics.exe \
   -ld3d11 -ldxgi -ld3dcompiler -lgdiplus -lgdi32 -luser32 -lole32 -lshell32 -luuid -lxaudio2_8 -static-libgcc -static-libstdc++
 ```
 
-Each `.cpp` above owns one subsystem and includes only the headers it needs (`common.h` for shared math/block-table types; `world.h` for the simulation model; `render.h` for D3D11 state and chunk meshing; `audio.h` for XAudio2 playback; `persist.h` for settings/save-load; `game.h` for the menu state machine, input dispatch, and the UI render pass). `textures.cpp` and `music_synth.cpp` stay dependency-free of the rest of the project by design. `textures.cpp` exposes `extern "C"` entry points to `render.cpp` by convention; `music_synth.cpp` has its own header (`music_synth.h`) holding `MusicState` and the generator's entry points, and `audio.cpp` `static_assert`s that the music's day length matches `DAY_LENGTH_SECONDS`.
+Each `.cpp` above owns one subsystem and includes only the headers it needs (`common.h` for shared math/block-table types; `world.h` for the simulation model; `render.h` for D3D11 state and chunk meshing; `audio.h` for XAudio2 playback; `persist.h` for settings/save-load; `game.h` for the menu state machine, input dispatch, and the UI render pass). `blocks.h` is the block registry (Part III). `worldfile.cpp` (save format), `vtex.cpp` (texture parser), `blocktex.cpp` (block texture set) and `mesher.cpp` (chunk meshing) are deliberately free of Windows and D3D so the native tests (Part XVII) can build them; `textures.cpp` (GDI+ UI font atlas) and `music_synth.cpp` stay dependency-free of the rest of the project by design. `textures.cpp` exposes `extern "C"` entry points to `render.cpp` by convention; `music_synth.cpp` has its own header (`music_synth.h`) holding `MusicState` and the generator's entry points, and `audio.cpp` `static_assert`s that the music's day length matches `DAY_LENGTH_SECONDS`.
 
 (`-lxaudio2_8` is MinGW's import-lib name for the same XAudio2 2.8 API that the Windows SDK's `xaudio2.lib` provides — a MinGW-only naming difference, same idea as `-municode` above it.)
 
@@ -415,3 +441,7 @@ Default controls (all fully remappable to any keyboard key or the left/right/mid
 Part 1.3's rule (cost scales with what's on screen or changing, never with total world size) is only a rule if it can be checked, so the engine measures itself. `profiler.h/.cpp` times each system every frame with `QueryPerformanceCounter` (`ProfScope` RAII timers around terrain generation, eviction, physics, falls, music synthesis, mesh rebuilds, world draw submission, the UI pass and `Present`) and records load counters (resident chunks, chunks and triangles drawn, meshes built, dirty chunks / columns / falls waiting). A 128-frame ring buffer (~2 s) is summarised twice a second into average and worst milliseconds per system, plus frame time and **work time** (frame minus `Present`, which under vsync is mostly waiting rather than work). Worst-frame numbers matter as much as averages: a hitch is a single bad frame that an average hides.
 
 Collection is always on (a few dozen timer reads per frame); the overlay is toggled with F3 (unless F3 is bound to an action) or Display Settings → Profiler, and persisted in settings.cfg. New systems should get a `ProfScope` and, where they have a queue, a counter — that is how a design-rule regression shows up the day it's introduced instead of in a playtest.
+
+## Part XVII — Tests
+
+`tests/run.sh` builds and runs `tests/tests.cpp` with the host compiler — no Windows needed — against the platform-free modules (`world.cpp`, `worldfile.cpp`, `vtex.cpp`, `blocktex.cpp`, `mesher.cpp`), with `tests/stub/` standing in for the two Windows/D3D headers they touch. It covers the `.vtex` parser (valid input and each class of error), texture assembly (placeholders, authored overrides and upscaling, orientation, warnings), the v5 save round trip (including state, data, corruption detection), legacy v4 loading (name remapping, dug-out chunks), streaming (one-ring-past-view residency, eviction keeping only modified chunks, bit-exact regeneration on return), player spawn and unstick, and the mesher (culling, AO, cross-chunk faces, orientation, the 16-bit worst case). Every change to those modules should keep it at zero failures, and new systems should add their checks here — the harnesses that used to be written and thrown away during development now live in the repo instead.
