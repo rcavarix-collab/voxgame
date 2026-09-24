@@ -285,6 +285,28 @@ bool IsActionDown(GameAction a) {
     return IsInputDown(g_keyBindings[a]);
 }
 
+static GameAction OppositeMove(GameAction a) {
+    switch (a) {
+    case ACT_FORWARD: return ACT_BACK;
+    case ACT_BACK: return ACT_FORWARD;
+    case ACT_LEFT: return ACT_RIGHT;
+    default: return ACT_LEFT;
+    }
+}
+// A fresh press of a movement binding flips its latch, whether the
+// binding is a key or a mouse button. Latching a direction releases its
+// opposite: with forward and back both latched they cancel out, and the
+// next press un-latches the one the player didn't mean, which reads as
+// inverted controls. Perpendicular latches still combine, for diagonals.
+static void ToggleMoveLatches(int code) {
+    if (!g_toggleMovement || g_menuScreen != MenuScreen::None) return;
+    for (GameAction a : { ACT_FORWARD, ACT_BACK, ACT_LEFT, ACT_RIGHT }) {
+        if (code != g_keyBindings[a]) continue;
+        g_moveToggleLatch[a] = !g_moveToggleLatch[a];
+        if (g_moveToggleLatch[a]) g_moveToggleLatch[OppositeMove(a)] = false;
+    }
+}
+
 // Human-readable name for a bound input code, for the Keybindings rows.
 static std::string GetInputDisplayName(int code) {
     if (code == MOUSE_LEFT) return "MOUSE LEFT";
@@ -680,6 +702,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         if (g_rebindingAction != -1) { g_keyBindings[g_rebindingAction] = MOUSE_LEFT; g_rebindingAction = -1; SaveSettings(); return 0; }
         if (g_menuScreen != MenuScreen::None) { DispatchMenuClick(mx, my); return 0; }
         if (!g_mouseCaptured) { CaptureMouseForPlay(); return 0; }
+        ToggleMoveLatches(MOUSE_LEFT);
         FireBoundAction(MOUSE_LEFT);
         return 0;
     }
@@ -698,6 +721,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     case WM_RBUTTONDOWN:
         g_mouseButtonDown[1] = true;
         if (g_rebindingAction != -1) { g_keyBindings[g_rebindingAction] = MOUSE_RIGHT; g_rebindingAction = -1; SaveSettings(); return 0; }
+        ToggleMoveLatches(MOUSE_RIGHT);
         FireBoundAction(MOUSE_RIGHT);
         return 0;
     case WM_RBUTTONUP:
@@ -706,6 +730,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     case WM_MBUTTONDOWN:
         g_mouseButtonDown[2] = true;
         if (g_rebindingAction != -1) { g_keyBindings[g_rebindingAction] = MOUSE_MIDDLE; g_rebindingAction = -1; SaveSettings(); return 0; }
+        ToggleMoveLatches(MOUSE_MIDDLE);
         FireBoundAction(MOUSE_MIDDLE);
         return 0;
     case WM_MBUTTONUP:
@@ -727,16 +752,10 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             if (idx < g_placeableCount) g_player.hotbarIndex = idx;
             return 0;
         }
-        // Toggle-to-move (Accessibility, Section 11): flip the latch on a
-        // genuine press only -- bit 30 of lParam is set when this
-        // WM_KEYDOWN is Windows' own key-repeat rather than a fresh
-        // press, and without excluding it, holding the key would rapidly
-        // flip the latch back and forth instead of toggling once.
-        if (g_toggleMovement && g_menuScreen == MenuScreen::None && !(lParam & (1 << 30))) {
-            for (GameAction a : { ACT_FORWARD, ACT_BACK, ACT_LEFT, ACT_RIGHT }) {
-                if ((int)wParam == g_keyBindings[a]) g_moveToggleLatch[a] = !g_moveToggleLatch[a];
-            }
-        }
+        // Toggle-to-move (Accessibility, Section 11): genuine presses only --
+        // bit 30 of lParam marks Windows' own key-repeat, which would
+        // otherwise flip the latch back and forth while the key is held.
+        if (!(lParam & (1 << 30))) ToggleMoveLatches((int)wParam);
         FireBoundAction((int)wParam);
         return 0;
     case WM_KEYUP:
@@ -844,6 +863,31 @@ void RenderUIPass() {
         float scale = 1.3f;
         float tw = UITextWidth(hint, scale);
         UIDrawText(glyphVerts, hint, (SCREEN_W - tw) / 2.0f, SCREEN_H * 0.42f, scale, 1, 1, 1, 0.9f);
+    }
+
+    // Toggle-to-move indicator (Accessibility, Section 11): a small arrow
+    // cross in the bottom-left corner, each arrow lit while that direction
+    // is latched, so a still-active latch is never invisible. Static --
+    // it changes only when the player presses something.
+    if (g_toggleMovement && !menuIsOpen && g_gameState == GameState::InGame) {
+        const float S = 26.0f, G = 3.0f, x0 = 16.0f;
+        const float yTop = SCREEN_H - 16.0f - (3.0f * S + 2.0f * G);
+        struct Cell { GameAction act; const char* glyph; float cx, cy; };
+        const Cell cells[4] = {
+            { ACT_FORWARD, "^", 1, 0 }, { ACT_LEFT, "<", 0, 1 },
+            { ACT_RIGHT, ">", 2, 1 },   { ACT_BACK, "v", 1, 2 },
+        };
+        UIDrawText(glyphVerts, "TOGGLE MOVE", x0, yTop - 16.0f, 0.45f, 1, 1, 1, 0.75f);
+        for (const Cell& c : cells) {
+            float cx0 = x0 + c.cx * (S + G), cy0 = yTop + c.cy * (S + G);
+            bool on = g_moveToggleLatch[c.act];
+            if (on) UIDrawRect(glyphVerts, cx0, cy0, cx0 + S, cy0 + S, 1.0f, g_highContrastUI ? 0.9f : 0.8f, g_highContrastUI ? 0.0f : 0.2f, 0.95f);
+            else UIDrawRect(glyphVerts, cx0, cy0, cx0 + S, cy0 + S, 0.08f, 0.08f, 0.08f, g_highContrastUI ? 0.9f : 0.55f);
+            float gs = 0.8f;
+            float gx = cx0 + (S - UI_CELL_W * gs) / 2.0f, gy = cy0 + (S - UI_CELL_H * gs) / 2.0f;
+            if (on) UIDrawText(glyphVerts, c.glyph, gx, gy, gs, 0, 0, 0, 1);
+            else UIDrawText(glyphVerts, c.glyph, gx, gy, gs, 0.7f, 0.7f, 0.7f, g_highContrastUI ? 1.0f : 0.8f);
+        }
     }
 
     // High-contrast mode (Accessibility, Section 11) pushes every panel/
