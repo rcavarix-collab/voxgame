@@ -1057,12 +1057,13 @@ static void TestPulse() {
         uint8_t run = (1u << FACE_POS_X) | (1u << FACE_NEG_X), bend = (1u << FACE_POS_X) | (1u << FACE_POS_Y);
         CHECK(PipePolys(run, 0, polys) == 4);   // one seamless tube: no end faces where it joins on
         { bool allRound = true; for (int k = 0; k < 4; k++) allRound = allRound && polys[k].round; CHECK(allRound); } // shaded round (PIPE_ROUND_BIT)
-        { int np = PipePolys(1u << FACE_NEG_Z, 0, polys), flat = 0; for (int k = 0; k < np; k++) flat += !polys[k].round; CHECK(flat == 6); } // the collar stays faceted
+        { int np = PipePolys(1u << FACE_NEG_Z, 0, polys), flat = 0; for (int k = 0; k < np; k++) flat += !polys[k].round; CHECK(flat == 17); } // the hollow mouth stays faceted
         CHECK(PipePolys(bend, 0, polys) == 12); // a low-poly elbow: six walls, three pieces a side
         CHECK(PipeMouths(run, 0) == 0 && PipeMouths(bend, 0) == 0);
         CHECK(PipeMouths(1u << FACE_NEG_Z, 0) == (1u << FACE_POS_Z));
         CHECK(PipeMouths(0, FACE_POS_Y) == ((1u << FACE_POS_Y) | (1u << FACE_NEG_Y)));
-        CHECK(PipePolys(1u << FACE_NEG_Z, 0, polys) == 10); // bar + collar
+        CHECK(PipePolys(1u << FACE_NEG_Z, 0, polys) == 21); // tube + a hollow mouth (collar ring, throat, dark back)
+        CHECK(PipePolys(0, FACE_POS_X, polys) == 38);          // a lone pipe: open at both ends
         uint8_t all = 63;
         CHECK(PipePolys(all, 0, polys) == 20);  // a tube through, four branches off its sides
         // Every elbow orientation stays on the grid, inside the cell, and

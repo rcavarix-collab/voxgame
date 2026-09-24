@@ -2,6 +2,7 @@
 
 #include "shapes.h"
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <initializer_list>
 #include <numeric>
@@ -660,6 +661,47 @@ struct PipeBuilder {
             Quad(fr, quad, f, d[0], d[1], d[2], false);
         }
     }
+    // An open mouth at canonical +X: a collar ring (x 6..8, 2..6 across)
+    // round a hollow throat a quarter block deep -- dark walls and a dark
+    // back, from the near-black strip at the top of the pipe's texture
+    // (v 0), so the end reads as a hole the pulse comes out of. The tube's
+    // own walls stop at x = 6, where the collar begins: nothing overlaps.
+    void Mouth(const PipeFrame& fr) {
+        auto quad = [&](int face, int nx, int ny, int nz, std::initializer_list<std::array<int, 3>> pts, int u, int v) {
+            int q[4][5]; int k = 0;
+            for (const auto& p : pts) { q[k][0] = p[0]; q[k][1] = p[1]; q[k][2] = p[2]; q[k][3] = u; q[k][4] = v; k++; }
+            Quad(fr, q, face, nx, ny, nz, false);
+        };
+        auto proj = [&](int face, int nx, int ny, int nz, std::initializer_list<std::array<int, 3>> pts) {
+            int q[4][5]; int k = 0;
+            for (const auto& p : pts) {
+                // The collar's metal: texture from the face's own plane.
+                q[k][0] = p[0]; q[k][1] = p[1]; q[k][2] = p[2];
+                q[k][3] = (nx != 0) ? p[2] : p[0]; q[k][4] = (ny != 0) ? p[2] : p[1];
+                k++;
+            }
+            Quad(fr, q, face, nx, ny, nz, false);
+        };
+        // Outer sides of the collar.
+        proj(FACE_NEG_Y, 0, -1, 0, { {{ 6, 2, 2 }}, {{ 8, 2, 2 }}, {{ 8, 2, 6 }}, {{ 6, 2, 6 }} });
+        proj(FACE_POS_Y, 0, 1, 0,  { {{ 6, 6, 2 }}, {{ 8, 6, 2 }}, {{ 8, 6, 6 }}, {{ 6, 6, 6 }} });
+        proj(FACE_NEG_Z, 0, 0, -1, { {{ 6, 2, 2 }}, {{ 8, 2, 2 }}, {{ 8, 6, 2 }}, {{ 6, 6, 2 }} });
+        proj(FACE_POS_Z, 0, 0, 1,  { {{ 6, 2, 6 }}, {{ 8, 2, 6 }}, {{ 8, 6, 6 }}, {{ 6, 6, 6 }} });
+        // Front (x 8) and back (x 6) rings: four strips round the 3..5 hole.
+        for (int x : { 8, 6 }) {
+            int f = x == 8 ? FACE_POS_X : FACE_NEG_X, nx = x == 8 ? 1 : -1;
+            proj(f, nx, 0, 0, { {{ x, 2, 2 }}, {{ x, 6, 2 }}, {{ x, 6, 3 }}, {{ x, 2, 3 }} });
+            proj(f, nx, 0, 0, { {{ x, 2, 5 }}, {{ x, 6, 5 }}, {{ x, 6, 6 }}, {{ x, 2, 6 }} });
+            proj(f, nx, 0, 0, { {{ x, 2, 3 }}, {{ x, 3, 3 }}, {{ x, 3, 5 }}, {{ x, 2, 5 }} });
+            proj(f, nx, 0, 0, { {{ x, 5, 3 }}, {{ x, 6, 3 }}, {{ x, 6, 5 }}, {{ x, 5, 5 }} });
+        }
+        // The throat: walls facing in, and its dark back at x 6.
+        quad(FACE_POS_Y, 0, 1, 0,  { {{ 6, 3, 3 }}, {{ 8, 3, 3 }}, {{ 8, 3, 5 }}, {{ 6, 3, 5 }} }, 4, 0);
+        quad(FACE_NEG_Y, 0, -1, 0, { {{ 6, 5, 3 }}, {{ 8, 5, 3 }}, {{ 8, 5, 5 }}, {{ 6, 5, 5 }} }, 4, 0);
+        quad(FACE_POS_Z, 0, 0, 1,  { {{ 6, 3, 3 }}, {{ 8, 3, 3 }}, {{ 8, 5, 3 }}, {{ 6, 5, 3 }} }, 4, 0);
+        quad(FACE_NEG_Z, 0, 0, -1, { {{ 6, 3, 5 }}, {{ 8, 3, 5 }}, {{ 8, 5, 5 }}, {{ 6, 5, 5 }} }, 4, 0);
+        quad(FACE_POS_X, 1, 0, 0,  { {{ 6, 3, 3 }}, {{ 6, 5, 3 }}, {{ 6, 5, 5 }}, {{ 6, 3, 5 }} }, 4, 0);
+    }
     // A threaded length along canonical +X, x 0..8: the plain tube, with a
     // thread of beads set into its four edges, stepping a quarter turn round
     // every quarter block -- one full turn per block, so it runs on unbroken
@@ -747,6 +789,13 @@ int PipePolys(uint8_t joined, uint8_t state, ShapePoly* out, int twist) {
         b.Elbow(PipeFrame::Of(fa, fb));
     } else if (through >= 0 && count == 2 && twist != 0 && mouths == 0) {
         b.Threaded(AlongFace(through * 2), twist); // a twisted pipe's runs carry its thread (not at open ends: the collar goes there)
+    } else if (through >= 0 && count == 2 && mouths != 0) {
+        // A run with open end(s): the tube stops where each mouth's collar begins.
+        PipeFrame fr = AlongFace(through * 2);
+        bool pos = (mouths & (1u << (through * 2))) != 0, neg = (mouths & (1u << (through * 2 + 1))) != 0;
+        b.Tube(fr, neg ? 2 : 0, pos ? 6 : 8);
+        if (pos) b.Mouth(fr);
+        if (neg) b.Mouth(PipeFrame::Of(through * 2 + 1, fr.ax[2]));
     } else if (through >= 0) {
         b.Tube(AlongFace(through * 2), 0, 8);
         for (int f = 0; f < FACE_COUNT; f++) if (has(f) && f / 2 != through) b.Tube(AlongFace(f), 5, 8);
@@ -757,16 +806,5 @@ int PipePolys(uint8_t joined, uint8_t state, ShapePoly* out, int twist) {
         for (int k = 0; k < m; k++) if (!has(six[k].texFace)) out[b.n++] = six[k];
         for (int f = 0; f < FACE_COUNT; f++) if (has(f)) b.Tube(AlongFace(f), 5, 8);
     }
-    int n = b.n;
-    // A collar round each open mouth, so an open end reads as one.
-    auto collar = [&](int x0, int y0, int z0, int x1, int y1, int z1) {
-        n += BoxFaces(ShapeBox{ (uint8_t)x0, (uint8_t)y0, (uint8_t)z0, (uint8_t)x1, (uint8_t)y1, (uint8_t)z1 }, out + n);
-    };
-    if (mouths & (1u << FACE_POS_X)) collar(7, 2, 2, 8, 6, 6);
-    if (mouths & (1u << FACE_NEG_X)) collar(0, 2, 2, 1, 6, 6);
-    if (mouths & (1u << FACE_POS_Y)) collar(2, 7, 2, 6, 8, 6);
-    if (mouths & (1u << FACE_NEG_Y)) collar(2, 0, 2, 6, 1, 6);
-    if (mouths & (1u << FACE_POS_Z)) collar(2, 2, 7, 6, 6, 8);
-    if (mouths & (1u << FACE_NEG_Z)) collar(2, 2, 0, 6, 6, 1);
-    return n;
+    return b.n;
 }

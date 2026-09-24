@@ -45,6 +45,8 @@ def m_pipe(spin):
     accent = ACCENT[spin]
     def f(u, v):
         t = grain(u, v)
+        if v < 1.5:  # the inside of an open mouth (the throat's walls sample here): near black
+            return ramp(["07080a", "0c0e11", "121519"], t), 1, 0.1, 0.0, 0
         # A round-ish sheen across the face (its middle is v 8).
         across = (v - 8.0) / 2.0
         sheen = max(0.0, 1.0 - across * across)

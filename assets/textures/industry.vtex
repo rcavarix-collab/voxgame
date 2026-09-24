@@ -5,65 +5,69 @@
 texture pulse_pipe
 size 32
 palette
-  a 474e55
-  b 4c535a
-  c 505860
-  d 516259
-  e 555d65
-  f 56685e
-  g 5a626a
-  h 5f6770
-  i 617369
-  j 646c75
-  k 66796e
-  l 69727b
-  m 6f7780
-  n 72867a
-  o 747d86
-  p 798c81
-  q 7a838c
-  r 818992
-  s c89139
-  t d8a040
-  u e5b050
-  v f2bf60
+  a 0a0c0f
+  b 0c0e11
+  c 0e1014
+  d 101316
+  e 474e55
+  f 4c535a
+  g 505860
+  h 516259
+  i 555d65
+  j 56685e
+  k 5a626a
+  l 5f6770
+  m 617369
+  n 646c75
+  o 66796e
+  p 69727b
+  q 6f7780
+  r 72867a
+  s 747d86
+  t 798c81
+  u 7a838c
+  v 818992
+  w c89139
+  x d8a040
+  y e5b050
+  z f2bf60
 pixels
-  idsccccbbbbaaaaaaaaaabbbcccccsdi
-  idscccbbbbbbbbbbbbbbbbbbbbbbcsdi
-  idscccbbbbbcccccccccbbbbbbbbbsdi
-  idsccccccccccccccccccbbbbbbbbsdi
-  idscccccccccccccccccbbcccccccsdi
-  idsccccccccccccccccccccccccccsdi
-  idsccccccccccccccccccccccccccsdi
-  idseeccccccccccccceeeecccceeesdi
-  idsccccccccccccccceeeeeeeeeeesdi
-  idsbbcccccccbbbbbbcccccccccccsdi
-  idsaabbccccbbbbbbbbbbbbbbbbbbsdi
-  idsaaabbbbbbbbbbbbbbbbbaaaaaasdi
-  kftcceeeeeeeeeeeeeeeeeecccccctfk
-  niujjjjjjjjjjlllllllljjjjjjjjuin
-  pkvoooooooooooooooooooooooooovkp
-  pkvqqqqqqqqqqrrrrrrrrrqqqrrrrvkp
-  pkvqqqqqqqrrrrrrrrrrrrrrrrrrrvkp
-  pkvqooooooooqqqqqqoooooooqqqqvkp
-  niummlllllllmlllllllllllllmmmuin
-  kfthhhhhhhhhhhgggggggggggggggtfk
-  idseeeeeeeeecccccccccccccccccsdi
-  idsccceeeccccccccccccccccccccsdi
-  idsccccccccccccccccccccccccccsdi
-  idsbbbbbbbbbbbaaabbbbbbcccbbbsdi
-  idsbbbbbbbbbbbaaaaabbbbccccbbsdi
-  idsbbccccbbbbaaaaaaabbbbbbbbbsdi
-  idsbbbbbbbbbaaaaaaabbbbbbbbbbsdi
-  idsbbbbbbbbbbbbbbbbbbbaaaaabbsdi
-  idsbbbbbbbbbbbbbbbbbbbabbbbbbsdi
-  idsbbbccccbbbbbbbbbaaabbbbbbbsdi
-  idsccccccbbbbbbbbbaaaabbbbcccsdi
-  idsccccbbbbaaaaaaaaaabbbbcccesdi
+  dcccccbbbbaaaaaaaaaaaabbbbcccccd
+  ccccbbbbbbbbbbbbbbbbbbbbbbbbbccc
+  bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+  mhwggggggggggggggggggffffffffwhm
+  mhwgggggggggggggggggffgggggggwhm
+  mhwggggggggggggggggggggggggggwhm
+  mhwggggggggggggggggggggggggggwhm
+  mhwiigggggggggggggiiiiggggiiiwhm
+  mhwgggggggggggggggiiiiiiiiiiiwhm
+  mhwffgggggggffffffgggggggggggwhm
+  mhweeffggggffffffffffffffffffwhm
+  mhweeefffffffffffffffffeeeeeewhm
+  ojxggiiiiiiiiiiiiiiiiiiggggggxjo
+  rmynnnnnnnnnnppppppppnnnnnnnnymr
+  tozsssssssssssssssssssssssssszot
+  tozuuuuuuuuuuvvvvvvvvvuuuvvvvzot
+  tozuuuuuuuvvvvvvvvvvvvvvvvvvvzot
+  tozussssssssuuuuuusssssssuuuuzot
+  rmyqqpppppppqpppppppppppppqqqymr
+  ojxlllllllllllkkkkkkkkkkkkkkkxjo
+  mhwiiiiiiiiigggggggggggggggggwhm
+  mhwgggiiiggggggggggggggggggggwhm
+  mhwggggggggggggggggggggggggggwhm
+  mhwfffffffffffeeeffffffgggfffwhm
+  mhwfffffffffffeeeeeffffggggffwhm
+  mhwffggggffffeeeeeeefffffffffwhm
+  mhwfffffffffeeeeeeeffffffffffwhm
+  mhwfffffffffffffffffffeeeeeffwhm
+  mhwfffffffffffffffffffeffffffwhm
+  mhwfffggggfffffffffeeefffffffwhm
+  mhwggggggfffffffffeeeeffffgggwhm
+  mhwggggffffeeeeeeeeeeffffgggiwhm
 height
-  ujliiiihhhhhhhhhhhhhhhhhiiiiilju
-  ujliiihhhhhhhhhhhhhhhhhhiiiiilju
-  ujliiiihhhiiiiiiiiiiiihhhhhhilju
+  44444444444444444444444444444444
+  44444444444444444444444444444444
+  44444444444444444444444444444444
   ujliiiiiiiiiiiiiiiiiiiiiiihhilju
   ujliiiiiiiiiiiiiiiiiiiiiiiiiilju
   ujliiiiiiiiiiiiiiiiiiiiiiiiiilju
@@ -94,9 +98,9 @@ height
   ujliiiiiiihhhhhhhhhhhhhhhhiiilju
   ujliiiiihhhhhhhhhhhhhhhhiiiiilju
 shine
-  77533333333333333333333333333577
-  77533333333333333333333333333577
-  77533333333333333333333333333577
+  00000000000000000000000000000000
+  00000000000000000000000000000000
+  00000000000000000000000000000000
   77533333333333333333333333333577
   77533333333333333333333333333577
   77533333333333333333333333333577
@@ -127,9 +131,9 @@ shine
   77533333333333333333333333333577
   77533333333333333333333333333577
 glow
-  00100000000000000000000000000100
-  00100000000000000000000000000100
-  00100000000000000000000000000100
+  00000000000000000000000000000000
+  00000000000000000000000000000000
+  00000000000000000000000000000000
   00100000000000000000000000000100
   00100000000000000000000000000100
   00100000000000000000000000000100
@@ -165,62 +169,65 @@ end
 texture pulse_pipe_cw
 size 32
 palette
-  a 1539b2
-  b 1840c8
-  c 204cda
-  d 2758ed
-  e 2f64ff
-  f 474e55
-  g 4c535a
-  h 4d7bff
-  i 505860
-  j 555d65
-  k 5a626a
-  l 5f6770
-  m 69727b
-  n 6c91ff
-  o 6f7780
-  p 747d86
-  q 7a838c
-  r 818992
-  s 8aa8ff
+  a 0a0c0f
+  b 0c0e11
+  c 0e1014
+  d 1539b2
+  e 1840c8
+  f 204cda
+  g 2758ed
+  h 2f64ff
+  i 474e55
+  j 4c535a
+  k 4d7bff
+  l 505860
+  m 555d65
+  n 5a626a
+  o 5f6770
+  p 69727b
+  q 6c91ff
+  r 6f7780
+  s 747d86
+  t 7a838c
+  u 818992
+  v 8aa8ff
 pixels
-  dbggggggaaggggggaaggggggaaggggbd
-  dbaigggggaaggggggaaggggggaaiiibd
-  dbaaigggggaaggggggaagggggiaaiibd
-  dbiaaiiiiigaaggggggaaiiiiiiaaibd
-  dbiiaaiiiiggaaggggggaaiiiiiiaabd
-  dbiigaaggggggaaggggggaagggggiabd
-  dbiiiiaaggggggaaigggggaaggggiibd
-  dbjjjiiaaigggggaaggggggaagiiiibd
-  dbiiiiiiaaiiigggaaggggggaaiiiibd
-  dbaiiiiiiaaiiiiiiaaigggggaaiiibd
-  dbaaiiiiiiaajjjjjjaaiiigggaaiibd
-  dbiaaiiiiiiaajjjjjjaajjjjiiaaibd
-  eclkccllllllccllllllccllllllccce
-  hdmmmeeooooopeeppppppeeooooooedh
-  nepppphhqqqqqrhhrrrrrqhhqqppppen
-  sepqqqrnnrrrrrrnnrrrrrrnnqqqqpes
-  seqqqqqrnnrrrrrrnnrrrrqqnnqqqpes
-  nehppppqqhhqqqqqqhhqppppphhpppen
-  hdeemmmmmmeemmmmomeemmmmmmeemmdh
-  eckcckkkkjjccjjjjjjccjjjjjjcckce
-  dbiiaaggggggaaggggggaaggggggaabd
-  dbgggaagggiiiaaiiggggaaggggggabd
-  dbiiiiaaiiiiiiaaiiggggaagiiiiibd
-  dbiiiiiaaiiggggaaggggggaagggggbd
-  dbiiiiiiaaiiigggaaggggggaaiiiibd
-  dbaiiiiiiaaiiggggaaggiiiiaaiiibd
-  dbaaiiiiiiaaigggggaagiiiiiaaiibd
-  dbiaaiiiiiiaaggggggaagggggiaaibd
-  dbiiaaiiiiigaaggggggaagggiiiaabd
-  dbiiiaaiiigggaafffgggaaiiiiiiabd
-  dbiiiiaaiigggfaaffffggaaiiiiiibd
-  dbggggiaaggggggaaggggggaagggggbd
+  aabbbbbbbbbbbbaaaaabbbabbbbbbbba
+  ccbbbbaaaaabbbbbbbbbbbbbbbbbbccc
+  cccbbbbaaabbbbbbbbbbbbbbbbbbcccc
+  gelddllllljddjjjjjjddllllllddleg
+  gellddlllljjddjjjjjjddllllllddeg
+  gelljddjjjjjjddjjjjjjddjjjjjldeg
+  gellllddjjjjjjddljjjjjddjjjjlleg
+  gemmmllddljjjjjddjjjjjjddjlllleg
+  gellllllddllljjjddjjjjjjddlllleg
+  gedllllllddllllllddljjjjjddllleg
+  geddllllllddmmmmmmddllljjjddlleg
+  gelddllllllddmmmmmmddmmmmllddleg
+  hfonffooooooffooooooffoooooofffh
+  kgppphhrrrrrshhsssssshhrrrrrrhgk
+  qhsssskktttttukkuuuuutkkttsssshq
+  vhstttuqquuuuuuqquuuuuuqqttttshv
+  vhtttttuqquuuuuuqquuuuttqqtttshv
+  qhkssssttkkttttttkktssssskkssshq
+  kghhpppppphhpppprphhpppppphhppgk
+  hfnffnnnnmmffmmmmmmffmmmmmmffnfh
+  gellddjjjjjjddjjjjjjddjjjjjjddeg
+  gejjjddjjjlllddlljjjjddjjjjjjdeg
+  gellllddllllllddlljjjjddjllllleg
+  gelllllddlljjjjddjjjjjjddjjjjjeg
+  gellllllddllljjjddjjjjjjddlllleg
+  gedllllllddlljjjjddjjllllddllleg
+  geddllllllddljjjjjddjlllllddlleg
+  gelddllllllddjjjjjjddjjjjjlddleg
+  gellddllllljddjjjjjjddjjjlllddeg
+  gelllddllljjjddiiijjjddlllllldeg
+  gellllddlljjjiddiiiijjddlllllleg
+  gejjjjlddjjjjjjddjjjjjjddjjjjjeg
 height
-  ujhhhhhhllhhhhhhllhhhhhhllhhhhju
-  ujliihhhhllhhhhhhllhhhhhhlliiiju
-  ujllihhhhhllhhhhhhllhhhiiilliiju
+  44444444444444444444444444444444
+  44444444444444444444444444444444
+  44444444444444444444444444444444
   ujilliiiiiilliiiiihlliiiiiilliju
   ujiilliiiiiillhhhhhhlliiiiiillju
   ujiiillhhhhhhllhhhhhhllhhiiiilju
@@ -251,9 +258,9 @@ height
   ujiiiilliihhhhllhhhhhhlliiiiiiju
   ujhhhiillihhhhhllhhhhhhllhhhhhju
 shine
-  77333333553333335533333355333377
-  77533333355333333553333335533377
-  77553333335533333355333333553377
+  00000000000000000000000000000000
+  00000000000000000000000000000000
+  00000000000000000000000000000000
   77355333333553333335533333355377
   77335533333355333333553333335577
   77333553333335533333355333333577
@@ -284,9 +291,9 @@ shine
   77333355333333553333335533333377
   77333335533333355333333553333377
 glow
-  11000000110000001100000011000011
-  11100000011000000110000001100011
-  11110000001100000011000000110011
+  00000000000000000000000000000000
+  00000000000000000000000000000000
+  00000000000000000000000000000000
   11011000000110000001100000011011
   11001100000011000000110000001111
   11000110000001100000011000000111
@@ -322,63 +329,68 @@ end
 texture pulse_pipe_ccw
 size 32
 palette
-  a 434950
-  b 474e55
-  c 4c535a
-  d 505860
-  e 555d65
-  f 5a626a
-  g 646c75
-  h 69727b
-  i 6f7780
-  j 747d86
-  k 7a838c
-  l 818992
-  m a91619
-  n c01a1e
-  o d02123
-  p e02927
-  q f0302c
-  r f5534d
-  s fa776d
-  t ff9a8e
+  a 090a0c
+  b 0a0c0f
+  c 0c0e11
+  d 0e1014
+  e 101316
+  f 434950
+  g 474e55
+  h 4c535a
+  i 505860
+  j 555d65
+  k 5a626a
+  l 646c75
+  m 69727b
+  n 6f7780
+  o 747d86
+  p 7a838c
+  q 818992
+  r a91619
+  s c01a1e
+  t d02123
+  u e02927
+  v f0302c
+  w f5534d
+  x fa776d
+  y ff9a8e
 pixels
-  pnedddcmmccbbbbmmbbbbbbmmccddenp
-  pnedddmmcbbbbbmmaabbbbmmccdddenp
-  pndddmmcccbbbmmbbbbbbmmccccddmnp
-  pnddmmccccccmmccccccmmccccccmmnp
-  pndmmccccccmmccccccmmccccccmmdnp
-  pnmmdddddcmmbbbbbbmmccccddmmddnp
-  pnmdddddcmmbbbbbbmmbcccddmmeeenp
-  pneeedddmmcbbbbbmmbbccccmmddeenp
-  pneddddmmccbbbbmmbbccccmmddddenp
-  pndddcmmccbbbbmmbbbbbcmmcdddddnp
-  pncccmmccccccmmccbbbcmmccccccmnp
-  pnccmmccccccmmddddccmmccccccmmnp
-  qoeooeeffffooffffffooffffffooeoq
-  rpqqhhhhhhqqhhhhhhqqiiiiiiqqhhpr
-  sqrjjjjjjrrjjjjjjrrkkkkkkrrkjjqs
-  tqllllllsslkkkkksskkklllssllllqt
-  tqlllllssllllkksskkkkkksslllllqt
-  sqkkkkrrkkkjjjrrjjjiijrrjjjkkkqs
-  rpiiiqqhhhhhhqqggggggqqgghhhiqpr
-  qoffooeeeeeeooeeeeeeooefffffoooq
-  pndmmcccbbbmmccccccmmccddddmmdnp
-  pnmmcccbbbmmccccccmmccccccmmddnp
-  pnmcbbbbbmmcccdddmmccccccmmcccnp
-  pnbbbbbbmmccccccmmcccccbmmbbbbnp
-  pnaabbbmmbbccccmmcccccbmmbbbbanp
-  pnbbbbmmbbbbbbmmbcccccmmbbbbbbnp
-  pnbbbmmbbbbbbmmbbbbbbmmbbbbbbmnp
-  pnbbmmbbbbbbmmbbbbbbmmcccccbmmnp
-  pnbmmbbbbbbmmbbbbbbmmbbbbbbmmbnp
-  pnmmbbbbbbmmbbbbbbmmbbaaabmmbbnp
-  pnmccccbbmmbbbbccmmbbbbbbmmcccnp
-  pnddddccmmbbbbccmmcbbbbbmmcdddnp
+  eedddcccbbbbbbbbbbbbbbbbbccdddee
+  eddddccbbbbbbaaaaaabbbbbbccdddde
+  dddddccbbbbbbbaaaabbbbbbbccccddd
+  usiirrhhhhhhrrhhhhhhrrhhhhhhrrsu
+  usirrhhhhhhrrhhhhhhrrhhhhhhrrisu
+  usrriiiiihrrggggggrrhhhhiirriisu
+  usriiiiihrrggggggrrghhhiirrjjjsu
+  usjjjiiirrhgggggrrgghhhhrriijjsu
+  usjiiiirrhhggggrrgghhhhrriiiijsu
+  usiiihrrhhggggrrggggghrrhiiiiisu
+  ushhhrrhhhhhhrrhhggghrrhhhhhhrsu
+  ushhrrhhhhhhrriiiihhrrhhhhhhrrsu
+  vtjttjjkkkkttkkkkkkttkkkkkkttjtv
+  wuvvmmmmmmvvmmmmmmvvnnnnnnvvmmuw
+  xvwoooooowwoooooowwppppppwwpoovx
+  yvqqqqqqxxqpppppxxpppqqqxxqqqqvy
+  yvqqqqqxxqqqqppxxppppppxxqqqqqvy
+  xvppppwwpppooowwooonnowwooopppvx
+  wunnnvvmmmmmmvvllllllvvllmmmnvuw
+  vtkkttjjjjjjttjjjjjjttjkkkkktttv
+  usirrhhhgggrrhhhhhhrrhhiiiirrisu
+  usrrhhhgggrrhhhhhhrrhhhhhhrriisu
+  usrhgggggrrhhhiiirrhhhhhhrrhhhsu
+  usggggggrrhhhhhhrrhhhhhgrrggggsu
+  usffgggrrgghhhhrrhhhhhgrrggggfsu
+  usggggrrggggggrrghhhhhrrggggggsu
+  usgggrrggggggrrggggggrrggggggrsu
+  usggrrggggggrrggggggrrhhhhhgrrsu
+  usgrrggggggrrggggggrrggggggrrgsu
+  usrrggggggrrggggggrrggfffgrrggsu
+  usrhhhhggrrgggghhrrggggggrrhhhsu
+  usiiiihhrrgggghhrrhgggggrrhiiisu
 height
-  ujiiiiillhhhhhhllhhhhhhllhiiiiju
-  ujiiiillhhhhhhllgghhhhllhhiiiiju
-  ujiiillhhhhhhllhhhhhhllhhhhiilju
+  44444444444444444444444444444444
+  44444444444444444444444444444444
+  44444444444444444444444444444444
   ujiillhhhhhhllhhhhhhllhhhhhhllju
   ujilliiihhhllhhhhhhllhhhhhhlliju
   ujlliiiiihllhhhhhhllhhhiiilliiju
@@ -409,9 +421,9 @@ height
   ujlhhhhhhllhhhhhhllhhhhhhllhhhju
   ujiiiihhllhhhhhhllhhhhhhllhiiiju
 shine
-  77333335533333355333333553333377
-  77333355333333553333335533333377
-  77333553333335533333355333333577
+  00000000000000000000000000000000
+  00000000000000000000000000000000
+  00000000000000000000000000000000
   77335533333355333333553333335577
   77355333333553333335533333355377
   77553333335533333355333333553377
@@ -442,9 +454,9 @@ shine
   77533333355333333553333335533377
   77333333553333335533333355333377
 glow
-  11000001100000011000000110000011
-  11000011000000110000001100000011
-  11000110000001100000011000000111
+  00000000000000000000000000000000
+  00000000000000000000000000000000
+  00000000000000000000000000000000
   11001100000011000000110000001111
   11011000000110000001100000011011
   11110000001100000011000000110011
