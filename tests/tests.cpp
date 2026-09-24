@@ -470,6 +470,26 @@ static void TestMovement() {
         run(late, crouchWalk, 0.05f);
         CHECK(!PlayerSliding(late));
     }
+    // Stepping up onto a slab moves the body at once but not the view: the
+    // eye's world height is continuous, then glides up to standing height.
+    {
+        World sw; ResetWorldState(sw); Stream(sw, 40, 8, 300);
+        int gy = TerrainHeight(40, 8);
+        for (int z = 6; z <= 10; z++) sw.Set(42, gy + 1, z, BLOCK_STONE_SLAB);
+        Player q; q.x = 40.5f; q.z = 8.5f; q.y = (float)(gy + 1); q.yaw = 1.5708f;
+        MoveInput go; go.fwd = true;
+        float prevEye = q.y + q.eyeHeight, worstJump = 0;
+        bool stepped = false;
+        for (int i = 0; i < 60; i++) {
+            float y0 = q.y;
+            UpdatePlayerPhysics(sw, q, 1.0f / 60.0f, go);
+            if (q.y - y0 > 0.4f) stepped = true;
+            float eye = q.y + q.eyeHeight;
+            worstJump = std::max(worstJump, eye - prevEye);
+            prevEye = eye;
+        }
+        CHECK(stepped && worstJump < 0.2f && fabsf(q.eyeHeight - PLAYER_EYE) < 0.02f);
+    }
     // And a slide carries you straight under the roof.
     Player u = at(0.5f, 8.5f);
     run(u, sprint, 0.9f);           // up to speed, well short of the mouth at x = 9.7

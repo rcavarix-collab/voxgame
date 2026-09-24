@@ -607,6 +607,7 @@ void UpdatePlayerPhysics(World& w, Player& p, float dt, const MoveInput& in) {
         if (p.onGround && !BoxIntersectsSolid(w, p.x, p.y + STEP, p.z, h) &&
             !BoxIntersectsSolid(w, p.x + dx, p.y + STEP, p.z + dz, h)) {
             p.x += dx; p.z += dz; p.y += STEP;
+            p.eyeHeight -= STEP; // the view doesn't jump: it glides up with the eye's easing (~0.25 s)
             return true;
         }
         return false;
