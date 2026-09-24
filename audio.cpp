@@ -82,8 +82,12 @@ static MusicColour g_musicColour;
 static IXAudio2SourceVoice* g_worldVoice = nullptr;
 static SoundPalette* g_palette = nullptr;
 static const int WORLD_BUFFER_SAMPLES = 512;   // 11.6 ms
-static const int WORLD_QUEUE = 3;              // ~35 ms ahead: latency + slack for a slow frame
-static const int WORLD_POOL = WORLD_QUEUE + 2;
+// Buffers kept queued: enough to cover about two frames (so a 30 fps cap
+// or a slow frame never starves the voice), 3 (~35 ms) at 60 fps and up.
+static const int WORLD_QUEUE_MIN = 3, WORLD_QUEUE_MAX = 8;
+static const int WORLD_POOL = WORLD_QUEUE_MAX + 2;
+static int g_worldQueue = WORLD_QUEUE_MIN;
+static double g_worldLastPump = 0;
 static int16_t (*g_worldPool)[WORLD_BUFFER_SAMPLES * 2] = nullptr; // stereo, interleaved
 static int g_worldPoolNext = 0;
 static bool g_worldIdle = true;                 // nothing sounding: no buffers rendered
@@ -119,10 +123,23 @@ static void WaitForMusicDrain() {
     g_musicNeedsDrain = false;
 }
 
+// Samples already generated into the next pool slot (RefillMusicQueueIfNeeded
+// fills it a slice per frame; a chunk is submitted once it's full).
+static int g_musicFill = 0;
+// A slice per frame: ~46 ms of audio, so no single frame carries a whole
+// quarter-second of synthesis (the busiest section, Midday, used to show
+// as a hitch four times a second on a modest machine). At 60 fps this still
+// generates ~2.8x faster than it plays, so the 4 s lookahead stays full.
+static const int MUSIC_SLICE_SAMPLES = 2048;
+
+// Generates (the rest of) the next chunk and submits it.
 static void SubmitOneMusicChunk() {
     int16_t* chunk = g_musicPool[g_musicPoolNext];
+    if (g_musicFill < MUSIC_CHUNK_SAMPLES)
+        GenerateMusicChunk(g_nextChunkStartTime + (double)g_musicFill / MUSIC_SAMPLE_RATE, MUSIC_CHUNK_SAMPLES - g_musicFill,
+                           (double)g_musicIntensity, &g_musicState, chunk + g_musicFill, &g_musicColour);
+    g_musicFill = 0;
     g_musicPoolNext = (g_musicPoolNext + 1) % MUSIC_POOL_SIZE;
-    GenerateMusicChunk(g_nextChunkStartTime, MUSIC_CHUNK_SAMPLES, (double)g_musicIntensity, &g_musicState, chunk, &g_musicColour);
     int slot = (int)(chunk - g_musicPool[0]) / MUSIC_CHUNK_SAMPLES;
     g_chunkStartTime[slot] = g_nextChunkStartTime;
     MeasureMusicLevels(g_levelMeter, chunk, MUSIC_CHUNK_SAMPLES, LEVEL_STEPS, MUSIC_SAMPLE_RATE, g_chunkLevels[slot]);
@@ -146,6 +163,7 @@ void StartMusicPlayback() {
     g_musicNeedsDrain = true;
     WaitForMusicDrain();
     ResetMusicState(&g_musicState);
+    g_musicFill = 0; // any half-made chunk belonged to the old position
     g_levelMeter = MusicLevelMeter();
     g_nextChunkStartTime = g_dayTimeSeconds;
     for (int i = 0; i < MUSIC_PRIME_CHUNKS; i++) SubmitOneMusicChunk();
@@ -163,6 +181,7 @@ void StopMusicPlayback() {
     g_musicVoice->FlushSourceBuffers();
     g_musicNeedsDrain = true;
     g_nextChunkStartTime = -1.0;
+    g_musicFill = 0;
 }
 
 // Tops up the lookahead queue by at most one chunk per call, so music
@@ -171,7 +190,16 @@ void StopMusicPlayback() {
 // playback (g_nextChunkStartTime < 0).
 void RefillMusicQueueIfNeeded() {
     if (!g_musicVoice || g_nextChunkStartTime < 0.0) return;
-    if (QueuedMusicBuffers() < (UINT32)MUSIC_LOOKAHEAD_CHUNKS) SubmitOneMusicChunk();
+    UINT32 queued = QueuedMusicBuffers();
+    if (queued >= (UINT32)MUSIC_LOOKAHEAD_CHUNKS) return;
+    // Running low (a long stall): finish the chunk now rather than starve.
+    if (queued < 2) { SubmitOneMusicChunk(); return; }
+    int n = MUSIC_CHUNK_SAMPLES - g_musicFill;
+    if (n > MUSIC_SLICE_SAMPLES) n = MUSIC_SLICE_SAMPLES;
+    GenerateMusicChunk(g_nextChunkStartTime + (double)g_musicFill / MUSIC_SAMPLE_RATE, n, (double)g_musicIntensity,
+                       &g_musicState, g_musicPool[g_musicPoolNext] + g_musicFill, &g_musicColour);
+    g_musicFill += n;
+    if (g_musicFill >= MUSIC_CHUNK_SAMPLES) SubmitOneMusicChunk();
 }
 
 static double NowSeconds() {
@@ -287,11 +315,18 @@ static UINT32 QueuedWorldBuffers() {
 static void PumpWorldSound() {
     if (!g_worldVoice || !g_palette) return;
     UINT32 queued = QueuedWorldBuffers();
+    {   // Follow the frame time: ~two frames of audio queued, never fewer than 3 buffers.
+        double nowS = NowSeconds(), frame = g_worldLastPump > 0 ? nowS - g_worldLastPump : 1.0 / 60.0;
+        g_worldLastPump = nowS;
+        if (frame > 0.1) frame = 0.1;
+        int want = (int)ceil(2.0 * frame * MUSIC_SAMPLE_RATE / WORLD_BUFFER_SAMPLES) + 1;
+        g_worldQueue = want < WORLD_QUEUE_MIN ? WORLD_QUEUE_MIN : want > WORLD_QUEUE_MAX ? WORLD_QUEUE_MAX : want;
+    }
     if (g_worldIdle && g_palette->Silent()) return; // nothing to say: render nothing
     bool running = g_nextChunkStartTime >= 0.0;
     double t = AudibleMusicTime() + (double)queued * WORLD_BUFFER_SAMPLES / MUSIC_SAMPLE_RATE;
     float buf[WORLD_BUFFER_SAMPLES * 2];
-    while (queued < (UINT32)WORLD_QUEUE) {
+    while (queued < (UINT32)g_worldQueue) {
         g_palette->RenderStereo(buf, WORLD_BUFFER_SAMPLES, t, running);
         int16_t* out = g_worldPool[g_worldPoolNext];
         g_worldPoolNext = (g_worldPoolNext + 1) % WORLD_POOL;

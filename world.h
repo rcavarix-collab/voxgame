@@ -358,6 +358,10 @@ struct Player {
     bool crouchHeld = false;      // the crouch input last tick (a fresh press starts a slide)
     float slideTime = 0.0f;       // > 0 while power-sliding: seconds so far
     float slideVX = 0.0f, slideVZ = 0.0f; // the slide's momentum, blocks/s
+    // Forgiving slide timing: how long since the player last sprinted (or
+    // tried to, crouch held), and how long a crouch press stays "fresh".
+    float sinceSprint = 1e9f;
+    float crouchBuffer = 0.0f;
     // Camera only, eased toward their targets each tick.
     float eyeHeight = PLAYER_EYE; // above the feet
     float roll = 0.0f;            // lean, radians (+ = toward the right)

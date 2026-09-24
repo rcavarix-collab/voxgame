@@ -508,11 +508,16 @@ static bool ColumnResidentAt(float x, float z) {
 
 // Movement speeds and the power slide, blocks per second (Section 4.7).
 static const float WALK_SPEED = 4.5f;
-static const float SPRINT_SPEED = 6.5f;
+static const float SPRINT_SPEED = 7.5f;
 static const float CROUCH_SPEED = 1.8f;
-static const float SLIDE_START_SPEED = 9.0f;  // the burst when a sprint drops into a slide
+static const float SLIDE_START_SPEED = 10.0f; // the burst when a sprint drops into a slide
 static const float SLIDE_FRICTION = 1.5f;     // per second: speed falls as e^(-friction * t) on the ground
 static const float SLIDE_MAX_SECONDS = 1.4f;
+// The slide forgives timing: crouch and sprint may come in either order,
+// up to this far apart (a sprint just let go of still counts, and a crouch
+// pressed a moment early -- or just before landing -- waits for it).
+static const float SLIDE_SPRINT_GRACE = 0.4f; // seconds since sprinting
+static const float SLIDE_PRESS_GRACE = 0.3f;  // seconds a crouch press stays fresh
 static const float SLIDE_LEAN_ROLL = 0.21f;   // radians (~12 degrees) of lean at full sideways slide
 static const float SLIDE_LEAN_PITCH = 0.08f;  // radians of dip at full forward slide
 
@@ -569,10 +574,16 @@ void UpdatePlayerPhysics(World& w, Player& p, float dt, const MoveInput& in) {
     // room to.
     bool crouchPressed = in.crouch && !p.crouchHeld;
     p.crouchHeld = in.crouch;
-    if (crouchPressed && p.onGround && p.sprinting && !PlayerSliding(p) && mlen > 0.0001f) {
+    p.crouchBuffer = crouchPressed ? SLIDE_PRESS_GRACE : std::max(0.0f, p.crouchBuffer - dt);
+    // Sprinting, or trying to (sprint + forward with crouch already held).
+    bool sprintIntent = in.sprint && in.fwd && !in.back;
+    p.sinceSprint = (sprintIntent || p.sprinting) ? 0.0f : p.sinceSprint + dt;
+    if (p.crouchBuffer > 0.0f && in.crouch && p.onGround && p.sinceSprint <= SLIDE_SPRINT_GRACE &&
+        !PlayerSliding(p) && mlen > 0.0001f) {
         p.slideTime = 1e-4f;
         p.slideVX = mx * SLIDE_START_SPEED; p.slideVZ = mz * SLIDE_START_SPEED;
         p.crouching = true;
+        p.crouchBuffer = 0.0f; // one press, one slide
     }
     if (PlayerSliding(p)) {
         float speed = sqrtf(p.slideVX * p.slideVX + p.slideVZ * p.slideVZ);

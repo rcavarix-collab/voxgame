@@ -48,7 +48,7 @@ ID3D11PixelShader* g_ps = nullptr;
 ID3D11InputLayout* g_layout = nullptr;
 ID3D11Buffer* g_cbuffer = nullptr;
 ID3D11SamplerState* g_sampler = nullptr;
-// Trilinear, wrapping: the blurred read behind the colour bleed (4.16).
+// Anisotropic, wrapping: the smooth read for distant surfaces.
 static ID3D11SamplerState* g_softSampler = nullptr;
 ID3D11RasterizerState* g_rasterState = nullptr;
 ID3D11DepthStencilState* g_depthState = nullptr;
@@ -69,8 +69,11 @@ static ID3D11ShaderResourceView* g_sceneSRV = nullptr;
 static ID3D11ShaderResourceView* g_depthSRV = nullptr;
 // Sun shadow map (Section 4.8).
 static const int SHADOW_SIZE = 2048;
-static ID3D11DepthStencilView* g_shadowDSV = nullptr;
-static ID3D11ShaderResourceView* g_shadowSRV = nullptr;
+// Two maps: the world samples the front one while the next is drawn into
+// the other a slice of chunks per frame, then they swap (no one-frame hitch).
+static ID3D11DepthStencilView* g_shadowDSV[2] = {};
+static ID3D11ShaderResourceView* g_shadowSRV[2] = {};
+static int g_shadowFront = 0;
 static ID3D11SamplerState* g_shadowSampler = nullptr;
 static ID3D11RasterizerState* g_shadowRaster = nullptr;
 static ID3D11VertexShader* g_shadowVS = nullptr;
@@ -172,9 +175,12 @@ static const char* g_atmosphereSrc =
     "    col += fSunColor.rgb * (0.10f * pow(s, 8.0f) + 0.25f * pow(s, 64.0f));\n"
     "    return col;\n"
     "}\n"
+    // Distance fog: a gentle aerial haze that builds from nearby (so depth
+    // reads), and the loaded world's edge fading fully into the sky.
     "float FogAmount(float dist) {\n"
+    "    float haze = 1.0f - exp(-dist / max(fFog.y * 1.2f, 1.0f));\n"
     "    float f = saturate((dist - fFog.x) / max(fFog.y - fFog.x, 1.0f));\n"
-    "    return f * f * (3.0f - 2.0f * f);\n"
+    "    return max(haze * 0.55f, f * f * (3.0f - 2.0f * f));\n"
     "}\n"
     "float3 ToDisplay(float3 x) {\n"
     "    x *= fFog.z;\n"
@@ -233,7 +239,7 @@ static const char* g_shaderSrc =
     "Texture3D glowTex : register(t2);\n"
     "SamplerState glowSamp : register(s2);\n"
     "Texture2DArray surfTex : register(t3);\n"                      // normal xy, shine, glow (4.13)
-    "SamplerState softSamp : register(s3);\n"                      // trilinear: the colour bleed (4.16)
+    "SamplerState softSamp : register(s3);\n"                      // anisotropic: distant surfaces
     // Large-scale variation (4.16): a slow drift of value and warmth across
     // the world, from the pixel's world position -- a few ALU ops, no data.
     "float VHash(float2 p) { p = frac(p * float2(0.1031f, 0.1030f)); p += dot(p, p.yx + 33.33f); return frac((p.x + p.y) * p.x); }\n"
@@ -252,15 +258,17 @@ static const char* g_shaderSrc =
     "SamplerComparisonState shadowSamp : register(s1);\n"
     "#endif\n"
     "float4 PSMain(PSIn i) : SV_TARGET {\n"
-    "    float4 texel = tex0.Sample(samp0, i.uvl);\n"                  // sRGB texture view: already linear
+    // Crisp pixels up close; with distance the read fades into smooth
+    // (anisotropic, trilinear) filtering, so far ground doesn't sparkle.
+    "    float farBlend = saturate((length(i.wpos - fCamPos.xyz) - 10.0f) / 22.0f);\n"
+    "    float4 texel = lerp(tex0.Sample(samp0, i.uvl), tex0.Sample(softSamp, i.uvl), farBlend);\n" // sRGB view: already linear
     "    if (i.aoBias.y < 0.0f) clip(texel.a - 0.5f);\n"               // plant card: see-through pixels are cut out
     "    float4 surf = surfTex.Sample(samp0, i.uvl);\n"
     "    float3 albedo = texel.rgb;\n"
-    // Soft detail (4.16): a third of a blurrier read of the same texture
-    // (two mips down, trilinear) bleeds colour between neighbouring texels
-    // -- crisp pixels, softened by their surroundings -- then the slow
-    // world-scale drift breaks up the repetition of a tiled material.
-    "    albedo = lerp(albedo, tex0.SampleBias(softSamp, i.uvl, 2.0f).rgb, 0.35f) * WorldVariation(i.wpos);\n"
+    // Large-scale variation (4.16): a slow world-scale drift breaks up the
+    // repetition of a tiled material. (The colour bleed tried beside it read
+    // as a halo in play, and was dropped.)
+    "    albedo *= WorldVariation(i.wpos);\n"
     "    float3 nGeo = i.glowInfo.yzw;\n"                              // the face itself
     // A slanted facet (ramps, pyramids, the faceted props of 4.15) is lit by
     // its true, flat normal: the cross product of the position's screen
@@ -281,7 +289,7 @@ static const char* g_shaderSrc =
     "    float3 T = dp2perp * duv1.x + dp1perp * duv2.x;\n"
     "    float3 B = dp2perp * duv1.y + dp1perp * duv2.y;\n"
     "    float frameScale = rsqrt(max(max(dot(T, T), dot(B, B)), 1e-20f));\n"
-    "    float2 nxy = surf.xy * 2.0f - 1.0f;\n"
+    "    float2 nxy = (surf.xy * 2.0f - 1.0f) * (1.0f - farBlend);\n"   // bumps flatten with distance (no glittering)
     "    float3 n = normalize((T * nxy.x + B * nxy.y) * frameScale + nGeo * sqrt(saturate(1.0f - dot(nxy, nxy))));\n"
     "    float ao = i.aoBias.x;\n"
     "    float shadow = 1.0f;\n"
@@ -751,12 +759,15 @@ void UpdateCBuffer(const CBData& data) {
 // calls it has already bound shaders, layout and constant buffers.
 // Opaque parts only (the shadow map uses this too, so glass casts no
 // shadow); see-through parts are DrawTranslucent's.
-static void DrawChunks(World& w, const Frustum& frustum, bool countStats) {
+// `slice`/`slices`: draw only the chunks in one of `slices` interleaved
+// groups (the shadow map is redrawn a group per frame).
+static void DrawChunks(World& w, const Frustum& frustum, bool countStats, int slice = 0, int slices = 1) {
     UINT stride = sizeof(Vertex), offset = 0;
     for (auto& kv : w.chunks) {
         Chunk& c = *kv.second;
         if (c.opaqueIndexCount == 0) continue;
         const ChunkCoord& cc = kv.first;
+        if (slices > 1 && ((cc.x * 7 + cc.y * 13 + cc.z * 31) % slices + slices) % slices != slice) continue;
         Vec3 minB = { (float)(cc.x * CHUNK_SIZE), (float)(cc.y * CHUNK_SIZE), (float)(cc.z * CHUNK_SIZE) };
         Vec3 maxB = { minB.x + CHUNK_SIZE, minB.y + CHUNK_SIZE, minB.z + CHUNK_SIZE };
         if (!FrustumIntersectsAABB(frustum, minB, maxB)) continue;
@@ -830,19 +841,38 @@ static Vec3 g_shadowSun = { 0, 1, 0 };
 static float g_shadowCenterX = 0, g_shadowCenterZ = 0, g_shadowExtent = 0;
 static uint32_t g_shadowMeshVersion = 0;
 
+// A stale map is redrawn into the back map a quarter of the chunks per
+// frame (SHADOW_SLICES), then swapped in: a re-render every few seconds
+// used to land in a single frame -- a regular hitch on a modest GPU. The
+// very first map is drawn whole, so shadows are there from the start.
+static const int SHADOW_SLICES = 4;
+static int g_buildSlice = -1;           // -1: not building
+static Mat4 g_buildViewProj = {};
+static Vec3 g_buildSun = { 0, 1, 0 };
+static float g_buildCenterX = 0, g_buildCenterZ = 0, g_buildExtent = 0;
+static uint32_t g_buildMeshVersion = 0;
+
 static void UpdateShadowMap(World& w, Vec3 eye, Vec3 sun) {
     float extent = (float)std::min(std::max((g_loadRadius + 1) * CHUNK_SIZE, 48), 112); // half-width, blocks
-    bool stale = !g_shadowValid || extent != g_shadowExtent || g_meshVersion != g_shadowMeshVersion ||
-                 Dot(sun, g_shadowSun) < 0.99999f /* ~0.25 degrees */ ||
-                 fabsf(eye.x - g_shadowCenterX) > extent * 0.25f || fabsf(eye.z - g_shadowCenterZ) > extent * 0.25f;
-    if (!stale) return;
-
-    g_lightViewProj = ShadowLightViewProj(eye, sun, extent, 200.0f, SHADOW_SIZE);
+    int back = 1 - g_shadowFront;
+    int slicesNow = 1;
+    if (g_buildSlice < 0) {
+        bool stale = !g_shadowValid || extent != g_shadowExtent || g_meshVersion != g_shadowMeshVersion ||
+                     Dot(sun, g_shadowSun) < 0.99999f /* ~0.25 degrees */ ||
+                     fabsf(eye.x - g_shadowCenterX) > extent * 0.25f || fabsf(eye.z - g_shadowCenterZ) > extent * 0.25f;
+        if (!stale) return;
+        // Start the next map in the back buffer.
+        g_buildViewProj = ShadowLightViewProj(eye, sun, extent, 200.0f, SHADOW_SIZE);
+        g_buildSun = sun; g_buildCenterX = eye.x; g_buildCenterZ = eye.z; g_buildExtent = extent;
+        g_buildMeshVersion = g_meshVersion;
+        g_buildSlice = 0;
+        g_context->ClearDepthStencilView(g_shadowDSV[back], D3D11_CLEAR_DEPTH, 1.0f, 0);
+        if (!g_shadowValid) slicesNow = SHADOW_SLICES;
+    }
 
     ID3D11ShaderResourceView* nullSRV = nullptr;
-    g_context->PSSetShaderResources(1, 1, &nullSRV); // the map can't be read while it's the target
-    g_context->OMSetRenderTargets(0, nullptr, g_shadowDSV);
-    g_context->ClearDepthStencilView(g_shadowDSV, D3D11_CLEAR_DEPTH, 1.0f, 0);
+    g_context->PSSetShaderResources(1, 1, &nullSRV); // a map can't be read while it's a target
+    g_context->OMSetRenderTargets(0, nullptr, g_shadowDSV[back]);
     D3D11_VIEWPORT vp = {}; vp.Width = vp.Height = (float)SHADOW_SIZE; vp.MaxDepth = 1.0f;
     g_context->RSSetViewports(1, &vp);
     g_context->RSSetState(g_shadowRaster);
@@ -853,25 +883,34 @@ static void UpdateShadowMap(World& w, Vec3 eye, Vec3 sun) {
     g_context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     D3D11_MAPPED_SUBRESOURCE mapped;
     g_context->Map(g_shadowCB, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
-    memcpy(mapped.pData, &g_lightViewProj, sizeof(Mat4));
+    memcpy(mapped.pData, &g_buildViewProj, sizeof(Mat4));
     g_context->Unmap(g_shadowCB, 0);
     ID3D11Buffer* cbs[2] = { g_shadowCB, g_chunkCBuffer };
     g_context->VSSetConstantBuffers(0, 2, cbs);
-    DrawChunks(w, ExtractFrustum(g_lightViewProj), false);
+    Frustum lf = ExtractFrustum(g_buildViewProj);
+    for (int k = 0; k < slicesNow && g_buildSlice < SHADOW_SLICES; k++, g_buildSlice++)
+        DrawChunks(w, lf, false, g_buildSlice, SHADOW_SLICES);
 
     D3D11_VIEWPORT svp = {}; svp.Width = (float)g_screenW; svp.Height = (float)g_screenH; svp.MaxDepth = 1.0f;
     g_context->RSSetViewports(1, &svp);
+    if (g_buildSlice < SHADOW_SLICES) return; // more slices next frame; the front map serves meanwhile
+
+    // Complete: swap it in.
+    g_buildSlice = -1;
+    g_shadowFront = back;
+    g_lightViewProj = g_buildViewProj;
     g_shadowValid = true;
-    g_shadowSun = sun;
-    g_shadowCenterX = eye.x; g_shadowCenterZ = eye.z;
-    g_shadowExtent = extent;
+    g_shadowSun = g_buildSun;
+    g_shadowCenterX = g_buildCenterX; g_shadowCenterZ = g_buildCenterZ;
+    g_shadowExtent = g_buildExtent;
+    eye.x = g_buildCenterX; eye.z = g_buildCenterZ; extent = g_buildExtent;
     // The ortho box is tilted toward the sun, so the ground it covers
     // extends past `extent` -- well past it when the sun is low. This
     // square catches nearly every rebuild that could show in the map; one
     // that slips through is picked up at the next sun-angle re-render,
     // at most ~4.5 s later.
     g_shadowAreaX = eye.x; g_shadowAreaZ = eye.z; g_shadowAreaHalf = extent * 2.0f;
-    g_shadowMeshVersion = g_meshVersion;
+    g_shadowMeshVersion = g_buildMeshVersion; // a rebuild during the slices shows as stale next frame
     ProfAddCounter(PCOUNT_SHADOW_RENDERS, 1);
 }
 
@@ -1056,7 +1095,7 @@ void RenderScene(World& w, const Mat4& view, const Mat4& proj, Vec3 eye, Vec3 fo
         g_context->PSSetConstantBuffers(0, 1, &g_cbuffer);
         ID3D11SamplerState* samplers[4] = { g_sampler, g_shadowSampler, g_glowSampler, g_softSampler };
         g_context->PSSetSamplers(0, 4, samplers);
-        ID3D11ShaderResourceView* srvs[4] = { g_blockTexSRV, shadows ? g_shadowSRV : nullptr, g_glowSRV, g_surfaceSRV };
+        ID3D11ShaderResourceView* srvs[4] = { g_blockTexSRV, shadows ? g_shadowSRV[g_shadowFront] : nullptr, g_glowSRV, g_surfaceSRV };
         g_context->PSSetShaderResources(0, 4, srvs);
         Frustum frustum = ExtractFrustum(viewProj);
         DrawChunks(w, frustum, true);
@@ -1338,7 +1377,10 @@ bool InitD3D(HWND hwnd) {
     sampDesc.MaxLOD = D3D11_FLOAT32_MAX;
     sampDesc.ComparisonFunc = D3D11_COMPARISON_NEVER;
     g_device->CreateSamplerState(&sampDesc, &g_sampler);
-    sampDesc.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+    // The smooth read for distant surfaces. Anisotropic (4x, cheap even on
+    // old GPUs) so ground at a glancing angle stays clean.
+    sampDesc.Filter = D3D11_FILTER_ANISOTROPIC;
+    sampDesc.MaxAnisotropy = 4;
     g_device->CreateSamplerState(&sampDesc, &g_softSampler);
 
     D3D11_RASTERIZER_DESC rastDesc = {};
@@ -1495,13 +1537,15 @@ bool InitD3D(HWND hwnd) {
         sd.Width = SHADOW_SIZE; sd.Height = SHADOW_SIZE; sd.MipLevels = 1; sd.ArraySize = 1;
         sd.Format = DXGI_FORMAT_R32_TYPELESS; sd.SampleDesc.Count = 1;
         sd.Usage = D3D11_USAGE_DEFAULT; sd.BindFlags = D3D11_BIND_DEPTH_STENCIL | D3D11_BIND_SHADER_RESOURCE;
-        ID3D11Texture2D* st = nullptr;
-        if (SUCCEEDED(g_device->CreateTexture2D(&sd, nullptr, &st))) {
-            D3D11_DEPTH_STENCIL_VIEW_DESC dd = {}; dd.Format = DXGI_FORMAT_D32_FLOAT; dd.ViewDimension = D3D11_DSV_DIMENSION_TEXTURE2D;
-            g_device->CreateDepthStencilView(st, &dd, &g_shadowDSV);
-            D3D11_SHADER_RESOURCE_VIEW_DESC rd = {}; rd.Format = DXGI_FORMAT_R32_FLOAT; rd.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D; rd.Texture2D.MipLevels = 1;
-            g_device->CreateShaderResourceView(st, &rd, &g_shadowSRV);
-            st->Release();
+        for (int m = 0; m < 2; m++) { // front and back (see UpdateShadowMap)
+            ID3D11Texture2D* st = nullptr;
+            if (SUCCEEDED(g_device->CreateTexture2D(&sd, nullptr, &st))) {
+                D3D11_DEPTH_STENCIL_VIEW_DESC dd = {}; dd.Format = DXGI_FORMAT_D32_FLOAT; dd.ViewDimension = D3D11_DSV_DIMENSION_TEXTURE2D;
+                g_device->CreateDepthStencilView(st, &dd, &g_shadowDSV[m]);
+                D3D11_SHADER_RESOURCE_VIEW_DESC rd = {}; rd.Format = DXGI_FORMAT_R32_FLOAT; rd.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D; rd.Texture2D.MipLevels = 1;
+                g_device->CreateShaderResourceView(st, &rd, &g_shadowSRV[m]);
+                st->Release();
+            }
         }
         D3D11_SAMPLER_DESC cs = {};
         cs.Filter = D3D11_FILTER_COMPARISON_MIN_MAG_LINEAR_MIP_POINT; // hardware 2x2 PCF per tap
@@ -1518,7 +1562,7 @@ bool InitD3D(HWND hwnd) {
         sb.Usage = D3D11_USAGE_DYNAMIC; sb.ByteWidth = sizeof(Mat4);
         sb.BindFlags = D3D11_BIND_CONSTANT_BUFFER; sb.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
         g_device->CreateBuffer(&sb, nullptr, &g_shadowCB);
-        g_shadowsAvailable = g_shadowVS && g_shadowDSV && g_shadowSRV && g_shadowSampler && g_shadowRaster && g_shadowCB;
+        g_shadowsAvailable = g_shadowVS && g_shadowDSV[0] && g_shadowSRV[0] && g_shadowDSV[1] && g_shadowSRV[1] && g_shadowSampler && g_shadowRaster && g_shadowCB;
     }
 
     // --- Post pass (Section 4.8): outlines and SSAO. Optional too.

@@ -1011,7 +1011,7 @@ void SoundPalette::Impl::Footfall(const SoundCue& c) {
         if (toGrid <= 0.04) delay = toGrid;
     }
     const double hard = Hardness(c.material);
-    double lvl = -37 + 3 * hard - ((c.key & 1) ? 2 : 0) + 20 * std::log10(std::max(0.2f, c.strength));
+    double lvl = -29 + 3 * hard - ((c.key & 1) ? 2 : 0) + 20 * std::log10(std::max(0.2f, c.strength)); // owner: they must be heard
     // The scuff: soft ground dull, low and long; hard ground crisp and short.
     double lp = (700 + 1700 * hard) * (P < 0 ? 0.8 : 1.0) * (1 + 0.3 * M);
     double tau = 0.028 - 0.020 * hard;

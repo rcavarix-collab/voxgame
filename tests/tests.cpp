@@ -440,7 +440,7 @@ static void TestMovement() {
     float x0 = s.x;
     run(s, slide, 0.25f);
     float burst = (s.x - x0) / 0.25f;
-    printf("    slide: %.2f blocks/s just after starting (sprint %.2f)\n", burst, 6.5f);
+    printf("    slide: %.2f blocks/s just after starting (sprint %.2f)\n", burst, 7.5f);
     CHECK(PlayerSliding(s) && burst > 7.0f && s.crouching);
     // Looking to the side mid-slide leans the view toward where it's carrying you.
     s.yaw = 0.0f; // now facing +Z; the slide carries toward +X, i.e. the view's right
@@ -449,6 +449,27 @@ static void TestMovement() {
     run(s, slide, 1.5f);
     CHECK(!PlayerSliding(s) && s.crouching && fabsf(s.roll) < 0.02f);
 
+    // Forgiving timing: crouch first and sprint a moment later slides; a
+    // crouch just after letting go of sprint slides; a crouch long after doesn't.
+    {
+        MoveInput crouchWalk = walk; crouchWalk.crouch = true;
+        MoveInput both = sprint; both.crouch = true;
+        Player q = at(-20.5f, 2.5f);
+        run(q, walk, 0.3f);
+        run(q, crouchWalk, 0.15f);  // crouch pressed first...
+        run(q, both, 0.05f);        // ...then sprint
+        CHECK(PlayerSliding(q));
+        Player r2 = at(-20.5f, 2.5f);
+        run(r2, sprint, 0.5f);
+        run(r2, walk, 0.2f);        // let go of sprint
+        run(r2, crouchWalk, 0.05f); // crouch 0.2 s later
+        CHECK(PlayerSliding(r2));
+        Player late = at(-20.5f, 2.5f);
+        run(late, sprint, 0.5f);
+        run(late, walk, 1.0f);
+        run(late, crouchWalk, 0.05f);
+        CHECK(!PlayerSliding(late));
+    }
     // And a slide carries you straight under the roof.
     Player u = at(0.5f, 8.5f);
     run(u, sprint, 0.9f);           // up to speed, well short of the mouth at x = 9.7

@@ -52,6 +52,8 @@ float g_fov = 45.0f;
 bool g_toggleMovement = false;
 bool g_highContrastUI = false;
 bool g_monoAudio = false;
+bool g_vsync = true;
+int g_frameLimit = 60;
 bool g_moveToggleLatch[ACT_COUNT] = {};
 float g_musicIntensity = 1.0f;
 
@@ -197,6 +199,8 @@ bool SaveSettings() {
     ss << "toggleMovement=" << (g_toggleMovement ? 1 : 0) << "\n";
     ss << "highContrastUI=" << (g_highContrastUI ? 1 : 0) << "\n";
     ss << "monoAudio=" << (g_monoAudio ? 1 : 0) << "\n";
+    ss << "vsync=" << (g_vsync ? 1 : 0) << "\n";
+    ss << "frameLimit=" << g_frameLimit << "\n";
     ss << "musicIntensity=" << g_musicIntensity << "\n";
     ss << "hotbar=";
     for (int i = 0; i < HOTBAR_SLOTS; i++) ss << (i ? "," : "") << g_blocks[g_hotbar[i]].name;
@@ -278,6 +282,10 @@ void LoadSettings() {
     g_toggleMovement = getB("toggleMovement", g_toggleMovement);
     g_highContrastUI = getB("highContrastUI", g_highContrastUI);
     g_monoAudio = getB("monoAudio", g_monoAudio);
+    g_vsync = getB("vsync", g_vsync);
+    g_frameLimit = (int)getF("frameLimit", (float)g_frameLimit);
+    if (g_frameLimit < 30) g_frameLimit = 30;
+    if (g_frameLimit > 200) g_frameLimit = 200;
     g_musicIntensity = getF("musicIntensity", g_musicIntensity);
     // Hotbar by block name; an unknown or no-longer-placeable name keeps
     // that slot's default.

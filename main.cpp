@@ -19,6 +19,8 @@
 #include <cmath>
 
 #include "common.h"
+#include <mmsystem.h> // timeBeginPeriod
+#pragma comment(lib, "winmm.lib")
 #include "world.h"
 #include "render.h"
 #include "audio.h"
@@ -85,6 +87,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
     InitAudio(); // a machine with no usable audio device still gets a silent but playable game (Section 10)
     BuildSkyMesh();
 
+    // 1 ms timer resolution while running, so the frame cap's Sleep is precise.
+    timeBeginPeriod(1);
     LARGE_INTEGER freq, lastTime;
     QueryPerformanceFrequency(&freq);
     QueryPerformanceCounter(&lastTime);
@@ -245,10 +249,24 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
 
         {
             ProfScope prof(PROF_PRESENT);
-            g_swapChain->Present(1, 0);
+            g_swapChain->Present(g_vsync ? 1 : 0, 0);
+            // The frame-rate cap (Graphics, 30-200): sleep off whatever is
+            // left of this frame's share, then a short spin for precision.
+            // The simulation runs on a fixed step, so the cap changes only
+            // how often we draw -- never how fast the world moves.
+            double target = 1.0 / (double)(g_frameLimit < 30 ? 30 : g_frameLimit);
+            LARGE_INTEGER t;
+            for (;;) {
+                QueryPerformanceCounter(&t);
+                double spent = (double)(t.QuadPart - now.QuadPart) / (double)freq.QuadPart;
+                double left = target - spent;
+                if (left <= 0.0) break;
+                if (left > 0.002) Sleep((DWORD)((left - 0.0015) * 1000.0));
+            }
         }
     }
 
+    timeEndPeriod(1);
     ShutdownAudio();
     if (comInitialized) CoUninitialize();
     return 0;

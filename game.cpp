@@ -282,8 +282,8 @@ enum LookRow { LROW_INVERT_X = 0, LROW_SENS_X = 1, LROW_INVERT_Y = 2, LROW_SENS_
 // no rendering path for yet.
 // Row height 50 still fits the slider row (label, track, 50px hit area)
 // while keeping six rows comfortably inside a 720p screen.
-static const SubmenuLayout GRAPHICS_LAYOUT = { 400.0f, 50.0f, 10.0f, 70.0f, 20.0f, 7 };
-enum GraphicsRow { GROW_RENDER_DIST = 0, GROW_SHADOWS = 1, GROW_OUTLINES = 2, GROW_SSAO = 3, GROW_BLOOM = 4, GROW_RESET = 5, GROW_BACK = 6 };
+static const SubmenuLayout GRAPHICS_LAYOUT = { 400.0f, 50.0f, 10.0f, 70.0f, 20.0f, 9 };
+enum GraphicsRow { GROW_RENDER_DIST = 0, GROW_FRAME_LIMIT = 1, GROW_VSYNC = 2, GROW_SHADOWS = 3, GROW_OUTLINES = 4, GROW_SSAO = 5, GROW_BLOOM = 6, GROW_RESET = 7, GROW_BACK = 8 };
 
 // Display: one real setting -- an FPS counter toggle. Resolution/
 // fullscreen switching would need swap-chain resize and WM_SIZE
@@ -413,6 +413,7 @@ static void ResetLookSettings() { g_sensitivityMultX = 1.0f; g_sensitivityMultY 
 static void ResetGraphicsSettings() {
     g_loadRadius = 3;
     g_shadows = true; g_postEdges = false; g_postSSAO = false; g_bloom = true;
+    g_vsync = true; g_frameLimit = 60;
     g_lastPlayerChunkX = INT32_MIN; g_lastPlayerChunkZ = INT32_MIN; // force a rescan at the new radius
 }
 static void ResetDisplaySettings() { g_showFPS = false; g_showProfiler = false; if (g_fullscreen) { g_fullscreen = false; ApplyFullscreen(false); } }
@@ -429,7 +430,7 @@ static void ResetAccessibilitySettings() {
 // A handful of settings are sliders rather than toggles/buttons. One
 // small generic slider system (value/range/row-rect all looked up by
 // ID) instead of one-off X-sensitivity-shaped code repeated per slider.
-enum SliderId { SLIDER_NONE = -1, SLIDER_SENS_X = 0, SLIDER_SENS_Y = 1, SLIDER_RENDER_DIST = 2, SLIDER_MASTER_VOLUME = 3, SLIDER_MUSIC_VOLUME = 4, SLIDER_FOV = 5, SLIDER_MUSIC_INTENSITY = 6, SLIDER_WORLD_VOLUME = 7 };
+enum SliderId { SLIDER_NONE = -1, SLIDER_SENS_X = 0, SLIDER_SENS_Y = 1, SLIDER_RENDER_DIST = 2, SLIDER_MASTER_VOLUME = 3, SLIDER_MUSIC_VOLUME = 4, SLIDER_FOV = 5, SLIDER_MUSIC_INTENSITY = 6, SLIDER_WORLD_VOLUME = 7, SLIDER_FRAME_LIMIT = 8 };
 static int g_draggingSlider = SLIDER_NONE;
 
 struct SliderRange { float minV, maxV; };
@@ -437,6 +438,7 @@ static SliderRange GetSliderRange(int id) {
     switch (id) {
     case SLIDER_SENS_X: case SLIDER_SENS_Y: return { SENS_MIN, SENS_MAX };
     case SLIDER_RENDER_DIST: return { 1.0f, 8.0f };
+    case SLIDER_FRAME_LIMIT: return { 30.0f, 200.0f };
     case SLIDER_MASTER_VOLUME: case SLIDER_MUSIC_VOLUME: case SLIDER_WORLD_VOLUME: return { 0.0f, 1.0f };
     case SLIDER_FOV: return { 45.0f, 100.0f };
     case SLIDER_MUSIC_INTENSITY: return { 0.0f, 1.0f };
@@ -450,6 +452,7 @@ static UIRect GetSliderRowRect(int id) {
     case SLIDER_SENS_X: return SubmenuRowRect(LOOK_LAYOUT, LROW_SENS_X);
     case SLIDER_SENS_Y: return SubmenuRowRect(LOOK_LAYOUT, LROW_SENS_Y);
     case SLIDER_RENDER_DIST: return SubmenuRowRect(GRAPHICS_LAYOUT, GROW_RENDER_DIST);
+    case SLIDER_FRAME_LIMIT: return SubmenuRowRect(GRAPHICS_LAYOUT, GROW_FRAME_LIMIT);
     case SLIDER_MASTER_VOLUME: return SubmenuRowRect(AUDIO_LAYOUT, AROW_MASTER_VOLUME);
     case SLIDER_MUSIC_VOLUME: return SubmenuRowRect(AUDIO_LAYOUT, AROW_MUSIC_VOLUME);
     case SLIDER_WORLD_VOLUME: return SubmenuRowRect(AUDIO_LAYOUT, AROW_WORLD_VOLUME);
@@ -463,6 +466,7 @@ static float GetSliderValue(int id) {
     case SLIDER_SENS_X: return g_sensitivityMultX;
     case SLIDER_SENS_Y: return g_sensitivityMultY;
     case SLIDER_RENDER_DIST: return (float)g_loadRadius;
+    case SLIDER_FRAME_LIMIT: return (float)g_frameLimit;
     case SLIDER_MASTER_VOLUME: return g_masterVolume;
     case SLIDER_MUSIC_VOLUME: return g_musicVolume;
     case SLIDER_WORLD_VOLUME: return g_worldVolume;
@@ -483,6 +487,7 @@ static void SetSliderValue(int id, float v) {
         }
         break;
     }
+    case SLIDER_FRAME_LIMIT: g_frameLimit = (int)(v / 10.0f + 0.5f) * 10; break; // steps of 10
     case SLIDER_MASTER_VOLUME: g_masterVolume = v; ApplyAudioVolumes(); break;
     case SLIDER_MUSIC_VOLUME: g_musicVolume = v; ApplyAudioVolumes(); break;
     case SLIDER_WORLD_VOLUME: g_worldVolume = v; ApplyAudioVolumes(); break;
@@ -496,6 +501,7 @@ static std::string GetSliderLabel(int id) {
     case SLIDER_SENS_X: snprintf(buf, sizeof(buf), "X SENSITIVITY: %.2fx", g_sensitivityMultX); break;
     case SLIDER_SENS_Y: snprintf(buf, sizeof(buf), "Y SENSITIVITY: %.2fx", g_sensitivityMultY); break;
     case SLIDER_RENDER_DIST: snprintf(buf, sizeof(buf), "RENDER DISTANCE: %d CHUNKS", g_loadRadius); break;
+    case SLIDER_FRAME_LIMIT: snprintf(buf, sizeof(buf), "FRAME RATE LIMIT: %d FPS", g_frameLimit); break;
     case SLIDER_MASTER_VOLUME: snprintf(buf, sizeof(buf), "MASTER VOLUME: %d%%", (int)(g_masterVolume * 100.0f + 0.5f)); break;
     case SLIDER_MUSIC_VOLUME: snprintf(buf, sizeof(buf), "MUSIC VOLUME: %d%%", (int)(g_musicVolume * 100.0f + 0.5f)); break;
     case SLIDER_WORLD_VOLUME: snprintf(buf, sizeof(buf), "WORLD SOUNDS: %d%%", (int)(g_worldVolume * 100.0f + 0.5f)); break;
@@ -712,6 +718,8 @@ static void HandleLookSettingsClick(int mx, int my) {
 }
 static void HandleGraphicsClick(int mx, int my) {
     if (PointInRect(mx, my, GetSliderHitRect(SubmenuRowRect(GRAPHICS_LAYOUT, GROW_RENDER_DIST)))) { BeginSliderDrag(SLIDER_RENDER_DIST, mx); return; }
+    if (PointInRect(mx, my, GetSliderHitRect(SubmenuRowRect(GRAPHICS_LAYOUT, GROW_FRAME_LIMIT)))) { BeginSliderDrag(SLIDER_FRAME_LIMIT, mx); return; }
+    if (PointInRect(mx, my, SubmenuRowRect(GRAPHICS_LAYOUT, GROW_VSYNC))) { g_vsync = !g_vsync; SaveSettings(); return; }
     if (PointInRect(mx, my, SubmenuRowRect(GRAPHICS_LAYOUT, GROW_SHADOWS))) { g_shadows = !g_shadows; SaveSettings(); return; }
     if (PointInRect(mx, my, SubmenuRowRect(GRAPHICS_LAYOUT, GROW_OUTLINES))) { g_postEdges = !g_postEdges; SaveSettings(); return; }
     if (PointInRect(mx, my, SubmenuRowRect(GRAPHICS_LAYOUT, GROW_SSAO))) { g_postSSAO = !g_postSSAO; SaveSettings(); return; }
@@ -998,7 +1006,7 @@ static bool PressActsImmediately(int mx, int my) {
     if (g_menuScreen == MenuScreen::Map || g_menuScreen == MenuScreen::Library) return true;
     static const struct { int id; MenuScreen screen; } sliders[] = {
         { SLIDER_SENS_X, MenuScreen::LookSettings }, { SLIDER_SENS_Y, MenuScreen::LookSettings },
-        { SLIDER_RENDER_DIST, MenuScreen::Graphics }, { SLIDER_MASTER_VOLUME, MenuScreen::Audio },
+        { SLIDER_RENDER_DIST, MenuScreen::Graphics }, { SLIDER_FRAME_LIMIT, MenuScreen::Graphics }, { SLIDER_MASTER_VOLUME, MenuScreen::Audio },
         { SLIDER_MUSIC_VOLUME, MenuScreen::Audio }, { SLIDER_WORLD_VOLUME, MenuScreen::Audio },
         { SLIDER_FOV, MenuScreen::Accessibility }, { SLIDER_MUSIC_INTENSITY, MenuScreen::Accessibility },
     };
@@ -1559,6 +1567,8 @@ void RenderUIPass() {
         drawPanelTitle(panel, GRAPHICS_LAYOUT.panelW, "GRAPHICS SETTINGS", 1.0f);
 
         drawSliderRow(SubmenuRowRect(GRAPHICS_LAYOUT, GROW_RENDER_DIST), SLIDER_RENDER_DIST);
+        drawSliderRow(SubmenuRowRect(GRAPHICS_LAYOUT, GROW_FRAME_LIMIT), SLIDER_FRAME_LIMIT);
+        drawRowButton(SubmenuRowRect(GRAPHICS_LAYOUT, GROW_VSYNC), g_vsync ? "VSYNC: ON" : "VSYNC: OFF");
         // An effect whose shader didn't compile here says so (shader_errors.txt
         // has the details) instead of a toggle that silently does nothing.
         drawRowButton(SubmenuRowRect(GRAPHICS_LAYOUT, GROW_SHADOWS), !ShadowsAvailable() ? "SUN SHADOWS: UNAVAILABLE" : g_shadows ? "SUN SHADOWS: ON" : "SUN SHADOWS: OFF");
