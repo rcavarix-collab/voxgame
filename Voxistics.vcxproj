@@ -102,17 +102,35 @@
     <ClCompile Include="persist.cpp" />
     <ClCompile Include="game.cpp" />
     <ClCompile Include="textures.cpp" />
-    <ClCompile Include="music_synth.cpp" />
+    <ClCompile Include="music_synth.cpp">
+      <!-- Hot loop: optimised even in Debug so a Debug build stays playable (runtime checks and
+           edit-and-continue are incompatible with /O2, so they're off for this file only). -->
+      <Optimization Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">MaxSpeed</Optimization>
+      <BasicRuntimeChecks Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Default</BasicRuntimeChecks>
+      <DebugInformationFormat Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">ProgramDatabase</DebugInformationFormat>
+    </ClCompile>
     <ClCompile Include="profiler.cpp" />
     <ClCompile Include="worldfile.cpp" />
     <ClCompile Include="vtex.cpp" />
     <ClCompile Include="blocktex.cpp" />
-    <ClCompile Include="mesher.cpp" />
+    <ClCompile Include="mesher.cpp">
+      <!-- Hot loop: optimised even in Debug so a Debug build stays playable (runtime checks and
+           edit-and-continue are incompatible with /O2, so they're off for this file only). -->
+      <Optimization Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">MaxSpeed</Optimization>
+      <BasicRuntimeChecks Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Default</BasicRuntimeChecks>
+      <DebugInformationFormat Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">ProgramDatabase</DebugInformationFormat>
+    </ClCompile>
     <ClCompile Include="shapes.cpp" />
     <ClCompile Include="icons.cpp" />
     <ClCompile Include="theline.cpp" />
     <ClCompile Include="essencemap.cpp" />
-    <ClCompile Include="glowlight.cpp" />
+    <ClCompile Include="glowlight.cpp">
+      <!-- Hot loop: optimised even in Debug so a Debug build stays playable (runtime checks and
+           edit-and-continue are incompatible with /O2, so they're off for this file only). -->
+      <Optimization Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">MaxSpeed</Optimization>
+      <BasicRuntimeChecks Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Default</BasicRuntimeChecks>
+      <DebugInformationFormat Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">ProgramDatabase</DebugInformationFormat>
+    </ClCompile>
     <ClCompile Include="essence.cpp" />
   </ItemGroup>
   <ItemGroup>
