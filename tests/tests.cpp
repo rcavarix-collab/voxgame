@@ -10,6 +10,7 @@
 #include "../worldfile.h"
 #include "../vtex.h"
 #include "../blocktex.h"
+#include "../glowlight.h"
 #include "../mesher.h"
 #include "../shapes.h"
 #include "../icons.h"
@@ -532,6 +533,38 @@ static Vec3 XformPoint(const Mat4& m, Vec3 p) {
     return { x / w, y / w, z / w };
 }
 
+static void TestGlowLight() {
+    printf("glow light grid\n");
+    World w;
+    for (int z = 0; z < 32; z++) for (int x = 0; x < 32; x++) w.Set(x, 10, z, BLOCK_STONE); // floor
+    w.Set(10, 11, 10, BLOCK_MUSIC);
+    for (int z = 7; z <= 13; z++) for (int y = 11; y <= 13; y++) w.Set(13, y, z, BLOCK_STONE); // a wall east of it
+    int ox, oy, oz; GlowGridOrigin(10.5f, 12.6f, 10.5f, ox, oy, oz);
+    CHECK(ox == -32 && oy == -32 && oz == -32);
+    GlowGrid g; BuildGlowGrid(w, ox, oy, oz, g);
+    auto at = [&](int x, int y, int z, int ch) { return (int)g.texels[((size_t)(((z - oz) * GLOW_GRID + (y - oy)) * GLOW_GRID + (x - ox))) * 2 + ch]; };
+    CHECK(g.emitters.size() == 1 && g.texels.size() == (size_t)GLOW_GRID * GLOW_GRID * GLOW_GRID * 2);
+    CHECK(at(11, 11, 10, 0) > 150 && at(11, 11, 10, 1) == 0);     // beside it: bright, music channel only
+    CHECK(at(7, 11, 10, 0) > 0 && at(7, 11, 10, 0) < at(9, 11, 10, 0)); // falls off with distance
+    CHECK(at(15, 11, 10, 0) == 0);                                  // behind the wall: in its shadow
+    CHECK(at(14, 16, 10, 0) > 0);                                   // over the top of the wall: lit again
+    CHECK(at(10, 11, 19, 0) == 0);                                  // beyond its reach
+    CHECK(at(10, 10, 11, 0) == 0);                                  // inside the (opaque) floor
+    CHECK(at(10, 9, 10, 0) == 0);                                   // under the floor: shadowed
+    // Change detection: its own chunk and a neighbour within reach count; far chunks don't.
+    CHECK(ChunkAffectsGlow(g, { 0, 0, 0 }, *w.FindChunk({ 0, 0, 0 })));
+    CHECK(ChunkAffectsGlow(g, { 1, 0, 0 }, *w.FindChunk({ 1, 0, 0 })));
+    Chunk empty;
+    CHECK(!ChunkAffectsGlow(g, { 6, 0, 6 }, empty));
+    // A timestream block lights the other channel; no emitters, no texels.
+    w.Set(20, 11, 20, BLOCK_TIMESTREAM);
+    BuildGlowGrid(w, ox, oy, oz, g);
+    CHECK(g.emitters.size() == 2 && at(21, 11, 20, 1) > 150 && at(21, 11, 20, 0) == 0);
+    World none; none.Set(0, 0, 0, BLOCK_STONE);
+    BuildGlowGrid(none, ox, oy, oz, g);
+    CHECK(g.emitters.empty() && g.texels.empty());
+}
+
 static void TestSky() {
     printf("sky model and shadow projection\n");
     SkyState dawn = ComputeSky(0), noon = ComputeSky(1500), dusk = ComputeSky(3000), night = ComputeSky(3300);
@@ -763,6 +796,7 @@ int main() {
     TestShapes();
     TestIcons();
     TestScheduledUpdates();
+    TestGlowLight();
     TestSky();
     TestTheLine();
     TestEssence();

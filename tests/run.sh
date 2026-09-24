@@ -5,6 +5,6 @@ set -e
 cd "$(dirname "$0")"
 OUT="${TMPDIR:-/tmp}/voxistics_tests"
 g++ -std=c++17 -O1 -Wall -Wextra -Istub -I.. \
-    tests.cpp ../world.cpp ../worldfile.cpp ../vtex.cpp ../blocktex.cpp ../mesher.cpp ../shapes.cpp ../icons.cpp ../theline.cpp ../essence.cpp ../essencemap.cpp \
+    tests.cpp ../world.cpp ../glowlight.cpp ../worldfile.cpp ../vtex.cpp ../blocktex.cpp ../mesher.cpp ../shapes.cpp ../icons.cpp ../theline.cpp ../essence.cpp ../essencemap.cpp \
     -o "$OUT"
 "$OUT"

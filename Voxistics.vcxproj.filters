@@ -66,6 +66,9 @@
     <ClCompile Include="essencemap.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="glowlight.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="essence.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -120,6 +123,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="essencemap.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="glowlight.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="essence.h">

@@ -112,6 +112,7 @@
     <ClCompile Include="icons.cpp" />
     <ClCompile Include="theline.cpp" />
     <ClCompile Include="essencemap.cpp" />
+    <ClCompile Include="glowlight.cpp" />
     <ClCompile Include="essence.cpp" />
   </ItemGroup>
   <ItemGroup>
@@ -132,6 +133,7 @@
     <ClInclude Include="icons.h" />
     <ClInclude Include="theline.h" />
     <ClInclude Include="essencemap.h" />
+    <ClInclude Include="glowlight.h" />
     <ClInclude Include="essence.h" />
     <ClInclude Include="sky.h" />
   </ItemGroup>

@@ -11,6 +11,7 @@
 #include "audio.h"
 #include "persist.h"
 #include "vtex.h"
+#include "glowlight.h"
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -90,6 +91,15 @@ static ID3D11Buffer* g_bloomCB = nullptr;
 static ID3D11SamplerState* g_linearClampSampler = nullptr;
 static bool g_bloomAvailable = false;
 static const float BLOOM_STRENGTH = 2.0f; // screen-blended, so it brightens but never clips
+// Light cast by glowing blocks (Section 4.12): a 64^3 RG8 grid around the
+// player, rebuilt on the CPU only when it moves or a block near a light
+// changes.
+static GlowGrid g_glowGrid;
+static bool g_glowDirty = true;
+static ID3D11Texture3D* g_glowTex = nullptr;
+static ID3D11ShaderResourceView* g_glowSRV = nullptr;
+static ID3D11SamplerState* g_glowSampler = nullptr;
+static bool g_glowLit = false; // the grid holds at least one light
 // See-through blocks (Section 4.11).
 static ID3D11BlendState* g_translucentBlend = nullptr;       // alpha blend; keeps the glow mask in dest alpha
 static ID3D11DepthStencilState* g_depthNoWriteState = nullptr; // depth tested, not written
@@ -181,9 +191,10 @@ static const char* g_atmosphereSrc =
 // world.
 static const char* g_shaderSrc =
     "// uses atmosphere\n"
-    "cbuffer CB : register(b0) { row_major matrix mvp; row_major matrix lightViewProj; float4 params; float4 lineA; float4 lineB; };\n"
+    "cbuffer CB : register(b0) { row_major matrix mvp; row_major matrix lightViewProj; float4 params; float4 lineA; float4 lineB; float4 glowGrid; };\n"
     // params: x shadows on, y shadow half-texel, z 1 while drawing see-through blocks (4.11).
     // lineA: The Line's pivot x, height, pivot z, intensity; lineB: its direction x, z, the music level, unused.
+    // glowGrid: xyz the glow-light grid's world origin, w 1 when it holds any light (4.12).
     "cbuffer ChunkCB : register(b1) { float4 chunkOrigin; };\n"
     "struct VSIn { uint4 pos:POSITION; uint layer:TEXCOORD0; uint2 uv:TEXCOORD1; };\n"
     "struct PSIn { float4 pos:SV_POSITION; float3 uvl:TEXCOORD0; float2 aoBias:TEXCOORD1; float3 wpos:TEXCOORD2; float4 glowInfo:TEXCOORD3; };\n"
@@ -207,6 +218,8 @@ static const char* g_shaderSrc =
     "}\n"
     "Texture2DArray tex0 : register(t0);\n"
     "SamplerState samp0 : register(s0);\n"
+    "Texture3D glowTex : register(t2);\n"
+    "SamplerState glowSamp : register(s2);\n"
     "#ifndef NO_SHADOWS\n"
     "Texture2D<float> shadowMap : register(t1);\n"
     "SamplerComparisonState shadowSamp : register(s1);\n"
@@ -241,6 +254,19 @@ static const char* g_shaderSrc =
     "    float3 direct = fSunColor.rgb * sunLit * (0.55f + 0.45f * ao)\n"
     "                  + fMoonColor.rgb * saturate(dot(n, fMoonDir.xyz)) * ao;\n"
     "    float3 col = albedo * (ambient + direct) * i.aoBias.y;\n"
+    // Light from glowing blocks nearby (4.12): one lookup in the light
+    // grid, at the centre of the open cell this face looks into, so a wall
+    // between a light and a surface leaves the surface dark. Music light
+    // follows the music; timestream light counts only near The Line
+    // (it lights its blocks only as it passes -- a cheap stand-in for
+    // knowing which ones are lit).
+    "    if (glowGrid.w > 0.5f) {\n"
+    "        float2 gl = glowTex.SampleLevel(glowSamp, (i.wpos + n * 0.42f - glowGrid.xyz) / 64.0f, 0).rg;\n"
+    "        float2 rl = i.wpos.xz - lineA.xz;\n"
+    "        float lineNear = saturate(1.0f - abs(rl.x * lineB.y - rl.y * lineB.x) / 8.0f) * saturate(1.0f - abs(i.wpos.y - lineA.y) / 8.0f);\n"
+    "        float3 emitted = gl.r * lineB.z * float3(1.0f, 0.62f, 0.25f) + gl.g * lineNear * float3(0.35f, 0.85f, 1.0f);\n"
+    "        col += albedo * emitted * 1.5f * ao;\n"
+    "    }\n"
     // Reactive blocks (blocks.h BlockGlow): 1 = the music playing now,
     // 2 = The Line passing through this block's cell (found per pixel from
     // the world position minus the face normal: a vertex on a corner could
@@ -532,6 +558,7 @@ static void RebuildChunkMesh(World& w, const ChunkCoord& cc, Chunk& c) {
     }
 
     c.dirty = false;
+    if (ChunkAffectsGlow(g_glowGrid, cc, c)) g_glowDirty = true;
     float cx = (cc.x + 0.5f) * CHUNK_SIZE, cz = (cc.z + 0.5f) * CHUNK_SIZE;
     float reach = g_shadowAreaHalf + CHUNK_SIZE; // a chunk overlapping the area's edge counts
     if (g_shadowAreaHalf < 0 || (fabsf(cx - g_shadowAreaX) < reach && fabsf(cz - g_shadowAreaZ) < reach)) g_meshVersion++;
@@ -806,6 +833,21 @@ static void RenderBloom() {
     g_context->RSSetViewports(1, &vp);
 }
 
+// Keeps the glow-light grid (4.12) around the player: rebuilt when the
+// player crosses into another chunk or a block near a light changed --
+// a few hundred microseconds and one small upload, a few times a
+// minute at most; nothing at all on other frames.
+static void UpdateGlowLight(World& w, Vec3 eye) {
+    int ox, oy, oz;
+    GlowGridOrigin(eye.x, eye.y, eye.z, ox, oy, oz);
+    if (g_glowGrid.valid && !g_glowDirty && ox == g_glowGrid.ox && oy == g_glowGrid.oy && oz == g_glowGrid.oz) return;
+    BuildGlowGrid(w, ox, oy, oz, g_glowGrid);
+    g_glowDirty = false;
+    g_glowLit = !g_glowGrid.texels.empty();
+    if (g_glowLit && g_glowTex)
+        g_context->UpdateSubresource(g_glowTex, 0, nullptr, g_glowGrid.texels.data(), GLOW_GRID * 2, GLOW_GRID * GLOW_GRID * 2);
+}
+
 void RenderEmptyScene() {
     float black[4] = { 0, 0, 0, 1 };
     g_context->OMSetRenderTargets(1, &g_rtv, g_dsv);
@@ -845,6 +887,7 @@ void RenderScene(World& w, const Mat4& view, const Mat4& proj, Vec3 eye, Vec3 fo
     }
 
     int64_t worldStart = ProfNow();
+    UpdateGlowLight(w, eye);
     // With no post effect on, draw straight to the backbuffer: the post
     // path costs nothing at all while it's switched off.
     bool bloom = g_bloom && g_bloomAvailable && g_bloomRTV[0] && g_bloomRTV[1];
@@ -920,6 +963,8 @@ void RenderScene(World& w, const Mat4& view, const Mat4& proj, Vec3 eye, Vec3 fo
         Vec3 ld = LineDirection(g_line);
         cb.lineA[0] = g_line.pivotX; cb.lineA[1] = g_line.lineY; cb.lineA[2] = g_line.pivotZ; cb.lineA[3] = g_line.intensity;
         cb.lineB[0] = ld.x; cb.lineB[1] = ld.z; cb.lineB[2] = CurrentMusicLevel(); cb.lineB[3] = 0.0f;
+        cb.glowGrid[0] = (float)g_glowGrid.ox; cb.glowGrid[1] = (float)g_glowGrid.oy; cb.glowGrid[2] = (float)g_glowGrid.oz;
+        cb.glowGrid[3] = g_glowLit && g_glowSRV ? 1.0f : 0.0f;
         UpdateCBuffer(cb);
         g_context->VSSetShader(g_vs, nullptr, 0);
         g_context->PSSetShader(g_ps, nullptr, 0);
@@ -928,10 +973,10 @@ void RenderScene(World& w, const Mat4& view, const Mat4& proj, Vec3 eye, Vec3 fo
         ID3D11Buffer* cbs[2] = { g_cbuffer, g_chunkCBuffer };
         g_context->VSSetConstantBuffers(0, 2, cbs);
         g_context->PSSetConstantBuffers(0, 1, &g_cbuffer);
-        ID3D11SamplerState* samplers[2] = { g_sampler, g_shadowSampler };
-        g_context->PSSetSamplers(0, 2, samplers);
-        ID3D11ShaderResourceView* srvs[2] = { g_blockTexSRV, shadows ? g_shadowSRV : nullptr };
-        g_context->PSSetShaderResources(0, 2, srvs);
+        ID3D11SamplerState* samplers[3] = { g_sampler, g_shadowSampler, g_glowSampler };
+        g_context->PSSetSamplers(0, 3, samplers);
+        ID3D11ShaderResourceView* srvs[3] = { g_blockTexSRV, shadows ? g_shadowSRV : nullptr, g_glowSRV };
+        g_context->PSSetShaderResources(0, 3, srvs);
         Frustum frustum = ExtractFrustum(viewProj);
         DrawChunks(w, frustum, true);
         if (g_lineDebug) DrawLineDebug(viewProj, eye);
@@ -1224,6 +1269,24 @@ bool InitD3D(HWND hwnd) {
     depthStateDesc.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ALL;
     depthStateDesc.DepthFunc = D3D11_COMPARISON_LESS;
     g_device->CreateDepthStencilState(&depthStateDesc, &g_depthState);
+
+    // Glow-light grid (4.12): filled on the CPU, sampled trilinearly so
+    // one-block steps become soft light and soft shadow edges. Optional.
+    {
+        D3D11_TEXTURE3D_DESC gd = {};
+        gd.Width = gd.Height = gd.Depth = GLOW_GRID;
+        gd.MipLevels = 1;
+        gd.Format = DXGI_FORMAT_R8G8_UNORM;
+        gd.Usage = D3D11_USAGE_DEFAULT;
+        gd.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+        if (SUCCEEDED(g_device->CreateTexture3D(&gd, nullptr, &g_glowTex)))
+            g_device->CreateShaderResourceView(g_glowTex, nullptr, &g_glowSRV);
+        D3D11_SAMPLER_DESC gs = {};
+        gs.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+        gs.AddressU = gs.AddressV = gs.AddressW = D3D11_TEXTURE_ADDRESS_BORDER; // outside the grid: no glow light
+        gs.MaxLOD = D3D11_FLOAT32_MAX;
+        g_device->CreateSamplerState(&gs, &g_glowSampler);
+    }
 
     // See-through blocks (4.11): blended over the opaque world, depth
     // tested but not written, back faces culled. Destination alpha (the
