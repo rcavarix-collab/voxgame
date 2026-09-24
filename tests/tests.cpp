@@ -255,6 +255,11 @@ static void TestPlayer() {
     }
     CHECK(p.onGround && fabsf(p.y - 13.0f) < 1e-4f && minY >= 13.0f - 1e-4f);
 
+    // Below the world: put back on top of the column.
+    Player v = p; v.y = -100.0f;
+    UpdatePlayerPhysics(w, v, 1.0f / 60.0f, false, false, false, false, false);
+    CHECK(fabsf(v.y - 13.0f) < 1e-4f);
+
     p.y = 8.0f; // buried
     int ticks = 0;
     while (ticks < 60) { UpdatePlayerPhysics(w, p, 1.0f / 60.0f, false, false, false, false, false); ticks++; if (p.onGround) break; }

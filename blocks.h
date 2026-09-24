@@ -141,7 +141,7 @@ struct PlaceableList {
     BlockID ids[BLOCK_COUNT];
     int count;
 };
-static inline PlaceableList BuildPlaceableList() {
+inline PlaceableList BuildPlaceableList() { // inline, not static: the inline variable below must see one function in every file
     PlaceableList l = {};
     for (int i = 0; i < BLOCK_COUNT; i++)
         if (g_blocks[i].placeable) l.ids[l.count++] = (BlockID)i;

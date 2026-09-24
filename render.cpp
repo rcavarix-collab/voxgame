@@ -78,9 +78,11 @@ static ID3D11PixelShader* g_debugPS = nullptr;
 static ID3D11InputLayout* g_debugLayout = nullptr;
 static ID3D11Buffer* g_debugVB = nullptr;
 static ID3D11Buffer* g_debugCB = nullptr;
-// Bumped on every chunk mesh rebuild: the shadow map re-renders when the
-// geometry it was drawn from has changed.
+// Bumped when a chunk mesh inside the shadow map's area is rebuilt: the
+// map re-renders only when geometry it actually covers has changed, not
+// for every far-off chunk streaming in.
 static uint32_t g_meshVersion = 0;
+static float g_shadowAreaX = 0, g_shadowAreaZ = 0, g_shadowAreaHalf = -1; // -1: no map yet
 ID3D11ShaderResourceView* g_blockTexSRV = nullptr;
 ID3D11ShaderResourceView* g_iconSRV = nullptr;
 
@@ -380,7 +382,9 @@ static void RebuildChunkMesh(World& w, const ChunkCoord& cc, Chunk& c) {
     }
 
     c.dirty = false;
-    g_meshVersion++;
+    float cx = (cc.x + 0.5f) * CHUNK_SIZE, cz = (cc.z + 0.5f) * CHUNK_SIZE;
+    float reach = g_shadowAreaHalf + CHUNK_SIZE; // a chunk overlapping the area's edge counts
+    if (g_shadowAreaHalf < 0 || (fabsf(cx - g_shadowAreaX) < reach && fabsf(cz - g_shadowAreaZ) < reach)) g_meshVersion++;
 }
 
 // Capped the same way block updates (MAX_UPDATES_PER_TICK) and column generation
@@ -558,6 +562,12 @@ static void UpdateShadowMap(World& w, Vec3 eye, Vec3 sun) {
     g_shadowSun = sun;
     g_shadowCenterX = eye.x; g_shadowCenterZ = eye.z;
     g_shadowExtent = extent;
+    // The ortho box is tilted toward the sun, so the ground it covers
+    // extends past `extent` -- well past it when the sun is low. This
+    // square catches nearly every rebuild that could show in the map; one
+    // that slips through is picked up at the next sun-angle re-render,
+    // at most ~4.5 s later.
+    g_shadowAreaX = eye.x; g_shadowAreaZ = eye.z; g_shadowAreaHalf = extent * 2.0f;
     g_shadowMeshVersion = g_meshVersion;
     ProfAddCounter(PCOUNT_SHADOW_RENDERS, 1);
 }
@@ -835,6 +845,16 @@ bool InitD3D(HWND hwnd) {
         levels, ARRAYSIZE(levels), D3D11_SDK_VERSION,
         &scd, &g_swapChain, &g_device, &chosen, &g_context);
     if (FAILED(hr)) return false;
+
+    // DXGI's own Alt+Enter would flip into exclusive fullscreen behind the
+    // game's back; fullscreen is borderless, via F11 / Display settings.
+    {
+        IDXGIFactory* factory = nullptr;
+        if (SUCCEEDED(g_swapChain->GetParent(__uuidof(IDXGIFactory), (void**)&factory)) && factory) {
+            factory->MakeWindowAssociation(hwnd, DXGI_MWA_NO_ALT_ENTER);
+            factory->Release();
+        }
+    }
 
     CreateSizeDependentTargets();
 

@@ -474,6 +474,16 @@ void UpdatePlayerPhysics(World& w, Player& p, float dt, bool fwd, bool back, boo
     // them exactly where they are instead of letting them fall into the
     // space the terrain is about to fill.
     if (!ColumnResidentAt(p.x, p.z)) { p.velY = 0.0f; return; }
+    // Safety net: however the player got below the world (it shouldn't be
+    // possible -- the floor can't be broken), put them back on the highest
+    // solid block of their column rather than falling forever.
+    if (p.y < Y_MIN - 32.0f) {
+        int bx = (int)floor(p.x), bz = (int)floor(p.z), top = Y_MIN;
+        for (int y = Y_MAX; y >= Y_MIN; y--) if (w.Solid(bx, y, bz)) { top = y + 1; break; }
+        p.y = (float)top;
+        p.velY = 0.0f;
+        return;
+    }
     // Never entombed: if the box overlaps solid blocks anyway (terrain
     // that appeared around an edge, a block that fell onto the player),
     // lift them a block per tick until they're standing free.

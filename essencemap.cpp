@@ -155,11 +155,20 @@ void BuildMapDrawList(const EssenceNetwork& net, const MapCamera& cam, const Map
     // Belts: minor sources merge into one soft region per group -- the node
     // they roll up into (hierarchy as grouping), or their placement region.
     struct Belt { double sx = 0, sz = 0; int count = 0; float maxR = 0; std::vector<int> members; };
-    std::unordered_map<long long, Belt> belts;
+    std::unordered_map<uint64_t, Belt> belts;
     for (int i = 0; i < (int)nodes.size(); i++) {
         if (!minor(nodes[i])) continue;
-        long long key = nodes[i].parent >= 0 ? nodes[i].parent
-                      : ((long long)1 << 40) + ((long long)floorf(nodes[i].x / net.tuning.regionSize) << 20) + (long long)floorf(nodes[i].z / net.tuning.regionSize);
+        // Grouped by the node it rolls up into, else by placement region
+        // (bit 63 keeps the two kinds of key apart; region coordinates go
+        // in as unsigned 31-bit fields -- shifting a negative value is UB).
+        uint64_t key;
+        if (nodes[i].parent >= 0) {
+            key = (uint64_t)nodes[i].parent;
+        } else {
+            uint32_t rx = (uint32_t)(int32_t)floorf(nodes[i].x / net.tuning.regionSize) & 0x7FFFFFFFu;
+            uint32_t rz = (uint32_t)(int32_t)floorf(nodes[i].z / net.tuning.regionSize) & 0x7FFFFFFFu;
+            key = (1ull << 63) | ((uint64_t)rx << 31) | rz;
+        }
         Belt& b = belts[key];
         b.sx += nodes[i].x; b.sz += nodes[i].z; b.count++; b.members.push_back(i);
     }

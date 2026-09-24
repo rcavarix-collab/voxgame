@@ -147,6 +147,9 @@ static void PickAndAct(bool breakBlock) {
     if (!Raycast(g_world, ex, ey, ez, dx, dy, dz, 6.0f, hx, hy, hz, px, py, pz)) return;
 
     if (breakBlock) {
+        // The world floor stays: nothing exists below it, so a hole there
+        // would drop the player into an endless void.
+        if (hy <= Y_MIN) return;
         if (g_world.Get(hx, hy, hz) == BLOCK_ATTRACTOR) g_essence.RemoveAttractor(hx, hy, hz);
         LiveEdit(g_world, hx, hy, hz, BLOCK_AIR);
     } else {
@@ -867,6 +870,16 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     case WM_DESTROY:
         PostQuitMessage(0);
         return 0;
+    case WM_GETMINMAXINFO: {
+        // Below this client size the taller menus (Keybindings: 13 rows)
+        // and the hotbar would run off the screen.
+        RECT r = { 0, 0, MIN_CLIENT_W, MIN_CLIENT_H };
+        AdjustWindowRect(&r, (DWORD)GetWindowLongW(hwnd, GWL_STYLE), FALSE);
+        MINMAXINFO* mmi = (MINMAXINFO*)lParam;
+        mmi->ptMinTrackSize.x = r.right - r.left;
+        mmi->ptMinTrackSize.y = r.bottom - r.top;
+        return 0;
+    }
     case WM_SIZE:
         // The backbuffer follows the client area (resizing, maximising,
         // fullscreen); a minimised window keeps its old size.
@@ -997,6 +1010,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         // drag or FPS-look capture left behind explicitly (harmless
         // no-op if nothing was actually captured).
         g_draggingSlider = SLIDER_NONE;
+        g_mapDragging = false;
         ReleaseCapture();
         if (g_mouseCaptured) {
             g_menuScreen = MenuScreen::Pause;

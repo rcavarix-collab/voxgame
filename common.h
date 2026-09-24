@@ -109,6 +109,9 @@ static inline Mat4 MatOrthoLH(float w, float h, float zn, float zf) {
 // g_screenH (render.cpp), which follows window resizes and fullscreen.
 static const int DEFAULT_WINDOW_W = 1280;
 static const int DEFAULT_WINDOW_H = 720;
+// Smallest client area the window can be resized to (menus and hotbar fit).
+static const int MIN_CLIENT_W = 960;
+static const int MIN_CLIENT_H = 680;
 extern int g_screenW, g_screenH;
 
 static const int CHUNK_SIZE = 16;
