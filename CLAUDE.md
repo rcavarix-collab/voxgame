@@ -5,6 +5,9 @@ The design of record is `DESIGN.md`; read the relevant part before changing a sy
 ## What the game is reaching for
 The owner's touchstones: Minecraft (the block world, building), Satisfactory and FactoryTown (production chains, logistics), BuildCraft and IndustrialCraft (machines, pipes, power), Equivalent Exchange (transmutation by value), Sandustry (simulated materials that fall, flow and react). The shape: a factory game grounded in a living, simulated world, with The Line and the essence network as the strange layer on top — essence is the natural candidate for a transmutation economy. Theme: industry isn't the monster — its byproducts are real, and running it well keeps the land healthy (DESIGN.md Part XX). The threat is abstract, not combat: neglected land opens rifts of creeping ooze with real loss, pushed back by management and light. Take their *mechanics* (genre ground); never their names, terms, items or art.
 
+## Scope: docs/SCOPE_MOSCOW.xlsx
+The owner keeps scope with MoSCoW (Must / Should / Could / Won't) against a stated horizon (the "How to use" sheet). Before starting work, check it: new work needs a row; new ideas enter as Could or Won't, marked "Claude (proposed)" in Decided by, until the owner decides. Only the owner sets Must. Won't = not this horizon (the dev pile), not rejected. Update Status as work lands (edit with openpyxl, keeping its formatting; LibreOffice can't recalculate in the cloud sandbox, so the workbook calculates on open).
+
 ## Standing priorities
 - **Lagless efficiency.** Cost scales with what's on screen or what changed, never with world size. Budget per-tick work; rebuild only on change; measure with the F3 profiler.
 - **Fake it convincingly, cheaply.** Visual effects are per-pixel tricks driven by small per-frame constants, not extra passes or per-block data (DESIGN.md 4.8–4.12).
