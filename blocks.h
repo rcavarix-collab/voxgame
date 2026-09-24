@@ -28,6 +28,7 @@ enum BlockID : uint8_t {
     BLOCK_STONE_FUNNEL_HALF,
     BLOCK_MUSIC,
     BLOCK_TIMESTREAM,
+    BLOCK_ATTRACTOR,
     BLOCK_COUNT
 };
 
@@ -125,6 +126,9 @@ inline const BlockDef g_blocks[BLOCK_COUNT] = {
     // Reactive blocks: plain cubes that light up on their own.
     { "music_block",        true,  false, true,  false, false, SHAPE_CUBE,         PLACE_PLAIN, GLOW_MUSIC,       TEX("music_block", nullptr, nullptr, nullptr, nullptr) },
     { "timestream_block",   true,  false, true,  false, false, SHAPE_CUBE,         PLACE_PLAIN, GLOW_TIMESTREAM,  TEX("timestream_block", nullptr, nullptr, nullptr, nullptr) },
+    // PROVISIONAL placeholder for player-built essence attractors (Part XIX):
+    // a node on the essence map that draws from convergence zones in reach.
+    { "essence_attractor",  true,  true,  true,  false, false, SHAPE_CUBE,         PLACE_PLAIN, GLOW_NONE,        TEX("essence_attractor", nullptr, nullptr, nullptr, nullptr) },
 };
 #undef TEX
 

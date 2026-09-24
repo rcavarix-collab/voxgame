@@ -177,6 +177,16 @@ void DrawTimestreamBlockTile(TileCanvas& t) {
     t.Border(1, { 110, 125, 145 });
 }
 
+// A dark frame around a violet core: the placeholder essence attractor.
+void DrawAttractorTile(TileCanvas& t) {
+    int s = t.size;
+    t.Fill(0, 0, s, s, { 52, 48, 60 });
+    t.Border(4, { 30, 27, 36 });
+    t.Disc(s / 4, s / 4, s / 2, { 120, 90, 200 });
+    t.Disc(s * 3 / 8, s * 3 / 8, s / 4, { 200, 175, 255 });
+    for (int i = 6; i < s - 6; i += 8) { t.Fill(i, 6, 2, 2, { 90, 80, 110 }); t.Fill(i, s - 8, 2, 2, { 90, 80, 110 }); }
+}
+
 using DrawFn = void (*)(TileCanvas&);
 struct Procedural { const char* name; DrawFn draw; };
 // Drawn in this fixed order after srand(1234), so the random speckle is
@@ -193,6 +203,7 @@ const Procedural kProcedural[] = {
     { "tube", DrawTubeTile },
     { "music_block", DrawMusicBlockTile },
     { "timestream_block", DrawTimestreamBlockTile },
+    { "essence_attractor", DrawAttractorTile },
 };
 
 const size_t LAYER_BYTES = (size_t)BLOCK_TEX_SIZE * BLOCK_TEX_SIZE * 4;

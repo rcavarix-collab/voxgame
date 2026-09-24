@@ -81,6 +81,7 @@ Adding a block is one enum entry plus one row. No virtual dispatch, no per-block
 | Machine | yes | yes | Placeholder processing block |
 | Stone slab, wood ramp, tube, stone pyramid / half pyramid / funnel / half funnel | yes (for testing) | per shape | The Prismative.cpp primitives (4.4) |
 | Music block, timestream block | no | no | Light up with the music / where The Line passes (18.1) |
+| Essence attractor | yes | no | Placeholder player-built node on the essence map (Part XIX) |
 
 ---
 
@@ -225,10 +226,10 @@ Fully designed, **not yet coded**, and now provisional rather than committed: th
 ### 7.1 Why the legacy approach was unacceptable
 All four reference files persisted state via `file.write(reinterpret_cast<const char*>(&block), sizeof(Block))` — a raw struct dump. This fails three ways: (1) any struct field change silently corrupts every old save with no error; (2) no corruption detection — an interrupted write loads however far it got with no signal anything's wrong; (3) block identity is positional (enum/array order *is* the format), so adding a new block type during ongoing development reinterprets every existing save's blocks as the wrong type. A concrete bug was also found in LG2.cpp: `LoadGame` clears the quadtree and never rebuilds it, and separately, the quadtree holds pointers invalidated by `blocks.insert`/`erase` elsewhere — save/load interacting with a raw-pointer spatial index made the whole system fragile in a way that would have been very hard to diagnose from symptoms alone.
 
-### 7.2 Format actually implemented (v7)
+### 7.2 Format actually implemented (v8)
 The byte format lives in `worldfile.cpp` (pure C++, no OS calls — tested natively); `persist.cpp` does the disk side and applies a decoded save to live state.
 ```
-magic (u32 "VXLG") | version (u32, currently 7)
+magic (u32 "VXLG") | version (u32, currently 8)
 player: pos.x,y,z (f32×3)  yaw,pitch (f32×2)  hotbarSelection (i32)  dayTime (f32)
 generator: name (str)  version (u32)  seed (u64)                      (2.5)
 blockNameCount (u32) | [ nameLen(u16) nameBytes ] × count             (3.1)
@@ -239,11 +240,12 @@ chunkCount (u32) | per chunk:
     data  (if flag 2): count (u16), then (cell u16, length u32, bytes)
 updateCount (u32) | [ x,y,z (i32×3)  kind (u8)  delay (u32, ticks from now) ] × count   (v6, 5.4)
 lineCells (u32) | [ cell (i64)  seconds (f32) ] × count; angMom (f64); angle (f32)   (v7, Part XVIII)
+zoneCount (u32) | zone id (u64) × count; attractorCount (u32) | [ x,y,z (i32×3) ] × count   (v8, Part XIX)
 checksum (u32)  — FNV-1a over every byte above
 ```
 **Only modified chunks are written** (2.4); everything else regenerates from the recorded generator. Cells run in `LocalIndex` order (x fastest, then z, then y), so the horizontal layers typical of terrain and buildings collapse into a handful of runs. The effect on size is large: the old format spent 13 bytes on every non-air block (x, y, z as i32 plus an ID), so a radius-8 hills world was tens of megabytes; now an untouched world is a few hundred bytes of header, and a modest build costs a few hundred bytes to a few KB per chunk it touched (the native test's two-chunk edit encodes to 209 bytes).
 
-**Older versions still load:** v2 (preferences embedded, 7.2.2), v3 (preferences moved out), v4 (added the day clock), v5 (generator + per-chunk storage, no pending updates), v6 (no Line state). Their block lists are all hills v1 terrain, so they load as hills worlds with every stored chunk flagged modified; because those formats stored only non-air blocks, a hills chunk the player had dug out entirely would be absent — so each stored column's chunk rows 0–3 (hills v1 tops out at y = 60) are filled in as explicit empty chunks rather than letting regeneration refill them. Saving such a world again writes the current version.
+**Older versions still load:** v2 (preferences embedded, 7.2.2), v3 (preferences moved out), v4 (added the day clock), v5 (generator + per-chunk storage, no pending updates), v6 (no Line state), v7 (no essence discoveries). Their block lists are all hills v1 terrain, so they load as hills worlds with every stored chunk flagged modified; because those formats stored only non-air blocks, a hills chunk the player had dug out entirely would be absent — so each stored column's chunk rows 0–3 (hills v1 tops out at y = 60) are filled in as explicit empty chunks rather than letting regeneration refill them. Saving such a world again writes the current version.
 
 ### 7.2.1 Save location
 `Documents\My Games\Voxistics\` — the conventional PC-game save location (Skyrim and most Bethesda/Paradox titles use the same pattern), chosen over a hidden `%LOCALAPPDATA%` folder specifically because it's visible and easy for players to find, back up, or copy between machines. The directory is resolved fresh on every save/load (`SHGetKnownFolderPath(FOLDERID_Documents, ...)` plus the `My Games\Voxistics` subfolder, created if missing) rather than cached once, so a transient failure doesn't permanently strand the game on a fallback it no longer needs.
@@ -447,17 +449,17 @@ Generation runs on the main thread, so it is budgeted like everything else: medi
 
 ## Part XV — Build
 
-Sixteen source files (`main.cpp world.cpp render.cpp audio.cpp persist.cpp game.cpp textures.cpp music_synth.cpp profiler.cpp worldfile.cpp vtex.cpp blocktex.cpp mesher.cpp shapes.cpp icons.cpp theline.cpp`), one compiler invocation, no project file strictly needed (the checked-in `.vcxproj`/`.vcxproj.filters` list them all for Visual Studio):
+Eighteen source files (`main.cpp world.cpp render.cpp audio.cpp persist.cpp game.cpp textures.cpp music_synth.cpp profiler.cpp worldfile.cpp vtex.cpp blocktex.cpp mesher.cpp shapes.cpp icons.cpp theline.cpp essence.cpp essencemap.cpp`), one compiler invocation, no project file strictly needed (the checked-in `.vcxproj`/`.vcxproj.filters` list them all for Visual Studio):
 
 ```
-cl main.cpp world.cpp render.cpp audio.cpp persist.cpp game.cpp textures.cpp music_synth.cpp profiler.cpp worldfile.cpp vtex.cpp blocktex.cpp mesher.cpp shapes.cpp icons.cpp theline.cpp /link d3d11.lib dxgi.lib d3dcompiler.lib gdiplus.lib gdi32.lib user32.lib shell32.lib ole32.lib uuid.lib xaudio2.lib /SUBSYSTEM:WINDOWS
+cl main.cpp world.cpp render.cpp audio.cpp persist.cpp game.cpp textures.cpp music_synth.cpp profiler.cpp worldfile.cpp vtex.cpp blocktex.cpp mesher.cpp shapes.cpp icons.cpp theline.cpp essence.cpp essencemap.cpp /link d3d11.lib dxgi.lib d3dcompiler.lib gdiplus.lib gdi32.lib user32.lib shell32.lib ole32.lib uuid.lib xaudio2.lib /SUBSYSTEM:WINDOWS
 ```
 
 or with MinGW-w64 (used during development to compile-check this prototype on a non-Windows host, since it ships full D3D11/DXGI/D3DCompiler/GDI+/XAudio2 headers and import libraries):
 
 ```
 x86_64-w64-mingw32-g++ -std=c++17 -O2 -mwindows -municode -DUNICODE -D_UNICODE \
-  main.cpp world.cpp render.cpp audio.cpp persist.cpp game.cpp textures.cpp music_synth.cpp profiler.cpp worldfile.cpp vtex.cpp blocktex.cpp mesher.cpp shapes.cpp icons.cpp theline.cpp -o voxistics.exe \
+  main.cpp world.cpp render.cpp audio.cpp persist.cpp game.cpp textures.cpp music_synth.cpp profiler.cpp worldfile.cpp vtex.cpp blocktex.cpp mesher.cpp shapes.cpp icons.cpp theline.cpp essence.cpp essencemap.cpp -o voxistics.exe \
   -ld3d11 -ldxgi -ld3dcompiler -lgdiplus -lgdi32 -luser32 -lole32 -lshell32 -luuid -lxaudio2_8 -static-libgcc -static-libstdc++
 ```
 
@@ -465,7 +467,7 @@ Each `.cpp` above owns one subsystem and includes only the headers it needs (`co
 
 (`-lxaudio2_8` is MinGW's import-lib name for the same XAudio2 2.8 API that the Windows SDK's `xaudio2.lib` provides — a MinGW-only naming difference, same idea as `-municode` above it.)
 
-Default controls (all fully remappable to any keyboard key or the left/right/middle mouse button via Pause → Keybindings — click a row, then press the new input; Esc cancels a rebind in progress, except on the Pause Menu row, where Esc binds Escape): WASD to move, mouse to look (click once to capture the cursor), Space to jump, left-click to break the targeted block, right-click to place the selected hotbar block, number keys 1–9 or the mouse wheel to select a hotbar block (fixed, not remappable in this pass), F3 for the profiler overlay, F7 for The Line's debug marker, F11 for fullscreen, F5 to save, F9 to load, Esc to open/close the Pause menu or back out one level from any of its submenus (Look Settings, Graphics, Display, Audio, Keybindings, each with its own Reset to Default), all clickable with the freed cursor.
+Default controls (all fully remappable to any keyboard key or the left/right/middle mouse button via Pause → Keybindings — click a row, then press the new input; Esc cancels a rebind in progress, except on the Pause Menu row, where Esc binds Escape): WASD to move, mouse to look (click once to capture the cursor), Space to jump, left-click to break the targeted block, right-click to place the selected hotbar block, number keys 1–9 or the mouse wheel to select a hotbar block (fixed, not remappable in this pass), M for the essence map, F3 for the profiler overlay, F7 for The Line's debug marker, F11 for fullscreen, F5 to save, F9 to load, Esc to open/close the Pause menu or back out one level from any of its submenus (Look Settings, Graphics, Display, Audio, Keybindings, each with its own Reset to Default), all clickable with the freed cursor.
 
 ## Part XVI — Frame Profiler
 
@@ -495,3 +497,20 @@ A thin, one-dimensional distortion in local time, personal to the player (`theli
 
 ### 18.1 Reactive blocks
 Two plain blocks light up on their own, at no CPU cost per block: the registry gives them a glow kind (`BlockGlow`), the mesher writes it into spare vertex bits, and the world shader reads one per-frame value. The **music block** brightens with the loudness of the music actually audible — each queued music chunk is measured in 1/16 s steps as it's synthesized, and the level is read back at the chunk XAudio2 is playing now (submitted minus still queued), so it follows what's heard rather than the four seconds generated ahead. The **timestream block** lights while The Line passes through its cell: the pixel shader finds the block's cell from the world position and face normal and measures its distance to the line (across it, and vertically against the line's height). It is the one deliberate exception to The Line's invisibility — a detector the player chooses to place.
+
+## Part XIX — The Essence Network Map
+
+A top-down, pannable, zoomable view of the player's own discovered essence network (M, rebindable; a menu screen, so the world is frozen and the cursor free while it's open). Nodes sit at their real world coordinates; the map is a legible abstraction for decision-making, not a dump of the simulation — when in doubt it shows less.
+
+**The data (essence.h/.cpp, provisional).** No essence simulation exists yet, so the map reads a small `EssenceNetwork` model that the real simulation is meant to replace behind the same interface: *convergence zones* placed deterministically from the world seed (0–3 per 128-block region, magnitudes spread over four orders of magnitude, mostly faint or minor, a few great) and *attractors*, a placeholder `essence_attractor` block standing in for player-built structures. Routes are derived: an attractor draws from zones within 64 blocks (active, or intermittent when the flow is small) and could from major zones out to 160 (planned); major zones within 160 blocks exchange essence; and 1 in 20 pairs of major zones up to 600 blocks apart are *bound* (entangled — linked with no physical path). Hierarchy is metadata only: each node rolls up into the strongest stronger node within reach, which groups belts and labels without ever moving a node. **Discovery:** only nodes the player has come within 40 blocks of exist on the map (attractors are known because the player built them); zones are generated only for the regions around the player, and the discovered set is saved (v8).
+
+**One intensity scale.** Everything is read through order-of-magnitude bands (`EssenceBand`, one per decade — the same decades The Line's falloff steps through), named qualitatively (faint, minor, moderate, strong, great, vast). No numbers appear anywhere on the map.
+
+**The view (essencemap.h/.cpp, pure, tested).**
+- **Nodes:** size by decade of magnitude (`MapNodeRadius`: a fixed step per order of magnitude, mildly zoom-aware), rounds for natural zones, squares for built attractors, each with a soft halo.
+- **Belts:** minor sources (band ≤ 1) aren't drawn as dots; they merge into one soft translucent belt per group (the node they roll up into, or their region), with individual dots appearing only when zoomed well in.
+- **Routes:** solid for active, dashed for intermittent, dotted for planned; width and the speed of the pulses travelling along them rise with the flow's band. Only bound routes curve — a quadratic Bézier bowed to one side — so a straight line always means a physical path.
+- **Labels:** the six most significant nodes and three most significant routes on screen, ranked by magnitude and named by band ("STRONG CONVERGENCE", "MODERATE FLOW"); a label that would overlap one already placed is dropped rather than stacked. Zoomed in past 1.5 px/block, every visible node is labelled.
+- **Camera:** it opens centred on the player's dwell centroid — The Line's pivot, marked with a faint ring (The Line itself stays unseen) — with the player shown as an arrow. The wheel zooms about the cursor, and dragging pans.
+
+It extends the existing 2D UI pass rather than adding a renderer: the view emits coloured triangles and label requests, which game.cpp batches through the same white-texel quads and crisp text the menus use. The routines that echo older prototypes (`ScaleRadius`, `DrawDottedBezier`, belt rendering and top-N ranking from totality.cpp, solarsystem.cpp and themer.cpp) were rewritten here because those files weren't available; each is isolated in one function so the originals can replace them.

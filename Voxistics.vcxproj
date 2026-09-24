@@ -111,6 +111,8 @@
     <ClCompile Include="shapes.cpp" />
     <ClCompile Include="icons.cpp" />
     <ClCompile Include="theline.cpp" />
+    <ClCompile Include="essencemap.cpp" />
+    <ClCompile Include="essence.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="common.h" />
@@ -129,6 +131,8 @@
     <ClInclude Include="shapes.h" />
     <ClInclude Include="icons.h" />
     <ClInclude Include="theline.h" />
+    <ClInclude Include="essencemap.h" />
+    <ClInclude Include="essence.h" />
     <ClInclude Include="sky.h" />
   </ItemGroup>
   <ItemGroup>

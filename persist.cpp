@@ -10,6 +10,7 @@
 #include "persist.h"
 #include "worldfile.h"
 #include "theline.h"
+#include "essence.h"
 #include "profiler.h"
 #include "audio.h"
 #include <cstdio>
@@ -30,10 +31,10 @@
 // =======================================================================
 
 const char* g_actionNames[ACT_COUNT] = {
-    "forward", "back", "left", "right", "jump", "break", "place", "menu", "save", "load"
+    "forward", "back", "left", "right", "jump", "break", "place", "menu", "save", "load", "map"
 };
 int g_keyBindings[ACT_COUNT] = {
-    'W', 'S', 'A', 'D', VK_SPACE, MOUSE_LEFT, MOUSE_RIGHT, VK_ESCAPE, VK_F5, VK_F9
+    'W', 'S', 'A', 'D', VK_SPACE, MOUSE_LEFT, MOUSE_RIGHT, VK_ESCAPE, VK_F5, VK_F9, 'M'
 };
 float g_sensitivityMultX = 1.0f, g_sensitivityMultY = 1.0f;
 bool g_invertX = false, g_invertY = false;
@@ -269,7 +270,7 @@ void LoadSettings() {
 
 bool SaveGame(World& w, Player& p, int slot) {
     std::vector<uint8_t> buf;
-    EncodeSave(p, g_dayTimeSeconds, g_worldGen, w, g_evictedChunks, SnapshotScheduledUpdates(), SnapshotLine(g_line), buf);
+    EncodeSave(p, g_dayTimeSeconds, g_worldGen, w, g_evictedChunks, SnapshotScheduledUpdates(), SnapshotLine(g_line), g_essence.Snapshot(), buf);
 
     // Crash-safe write sequence (Section 7.3): write to .tmp, only then
     // rotate the previous save to .bak and rename .tmp into place.
@@ -366,6 +367,7 @@ bool LoadGame(World& w, Player& p, int slot) {
     ClearScheduledUpdates();
     RestoreScheduledUpdates(d.updates); // unknown kinds are dropped
     RestoreLine(g_line, g_lineTuning, d.line); // empty history for pre-v7 saves
+    g_essence.Restore(d.gen.seed, d.essence);  // nothing discovered for pre-v8 saves
     g_pendingColumns.clear();
     g_pendingColumnSet.clear();
     g_pendingEvictions.clear();

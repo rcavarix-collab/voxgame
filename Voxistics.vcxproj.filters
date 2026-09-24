@@ -63,6 +63,12 @@
     <ClCompile Include="theline.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="essencemap.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="essence.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="common.h">
@@ -111,6 +117,12 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="theline.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="essencemap.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="essence.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="sky.h">

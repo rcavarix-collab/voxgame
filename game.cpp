@@ -12,6 +12,8 @@
 #include "persist.h"
 #include "profiler.h"
 #include "theline.h"
+#include "essence.h"
+#include "essencemap.h"
 #include <cstdio>
 #include <cstring>
 #include <cctype>
@@ -145,6 +147,7 @@ static void PickAndAct(bool breakBlock) {
     if (!Raycast(g_world, ex, ey, ez, dx, dy, dz, 6.0f, hx, hy, hz, px, py, pz)) return;
 
     if (breakBlock) {
+        if (g_world.Get(hx, hy, hz) == BLOCK_ATTRACTOR) g_essence.RemoveAttractor(hx, hy, hz);
         LiveEdit(g_world, hx, hy, hz, BLOCK_AIR);
     } else {
         // Refuse a placement that would overlap the player's own box --
@@ -183,6 +186,7 @@ static void PickAndAct(bool breakBlock) {
         default: break;
         }
         LiveEdit(g_world, px, py, pz, toPlace, state);
+        if (toPlace == BLOCK_ATTRACTOR) g_essence.AddAttractor(px, py, pz);
     }
 }
 
@@ -308,12 +312,12 @@ enum AccessibilityRow { ARROW_FOV = 0, ARROW_TOGGLE_MOVE = 1, ARROW_HIGH_CONTRAS
 // not warn about or prevent two actions sharing the same input.
 static const char* g_actionLabels[ACT_COUNT] = { // on-screen text
     "MOVE FORWARD", "MOVE BACK", "MOVE LEFT", "MOVE RIGHT", "JUMP",
-    "BREAK BLOCK", "PLACE BLOCK", "PAUSE MENU", "QUICK SAVE", "QUICK LOAD"
+    "BREAK BLOCK", "PLACE BLOCK", "PAUSE MENU", "QUICK SAVE", "QUICK LOAD", "ESSENCE MAP"
 };
 static const SubmenuLayout KEYBIND_LAYOUT = { 480.0f, 32.0f, 8.0f, 92.0f, 20.0f, ACT_COUNT + 2 }; // +reset +back
 
 static const int g_defaultBindings[ACT_COUNT] = {
-    'W', 'S', 'A', 'D', VK_SPACE, MOUSE_LEFT, MOUSE_RIGHT, VK_ESCAPE, VK_F5, VK_F9
+    'W', 'S', 'A', 'D', VK_SPACE, MOUSE_LEFT, MOUSE_RIGHT, VK_ESCAPE, VK_F5, VK_F9, 'M'
 };
 static int g_rebindingAction = -1; // -1 = not capturing; else a GameAction index
 
@@ -665,6 +669,7 @@ static void ResetWorldForNewGame() {
     g_player = Player();
     g_worldGen = DefaultNewWorldGen(); // TerrainHeight below reads it
     ResetLine(g_line); // a new world has no history to pivot around
+    g_essence.Reset(g_worldGen.seed); // nothing discovered yet
     // Start standing on the surface (terrain height is a pure function
     // of x/z, so this needs no generated chunks), taking the highest of
     // the cells the player's footprint overlaps.
@@ -754,6 +759,30 @@ static void HandleSlotPickerClick(int mx, int my) {
 // message) -- the single place Menu/Save/Load/Break/Place dispatch is
 // gated, so every input source is guaranteed to agree on the rules
 // instead of each caller re-deriving them.
+// ---- Essence network map (Part XIX): a menu screen, so the world is
+// frozen and the cursor free while it's open, like every other menu. ----
+static MapCamera g_mapCamera;
+static bool g_mapDragging = false;
+static int g_mapDragX = 0, g_mapDragY = 0;
+static void OpenMap() {
+    // Opens on the player's own dwell centre -- The Line's pivot -- at a
+    // zoom showing a few hundred blocks around it (the view origin only;
+    // no node moves).
+    g_mapCamera.centerX = g_line.pivotX;
+    g_mapCamera.centerZ = g_line.pivotZ;
+    g_mapCamera.scale = 0.5f;
+    g_essence.RefreshRoutes();
+    g_menuScreen = MenuScreen::Map;
+    ReleaseMouseForMenu();
+    StopMusicPlayback();
+}
+static void CloseMap() {
+    g_mapDragging = false;
+    g_menuScreen = MenuScreen::None;
+    CaptureMouseForPlay();
+    StartMusicPlayback();
+}
+
 static bool IsSettingsSubmenu(MenuScreen s) {
     return s == MenuScreen::LookSettings || s == MenuScreen::Graphics || s == MenuScreen::Display
         || s == MenuScreen::Audio || s == MenuScreen::Accessibility || s == MenuScreen::Keybindings;
@@ -777,6 +806,8 @@ static void FireBoundAction(int code) {
             g_menuScreen = MenuScreen::None;
             CaptureMouseForPlay();
             StartMusicPlayback();
+        } else if (g_menuScreen == MenuScreen::Map) {
+            CloseMap();
         } else if (g_menuScreen == MenuScreen::OptionsHub) {
             g_menuScreen = g_optionsReturnScreen;
         } else if (IsSettingsSubmenu(g_menuScreen)) {
@@ -787,6 +818,11 @@ static void FireBoundAction(int code) {
         return;
     }
     if (g_gameState == GameState::Title) return; // Save/Load/Break/Place all require an actual game running
+    if (code == g_keyBindings[ACT_MAP]) {
+        if (g_menuScreen == MenuScreen::None) OpenMap();
+        else if (g_menuScreen == MenuScreen::Map) CloseMap();
+        return;
+    }
     if (code == g_keyBindings[ACT_SAVE]) { DoSave(); return; }
     if (code == g_keyBindings[ACT_LOAD]) {
         DoLoad();
@@ -817,6 +853,7 @@ static void DispatchMenuClick(int mx, int my) {
     case MenuScreen::Keybindings: HandleKeybindingsClick(mx, my); break;
     case MenuScreen::TitleMain: HandleTitleClick(mx, my); break;
     case MenuScreen::SlotPicker: HandleSlotPickerClick(mx, my); break;
+    case MenuScreen::Map: g_mapDragging = true; g_mapDragX = mx; g_mapDragY = my; break; // drag to pan
     default: break;
     }
 }
@@ -839,8 +876,20 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         g_mouseX = (int)(short)LOWORD(lParam);
         g_mouseY = (int)(short)HIWORD(lParam);
         ApplySliderDrag(g_mouseX); // no-op unless a slider is actively held
+        if (g_mapDragging && g_menuScreen == MenuScreen::Map) {
+            g_mapCamera.centerX -= (g_mouseX - g_mapDragX) / g_mapCamera.scale;
+            g_mapCamera.centerZ += (g_mouseY - g_mapDragY) / g_mapCamera.scale; // screen down = world -Z
+            g_mapDragX = g_mouseX; g_mapDragY = g_mouseY;
+        }
         return 0;
     case WM_MOUSEWHEEL:
+        if (g_menuScreen == MenuScreen::Map) {
+            // Zoom about the cursor (wheel messages carry screen coordinates).
+            POINT pt = { (short)LOWORD(lParam), (short)HIWORD(lParam) };
+            ScreenToClient(hwnd, &pt);
+            MapZoomAt(g_mapCamera, GET_WHEEL_DELTA_WPARAM(wParam) > 0 ? 1.25f : 0.8f, (float)pt.x, (float)pt.y);
+            return 0;
+        }
         // Scroll through the hotbar (keys 1-9 reach only the first nine).
         if (g_menuScreen == MenuScreen::None && g_gameState == GameState::InGame && g_placeableList.count > 0) {
             int step = GET_WHEEL_DELTA_WPARAM(wParam) > 0 ? -1 : 1;
@@ -859,6 +908,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     }
     case WM_LBUTTONUP:
         g_mouseButtonDown[0] = false;
+        g_mapDragging = false;
         // Only release capture if a slider drag actually set it --
         // unconditionally releasing here would also kick the player out
         // of FPS mouse-look capture (CaptureMouseForPlay's SetCapture)
@@ -1109,8 +1159,34 @@ void RenderUIPass() {
 
     // A flat, even dim behind any menu (uniform to the screen edges now
     // that UIDrawRect no longer fades its borders -- no vignette).
-    if (g_menuScreen != MenuScreen::None) {
+    if (g_menuScreen != MenuScreen::None && g_menuScreen != MenuScreen::Map) {
         UIDrawRect(glyphVerts, 0, 0, (float)g_screenW, (float)g_screenH, 0, 0, 0, 0.45f);
+    }
+
+    // Essence network map (Part XIX): the draw list is plain coloured
+    // triangles plus label requests, batched through the same white-texel
+    // quads and crisp text every menu uses.
+    if (g_menuScreen == MenuScreen::Map) {
+        g_mapCamera.screenW = g_screenW;
+        g_mapCamera.screenH = g_screenH;
+        float animTime = (float)(GetTickCount64() % 1000000ull) / 1000.0f;
+        MapDrawList dl;
+        BuildMapDrawList(g_essence, g_mapCamera, MapTuning(), animTime,
+                         g_player.x, g_player.z, g_player.yaw, g_line.pivotX, g_line.pivotZ,
+                         UITextWidth, UITextHeight(0.65f), dl);
+        float wu = 0.5f * UI_WHITE_H / UIAtlasWidth(), wv = 0.5f * UI_WHITE_H / UIAtlasHeight();
+        for (size_t i = 0; i + 5 < dl.tris.size(); i += 6) {
+            const float* v = &dl.tris[i];
+            glyphVerts.push_back({ v[0], v[1], wu, wv, v[2], v[3], v[4], v[5] });
+        }
+        for (const MapLabel& l : dl.labels) UIDrawText(glyphVerts, l.text, l.x, l.y, l.scale, l.r, l.g, l.b, l.a);
+        UIDrawText(glyphVerts, "ESSENCE NETWORK", 16.0f, 14.0f, 1.0f, 0.85f, 0.82f, 1.0f, 1.0f);
+        std::string hint = "DRAG TO PAN - WHEEL TO ZOOM - " + GetInputDisplayName(g_keyBindings[ACT_MAP]) + " OR ESC TO CLOSE";
+        UIDrawText(glyphVerts, hint, 16.0f, (float)g_screenH - 16.0f - UITextHeight(0.65f), 0.65f, 0.7f, 0.7f, 0.8f, 0.9f);
+        if (g_essence.Nodes().empty()) {
+            std::string empty = "NO ESSENCE DISCOVERED YET";
+            UIDrawText(glyphVerts, empty, (g_screenW - UITextWidth(empty, 1.0f)) / 2.0f, g_screenH * 0.42f, 1.0f, 0.75f, 0.72f, 0.9f, 1.0f);
+        }
     }
 
     if (g_menuScreen == MenuScreen::Pause) {
