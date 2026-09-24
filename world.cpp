@@ -164,7 +164,7 @@ bool WorldGenFromName(const char* name, WorldGenType& out) {
 uint32_t WorldGenLatestVersion(WorldGenType t) {
     switch (t) {
     case GEN_HILLS: return 1;
-    case GEN_FLAT: return 1;
+    case GEN_FLAT: return 2; // v2: the surface is a patchwork of three grounds (SurfaceBlockAt)
     default: return 0;
     }
 }
@@ -271,6 +271,37 @@ static inline BlockID TerrainBlockAt(int wy, int surface) {
     return BLOCK_STONE;
 }
 
+// Flat v2's ground (DESIGN.md 2.5): the plain's top layer is a patchwork
+// of three materials -- soft grass, crunchy sand, hard pebbles -- in
+// fractal blobs: three octaves of seeded value noise (48, 20 and 8 blocks
+// across), summed and thresholded, so sand and pebble patches sit apart in
+// a sea of grass, with ragged, blobby edges. A few hashes per column, once,
+// when the column generates.
+static const BlockID kPatchSoft = BLOCK_MEADOW_GRASS, kPatchCrunch = BLOCK_COASTAL_SAND, kPatchHard = BLOCK_RIVER_PEBBLE;
+static inline double LatticeValue(int64_t x, int64_t z, uint64_t seed) {
+    uint64_t h = seed ^ ((uint64_t)x * 0x9E3779B97F4A7C15ull) ^ ((uint64_t)z * 0xC2B2AE3D27D4EB4Full);
+    h ^= h >> 33; h *= 0xFF51AFD7ED558CCDull; h ^= h >> 33; h *= 0xC4CEB9FE1A85EC53ull; h ^= h >> 33;
+    return (double)(h >> 11) * (1.0 / 9007199254740992.0);
+}
+static double ValueNoise(double x, double z, uint64_t seed) {
+    double fx = floor(x), fz = floor(z);
+    int64_t ix = (int64_t)fx, iz = (int64_t)fz;
+    double u = x - fx, v = z - fz;
+    u = u * u * (3 - 2 * u); v = v * v * (3 - 2 * v);
+    double a = LatticeValue(ix, iz, seed), b = LatticeValue(ix + 1, iz, seed);
+    double c = LatticeValue(ix, iz + 1, seed), d = LatticeValue(ix + 1, iz + 1, seed);
+    return (a + (b - a) * u) + ((c + (d - c) * u) - (a + (b - a) * u)) * v;
+}
+BlockID SurfaceBlockAt(int wx, int wz) {
+    const uint64_t s = g_worldGen.seed;
+    double n = 0.55 * ValueNoise(wx / 48.0, wz / 48.0, s)
+             + 0.30 * ValueNoise(wx / 20.0, wz / 20.0, s ^ 0x5bd1e995ull)
+             + 0.15 * ValueNoise(wx / 8.0, wz / 8.0, s ^ 0x27d4eb2full);
+    if (n < 0.34) return kPatchCrunch;
+    if (n > 0.64) return kPatchHard;
+    return kPatchSoft;
+}
+
 // Fills a column's terrain straight into fresh chunk arrays -- no
 // per-block World::Set (and its per-block hash lookups and dirty
 // marking), since nothing else can be in these chunks yet.
@@ -280,11 +311,14 @@ static void GenerateColumnTerrain(World& w, int cx, int cz) {
     // Cached per column and reused for every vertical chunk level
     // instead of re-running TerrainHeight once per level.
     int heights[CHUNK_SIZE][CHUNK_SIZE];
+    BlockID surface[CHUNK_SIZE][CHUNK_SIZE];
+    const bool patchwork = g_worldGen.type == GEN_FLAT && g_worldGen.version >= 2;
     int maxHeightInColumn = 0;
     for (int lx = 0; lx < CHUNK_SIZE; lx++) {
         for (int lz = 0; lz < CHUNK_SIZE; lz++) {
             int h = TerrainHeight(baseX + lx, baseZ + lz);
             heights[lx][lz] = h;
+            surface[lx][lz] = patchwork ? SurfaceBlockAt(baseX + lx, baseZ + lz) : BLOCK_DIRT;
             if (h > maxHeightInColumn) maxHeightInColumn = h;
         }
     }
@@ -306,7 +340,9 @@ static void GenerateColumnTerrain(World& w, int cx, int cz) {
                 for (int lx = 0; lx < CHUNK_SIZE; lx++) {
                     int h = heights[lx][lz];
                     if (wy > h) continue;
-                    c->blocks[Chunk::LocalIndex(lx, ly, lz)] = (uint8_t)TerrainBlockAt(wy, h);
+                    BlockID b = TerrainBlockAt(wy, h);
+                    if (wy == h && patchwork) b = surface[lx][lz]; // the top layer: the patchwork
+                    c->blocks[Chunk::LocalIndex(lx, ly, lz)] = (uint8_t)b;
                 }
         }
     }

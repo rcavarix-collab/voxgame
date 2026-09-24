@@ -45,6 +45,8 @@ Y is bounded to a fixed range (0–255 suggested). Rationale: true unbounded ver
 ### 2.5 World generators
 Because unmodified terrain is regenerated rather than stored — on eviction and on load — a world is only reproducible with the exact generator that made it. Each world therefore records its generator (`WorldGenParams`: type, version, seed) in its save, and a generator's output must be a pure function of (params, coordinates). Changing a generator's output means adding a new *version* alongside the old one, which existing worlds keep using; a save naming a generator or version this build doesn't have is refused with a clear reason rather than loaded onto the wrong terrain. Two exist: `hills` v1 (the original sin/cos terrain, which every pre-v5 save is tagged with) and `flat` v1 (surface at y = 12). New worlds currently use `flat` for testing (`DefaultNewWorldGen`, world.cpp). Every world gets a seed now even though neither generator reads one yet, so a seeded noise generator needs no format change.
 
+
+**Flat v2 (new worlds): a patchwork plain.** The same flat plain at y = 12, but its top layer is a patchwork of three grounds chosen for how they feel underfoot — soft meadow grass, crunchy coastal sand, hard river pebbles — in fractal blobs: three octaves of value noise (48, 20 and 8 blocks across) seeded by the world's seed, summed and thresholded, so each world's patches differ and sand and pebbles sit apart in a sea of grass (about 68 / 14 / 18 %). It's the first generator to read the seed; a few hashes per column, once, when the column generates. Flat v1 worlds keep their plain dirt. (`SurfaceBlockAt`; the three materials are one line to swap.)
 ---
 
 ## Part III — Block Model

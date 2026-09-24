@@ -1451,12 +1451,46 @@ static void TestProps() {
     }
 }
 
+static void TestPatchwork() {
+    printf("flat v2 ground patchwork\n");
+    WorldGenParams saved = g_worldGen;
+    g_worldGen.type = GEN_FLAT; g_worldGen.version = 2; g_worldGen.seed = 12345;
+    int counts[3] = {}, changes = 0;
+    BlockID prev = BLOCK_AIR;
+    for (int x = 0; x < 256; x++)
+        for (int z = 0; z < 256; z++) {
+            BlockID b = SurfaceBlockAt(x * 2, z * 2);
+            counts[b == BLOCK_MEADOW_GRASS ? 0 : b == BLOCK_COASTAL_SAND ? 1 : 2]++;
+            if (z > 0 && b != prev) changes++;
+            prev = b;
+        }
+    const int total = 256 * 256;
+    printf("    grass %.0f%%, sand %.0f%%, pebbles %.0f%%\n", 100.0 * counts[0] / total, 100.0 * counts[1] / total, 100.0 * counts[2] / total);
+    CHECK(counts[0] > total * 0.4 && counts[1] > total * 0.05 && counts[2] > total * 0.05);
+    CHECK(changes > 200 && changes < total / 4);   // patches, not noise and not one field
+    CHECK(SurfaceBlockAt(1000, -777) == SurfaceBlockAt(1000, -777)); // a pure function
+    int differ = 0;
+    for (int i = 0; i < 200; i++) { g_worldGen.seed = 12345; BlockID a = SurfaceBlockAt(i * 7, i * 3); g_worldGen.seed = 999; differ += a != SurfaceBlockAt(i * 7, i * 3); }
+    CHECK(differ > 20);                              // each world its own
+    // Generated columns wear it on top; flat v1 worlds keep plain dirt.
+    World w; ResetWorldState(w);
+    g_worldGen.seed = 12345;
+    GenerateColumn(w, 0, 0);
+    CHECK(w.Get(5, 12, 5) == SurfaceBlockAt(5, 5) && w.Get(5, 11, 5) == BLOCK_DIRT && w.Get(5, 13, 5) == BLOCK_AIR);
+    ResetWorldState(w);
+    g_worldGen.version = 1;
+    GenerateColumn(w, 0, 0);
+    CHECK(w.Get(5, 12, 5) == BLOCK_DIRT);
+    g_worldGen = saved;
+}
+
 int main() {
     TestVtex();
     TestBlockTextures();
     TestSaveRoundTrip();
     TestLegacyLoad();
     TestStreaming();
+    TestPatchwork();
     TestPlayer();
     TestMovement();
     TestMesher();

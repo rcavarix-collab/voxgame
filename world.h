@@ -281,6 +281,8 @@ uint32_t WorldGenLatestVersion(WorldGenType t);
 WorldGenParams DefaultNewWorldGen();
 
 int TerrainHeight(int wx, int wz); // for g_worldGen
+// Flat v2's top layer: grass, sand or pebbles in fractal patches (seeded).
+BlockID SurfaceBlockAt(int wx, int wz);
 long long ColumnKey(int cx, int cz);
 // Makes a column resident: generates its terrain from g_worldGen, then
 // overlays any modified chunks held in g_evictedChunks for it.
