@@ -79,7 +79,16 @@ void LiveEdit(World& w, int x, int y, int z, BlockID id) {
 // World generation and chunk loading
 // =======================================================================
 
+// TEMPORARY, for testing: a dead-flat world (surface at y = 12, so every
+// column is a single chunk tall). Set false for the rolling hills below.
+// Existing saves keep whatever terrain they already stored; only newly
+// generated columns follow this switch, so an old hilly save will show
+// cliffs where it meets new flat ground.
+static const bool FLAT_TEST_WORLD = true;
+static const int FLAT_TEST_HEIGHT = 12;
+
 int TerrainHeight(int wx, int wz) {
+    if (FLAT_TEST_WORLD) return FLAT_TEST_HEIGHT;
     double h = 40.0 + 6.0 * sin(wx * 0.15) + 4.0 * cos(wz * 0.13);
     int ih = (int)h;
     if (ih < 20) ih = 20;
