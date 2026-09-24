@@ -145,6 +145,25 @@ static void TestBlockTextures() {
     CHECK(a.warnings.size() == 2); // dirt -> missing texture; unknown block
     for (auto& w : a.warnings) printf("    (expected) %s\n", w.c_str());
 
+    // The natural placeholders tile seamlessly: the step across the wrap
+    // edge (last column to first, last row to first) is no bigger than the
+    // biggest step already inside the tile between logical pixels. And
+    // dirt is brown: never greener than it is red.
+    for (BlockID id : { BLOCK_STONE, BLOCK_DIRT, BLOCK_WOOD }) {
+        const uint8_t* L = t.mips[0].data() + (size_t)t.faceLayer[id][FACE_POS_Z][FACE_POS_Z] * BLOCK_TEX_SIZE * BLOCK_TEX_SIZE * 4;
+        const int S = BLOCK_TEX_SIZE, k = S / 16;
+        auto px = [&](int x, int y) { return L + ((size_t)y * S + x) * 4; };
+        auto diff = [&](const uint8_t* a, const uint8_t* b) { return abs(a[0] - b[0]) + abs(a[1] - b[1]) + abs(a[2] - b[2]); };
+        auto colStep = [&](int x0, int x1) { double d = 0; for (int y = 0; y < S; y++) d += diff(px(x0, y), px(x1, y)); return d / S; };
+        auto rowStep = [&](int y0, int y1) { double d = 0; for (int x = 0; x < S; x++) d += diff(px(x, y0), px(x, y1)); return d / S; };
+        double maxCol = 0, maxRow = 0;
+        for (int b = k; b < S; b += k) { maxCol = std::max(maxCol, colStep(b - 1, b)); maxRow = std::max(maxRow, rowStep(b - 1, b)); }
+        double wrapX = colStep(S - 1, 0), wrapY = rowStep(S - 1, 0);
+        printf("    %s: biggest inner step %.1f / %.1f, across the wrap %.1f / %.1f\n", g_blocks[id].name, maxCol, maxRow, wrapX, wrapY);
+        CHECK(wrapX <= maxCol * 1.05 + 1 && wrapY <= maxRow * 1.05 + 1);
+        if (id == BLOCK_DIRT) { bool green = false; for (int i = 0; i < S * S; i++) if (L[i * 4 + 1] > L[i * 4 + 2]) green = true; CHECK(!green); }
+    }
+
     // Mips average in linear light: a black/white checker fades to the
     // sRGB code of 50% linear (188), not to gamma-space 128; flat colour
     // survives every level unchanged.

@@ -60,39 +60,95 @@ static void DrawFoundationTile(TileCanvas& t) {
     }
 }
 
+// ---- Natural placeholders: 16x16 pixel art, seamless ------------------
+// Drawn on a 16x16 grid of logical pixels (each block-size/16 real ones,
+// the same chunky scale the art brief asks for) from our own integer
+// hash -- never rand(): MSVC's rand() is a weak LCG whose consecutive
+// values correlate, which lined random specks up into diagonal streaks
+// across the landscape. Every pattern wraps at 16, so tiles meet with no
+// seam on any side.
+static uint32_t Hash3(uint32_t x, uint32_t y, uint32_t salt) {
+    uint32_t h = x * 0x9E3779B1u + y * 0x85EBCA77u + salt * 0xC2B2AE3Du; // murmur3's finaliser: neighbours decorrelate fully
+    h ^= h >> 16; h *= 0x85EBCA6Bu; h ^= h >> 13; h *= 0xC2B2AE35u; h ^= h >> 16;
+    return h;
+}
+static float Hash01(int x, int y, uint32_t salt) { return (Hash3((uint32_t)x, (uint32_t)y, salt) & 0xFFFFFF) / 16777216.0f; }
+// Smooth value noise that repeats every `period` logical pixels.
+static float TileNoise(float x, float y, int period, uint32_t salt) {
+    int x0 = (int)floorf(x), y0 = (int)floorf(y);
+    float fx = x - x0, fy = y - y0;
+    fx = fx * fx * (3 - 2 * fx); fy = fy * fy * (3 - 2 * fy);
+    auto v = [&](int ix, int iy) { return Hash01(((ix % period) + period) % period, ((iy % period) + period) % period, salt); };
+    float a = v(x0, y0) + (v(x0 + 1, y0) - v(x0, y0)) * fx;
+    float b = v(x0, y0 + 1) + (v(x0 + 1, y0 + 1) - v(x0, y0 + 1)) * fx;
+    return a + (b - a) * fy;
+}
+static Rgb Shade(Rgb c, float k) {
+    auto f = [&](uint8_t v) { float r = v * k; return (uint8_t)(r < 0 ? 0 : (r > 255 ? 255 : r)); };
+    return { f(c.r), f(c.g), f(c.b) };
+}
+static void Pixel16(TileCanvas& t, int x, int y, Rgb c) {
+    int k = t.size / 16;
+    t.Fill(((x % 16) + 16) % 16 * k, ((y % 16) + 16) % 16 * k, k, k, c);
+}
+
+// Stone: cool grey, soft mottling in two scales, a few darker flecks and
+// the odd lighter grain -- even overall, so it doesn't grid the hillside.
 static void DrawStoneTile(TileCanvas& t) {
-    int s = t.size;
-    t.Fill(0, 0, s, s, { 140, 140, 145 });
-    for (int i = 0; i < s * 3; i++) {
-        int px = rand() % s;
-        int py = rand() % s;
-        int shade = 100 + rand() % 80;
-        t.Fill(px, py, 2, 2, { (uint8_t)shade, (uint8_t)shade, (uint8_t)(shade + 5) });
-    }
+    const Rgb base = { 128, 129, 134 };
+    for (int y = 0; y < 16; y++)
+        for (int x = 0; x < 16; x++) {
+            float n = 0.65f * TileNoise(x / 4.0f, y / 4.0f, 4, 11) + 0.35f * TileNoise(x / 2.0f, y / 2.0f, 8, 12);
+            float k = 0.86f + 0.26f * n;
+            float r = Hash01(x, y, 13);
+            if (r < 0.07f) k *= 0.80f; else if (r > 0.95f) k *= 1.10f;
+            Pixel16(t, x, y, Shade(base, k));
+        }
 }
 
+// Dirt: warm browns only (no green), soft clumps, darker pebbles and a
+// few pale grit specks -- no direction to it, so nothing lines up.
 static void DrawDirtTile(TileCanvas& t) {
-    int s = t.size;
-    t.Fill(0, 0, s, s, { 101, 67, 33 });
-    for (int i = 0; i < s * 3; i++) {
-        int px = rand() % s;
-        int py = rand() % s;
-        int r = 80 + rand() % 50, gr = 50 + rand() % 40, b = 20 + rand() % 25;
-        t.Fill(px, py, 3, 3, { (uint8_t)r, (uint8_t)gr, (uint8_t)b });
-    }
+    const Rgb base = { 118, 82, 54 };
+    for (int y = 0; y < 16; y++)
+        for (int x = 0; x < 16; x++) {
+            float n = 0.6f * TileNoise(x / 4.0f, y / 4.0f, 4, 21) + 0.4f * TileNoise(x / 2.0f, y / 2.0f, 8, 22);
+            float k = 0.82f + 0.30f * n;
+            Rgb c = Shade(base, k);
+            float r = Hash01(x, y, 23);
+            if (r < 0.08f) c = Shade({ 84, 58, 40 }, 0.9f + 0.2f * n);          // pebble
+            else if (r > 0.95f) c = Shade({ 150, 118, 86 }, 0.95f + 0.1f * n);  // grit
+            Pixel16(t, x, y, c);
+        }
 }
 
+// Wood: four horizontal planks, each its own tone, with streaks of grain
+// running along them and wrapping, a soft line between planks, and plank
+// ends staggered (one faint joint per plank, at a different place in
+// each) so nothing lines up with the block's own edges.
 static void DrawWoodTile(TileCanvas& t) {
-    int s = t.size;
-    t.Fill(0, 0, s, s, { 165, 120, 75 });
-    Rgb grain = { 120, 85, 50 };
-    for (int i = 3; i < s; i += 6) {
-        int drift = rand() % 3 - 1; // -1, 0 or +1 px across the whole tile
-        for (int x = 0; x < s; x++) {
-            // Round-to-nearest of i + drift * x / s, done in integers.
-            int y = i + (drift * (2 * x + 1) + (drift < 0 ? -s : s)) / (2 * s);
-            t.Put(x, y, grain);
-            t.Blend(x, y + 1, grain);
+    const Rgb base = { 162, 120, 76 };
+    for (int plank = 0; plank < 4; plank++) {
+        float tone = 0.86f + 0.22f * Hash01(plank, 0, 31);
+        int joint = (plank * 7 + 3) % 16;
+        for (int row = 0; row < 4; row++) {
+            int y = plank * 4 + row;
+            for (int x = 0; x < 16; x++) {
+                float k = tone * (0.95f + 0.08f * TileNoise(x / 4.0f, (float)y, 4, 32)); // gentle along-the-board variation
+                if (row == 3) k *= 0.80f;                                             // the line between planks
+                if (x == joint && row != 3) k *= 0.80f;                               // plank end
+                Pixel16(t, x, y, Shade(base, k));
+            }
+        }
+        // Two grain streaks per plank, 4-9 pixels long, wrapping.
+        for (int g = 0; g < 2; g++) {
+            int row = 1 + (int)(Hash01(plank, g, 34) * 2.0f);
+            int x0 = (int)(Hash01(plank, g, 35) * 16.0f), len = 4 + (int)(Hash01(plank, g, 36) * 6.0f);
+            for (int i = 0; i < len; i++) {
+                int x = (x0 + i) % 16;
+                if (x == joint) continue;
+                Pixel16(t, x, plank * 4 + row, Shade(base, tone * 0.84f));
+            }
         }
     }
 }
