@@ -39,15 +39,20 @@ static inline SkyState ComputeSky(float dayTime) {
     float a = t < SUNSET_SECONDS ? PI * (t - SUNRISE_SECONDS) / (SUNSET_SECONDS - SUNRISE_SECONDS)
                                  : PI + PI * (t - SUNSET_SECONDS) / (DAY_LENGTH_SECONDS - SUNSET_SECONDS);
     SkyState s;
-    // Tilted toward -Z (south) at noon, so shadows never point straight down.
-    s.sunDir = Normalize({ cosf(a), sinf(a), -0.35f * sinf(a) });
+    // Tilted toward -Z (south): it peaks ~60 degrees up, so even noon
+    // shadows stretch out from under things rather than hiding beneath them.
+    s.sunDir = Normalize({ cosf(a), sinf(a), -0.6f * sinf(a) });
     // The moon trails the sun by ~140 degrees: up through the night and
     // into the morning, the way a waning moon lingers after dawn.
     float m = a - 2.45f;
     s.moonDir = Normalize({ cosf(m), sinf(m), 0.30f * sinf(m) });
     float up = SkySmooth(-0.12f, 0.25f, s.sunDir.y);
     s.daylight = NIGHT_LIGHT + (1.0f - NIGHT_LIGHT) * up;
-    s.sunLight = SkySmooth(-0.02f, 0.15f, s.sunDir.y);
+    // Direct sun arrives within a minute or two of sunrise (low, orange,
+    // long shadows) rather than after the sun has climbed ~9 degrees. It
+    // ends exactly at the horizon: below it the sun moves 5x faster (the
+    // night is short), which would turn the last of the fade into a snap.
+    s.sunLight = SkySmooth(0.0f, 0.10f, s.sunDir.y);
     s.starsVisible = 1.0f - SkySmooth(-0.20f, 0.05f, s.sunDir.y);
     s.starAngle = 2.0f * PI * t / DAY_LENGTH_SECONDS;
     return s;

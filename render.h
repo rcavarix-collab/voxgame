@@ -114,6 +114,13 @@ extern UINT g_skyIndexCount;
 bool InitD3D(HWND hwnd);
 // Follows the window's client size (WM_SIZE); ignores a minimised (0x0) window.
 void ResizeRenderTargets(int w, int h);
+// Whether each optional effect compiled and was set up on this machine
+// (the Graphics menu shows the ones that didn't as unavailable), and the
+// compiler's complaints if any (also written to shader_errors.txt).
+bool ShadowsAvailable();
+bool PostEffectsAvailable();
+bool BloomAvailable();
+const std::string& ShaderErrors();
 // Builds block textures (authored .vtex art from assets/textures plus
 // procedural fallbacks) and the UI atlas. `problems` receives a one-line
 // summary if any .vtex file had errors (details are written to

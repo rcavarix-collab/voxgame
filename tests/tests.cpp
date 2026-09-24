@@ -536,9 +536,9 @@ static void TestSky() {
     printf("sky model and shadow projection\n");
     SkyState dawn = ComputeSky(0), noon = ComputeSky(1500), dusk = ComputeSky(3000), night = ComputeSky(3300);
     CHECK(fabsf(dawn.sunDir.y) < 1e-4f && dawn.sunDir.x > 0.99f);     // rises in the east (+X)
-    CHECK(noon.sunDir.y > 0.9f && noon.sunDir.z < 0);                 // high, tilted south
+    CHECK(noon.sunDir.y > 0.8f && noon.sunDir.y < 0.9f && noon.sunDir.z < 0); // high (~60 degrees), tilted south
     CHECK(fabsf(dusk.sunDir.y) < 1e-3f && dusk.sunDir.x < -0.99f);    // sets in the west
-    CHECK(night.sunDir.y < -0.9f && night.moonDir.y > 0.3f);          // moon up at night
+    CHECK(night.sunDir.y < -0.8f && night.moonDir.y > 0.3f);          // moon up at night
     CHECK(noon.daylight == 1.0f && fabsf(night.daylight - NIGHT_LIGHT) < 1e-5f);
     CHECK(night.starsVisible == 1.0f && noon.starsVisible == 0.0f);
     CHECK(night.sunLight == 0.0f && noon.sunLight == 1.0f);

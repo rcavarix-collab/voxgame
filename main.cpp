@@ -74,7 +74,11 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
     if (g_fullscreen) ApplyFullscreen(true); // saved preference
     std::string textureProblems;
     if (!InitTextures(textureProblems)) return -1;
-    if (!textureProblems.empty()) ShowToast(textureProblems, 8.0f);
+    // One toast (a second would replace the first).
+    std::string startupProblems = textureProblems;
+    if (!ShaderErrors().empty())
+        startupProblems += (startupProblems.empty() ? "" : "  /  ") + std::string("SOME GRAPHICS EFFECTS FAILED TO LOAD - SEE SHADER_ERRORS.TXT");
+    if (!startupProblems.empty()) ShowToast(startupProblems, 8.0f);
     InitAudio(); // a machine with no usable audio device still gets a silent but playable game (Section 10)
     BuildSkyMesh();
 

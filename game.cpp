@@ -399,7 +399,7 @@ static const float SENS_MIN = 0.25f, SENS_MAX = 3.0f;
 static void ResetLookSettings() { g_sensitivityMultX = 1.0f; g_sensitivityMultY = 1.0f; g_invertX = false; g_invertY = false; }
 static void ResetGraphicsSettings() {
     g_loadRadius = 3;
-    g_shadows = false; g_postEdges = false; g_postSSAO = false; g_bloom = true;
+    g_shadows = true; g_postEdges = false; g_postSSAO = false; g_bloom = true;
     g_lastPlayerChunkX = INT32_MIN; g_lastPlayerChunkZ = INT32_MIN; // force a rescan at the new radius
 }
 static void ResetDisplaySettings() { g_showFPS = false; g_showProfiler = false; if (g_fullscreen) { g_fullscreen = false; ApplyFullscreen(false); } }
@@ -1275,10 +1275,12 @@ void RenderUIPass() {
         drawPanelTitle(panel, GRAPHICS_LAYOUT.panelW, "GRAPHICS SETTINGS", 1.0f);
 
         drawSliderRow(SubmenuRowRect(GRAPHICS_LAYOUT, GROW_RENDER_DIST), SLIDER_RENDER_DIST);
-        drawRowButton(SubmenuRowRect(GRAPHICS_LAYOUT, GROW_SHADOWS), g_shadows ? "SUN SHADOWS: ON" : "SUN SHADOWS: OFF");
-        drawRowButton(SubmenuRowRect(GRAPHICS_LAYOUT, GROW_OUTLINES), g_postEdges ? "EDGE OUTLINES: ON" : "EDGE OUTLINES: OFF");
-        drawRowButton(SubmenuRowRect(GRAPHICS_LAYOUT, GROW_SSAO), g_postSSAO ? "SCREEN-SPACE AO: ON" : "SCREEN-SPACE AO: OFF");
-        drawRowButton(SubmenuRowRect(GRAPHICS_LAYOUT, GROW_BLOOM), g_bloom ? "GLOW (BLOOM): ON" : "GLOW (BLOOM): OFF");
+        // An effect whose shader didn't compile here says so (shader_errors.txt
+        // has the details) instead of a toggle that silently does nothing.
+        drawRowButton(SubmenuRowRect(GRAPHICS_LAYOUT, GROW_SHADOWS), !ShadowsAvailable() ? "SUN SHADOWS: UNAVAILABLE" : g_shadows ? "SUN SHADOWS: ON" : "SUN SHADOWS: OFF");
+        drawRowButton(SubmenuRowRect(GRAPHICS_LAYOUT, GROW_OUTLINES), !PostEffectsAvailable() ? "EDGE OUTLINES: UNAVAILABLE" : g_postEdges ? "EDGE OUTLINES: ON" : "EDGE OUTLINES: OFF");
+        drawRowButton(SubmenuRowRect(GRAPHICS_LAYOUT, GROW_SSAO), !PostEffectsAvailable() ? "SCREEN-SPACE AO: UNAVAILABLE" : g_postSSAO ? "SCREEN-SPACE AO: ON" : "SCREEN-SPACE AO: OFF");
+        drawRowButton(SubmenuRowRect(GRAPHICS_LAYOUT, GROW_BLOOM), !BloomAvailable() ? "GLOW (BLOOM): UNAVAILABLE" : g_bloom ? "GLOW (BLOOM): ON" : "GLOW (BLOOM): OFF");
         drawRowButton(SubmenuRowRect(GRAPHICS_LAYOUT, GROW_RESET), "RESET TO DEFAULT");
         drawRowButton(SubmenuRowRect(GRAPHICS_LAYOUT, GROW_BACK), "BACK");
     } else if (g_menuScreen == MenuScreen::Display) {

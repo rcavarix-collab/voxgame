@@ -217,7 +217,9 @@ static const char* g_shaderSrc =
     "    float3 n = i.glowInfo.yzw;\n"
     "    float ao = i.aoBias.x;\n"
     "    float shadow = 1.0f;\n"
-    "    float sunLit = saturate(dot(n, fSunDir.xyz));\n"
+    // Softened falloff (sqrt of N.L): a faked wrap so a low sun still
+    // lights flat ground enough for its long shadows to read at dawn/dusk.
+    "    float sunLit = sqrt(saturate(dot(n, fSunDir.xyz)));\n"
     "#ifndef NO_SHADOWS\n"
     "    if (params.x > 0.5f && sunLit > 0.0f) {\n"
     "        float4 lp = mul(float4(i.wpos, 1.0f), lightViewProj);\n"
@@ -366,24 +368,24 @@ static const char* g_postShaderSrc =
 // a sunlit wall never smears.
 // Downsample: 4 bilinear taps = a 4x4 box of the full-res scene.
 static const char* g_bloomDownShaderSrc =
-    "cbuffer BloomCB : register(b0) { float4 step; };\n" // xy: one full-res texel
+    "cbuffer BloomCB : register(b0) { float4 texStep; };\n" // xy: one full-res texel
     "Texture2D sceneTex : register(t0);\n"
     "SamplerState linearSamp : register(s1);\n"
     "struct VSOut { float4 pos:SV_POSITION; float2 uv:TEXCOORD0; };\n"
     "float3 Tap(float2 uv) { float4 s = sceneTex.SampleLevel(linearSamp, uv, 0); return s.rgb * s.a; }\n"
     "float4 PSMain(VSOut i) : SV_TARGET {\n"
-    "    float2 o = step.xy;\n"
+    "    float2 o = texStep.xy;\n"
     "    return float4(0.25f * (Tap(i.uv + float2(-o.x, -o.y)) + Tap(i.uv + float2(o.x, -o.y))\n"
     "                         + Tap(i.uv + float2(-o.x,  o.y)) + Tap(i.uv + float2(o.x,  o.y))), 1.0f);\n"
     "}\n";
 // Separable 9-tap Gaussian in 5 bilinear fetches, along step.xy.
 static const char* g_bloomBlurShaderSrc =
-    "cbuffer BloomCB : register(b0) { float4 step; };\n" // xy: texel step along the blur direction
+    "cbuffer BloomCB : register(b0) { float4 texStep; };\n" // xy: texel step along the blur direction
     "Texture2D srcTex : register(t0);\n"
     "SamplerState linearSamp : register(s1);\n"
     "struct VSOut { float4 pos:SV_POSITION; float2 uv:TEXCOORD0; };\n"
     "float4 PSMain(VSOut i) : SV_TARGET {\n"
-    "    float2 d1 = step.xy * 1.3846154f, d2 = step.xy * 3.2307692f;\n"
+    "    float2 d1 = texStep.xy * 1.3846154f, d2 = texStep.xy * 3.2307692f;\n"
     "    float3 c = srcTex.SampleLevel(linearSamp, i.uv, 0).rgb * 0.2270270f\n"
     "             + (srcTex.SampleLevel(linearSamp, i.uv + d1, 0).rgb + srcTex.SampleLevel(linearSamp, i.uv - d1, 0).rgb) * 0.3162162f\n"
     "             + (srcTex.SampleLevel(linearSamp, i.uv + d2, 0).rgb + srcTex.SampleLevel(linearSamp, i.uv - d2, 0).rgb) * 0.0702703f;\n"
@@ -1014,13 +1016,19 @@ bool FrustumIntersectsAABB(const Frustum& f, Vec3 minB, Vec3 maxB) {
 
 // Compiles one entry point; on failure logs the compiler's message and
 // returns nullptr, leaving the caller to decide whether that's fatal.
+// Every compile failure this run, for shader_errors.txt (a failed optional
+// effect would otherwise just quietly not appear).
+static std::string g_shaderErrors;
+
 static ID3DBlob* CompileShader(const char* src, const char* entry, const char* profile,
-                               const D3D_SHADER_MACRO* macros = nullptr) {
+                               const D3D_SHADER_MACRO* macros = nullptr, const char* what = "shader") {
     ID3DBlob* blob = nullptr, * err = nullptr;
     HRESULT hr = D3DCompile(src, strlen(src), nullptr, macros, nullptr, entry, profile, 0, 0, &blob, &err);
     if (FAILED(hr)) {
-        OutputDebugStringA("Shader compile failed: ");
-        if (err) OutputDebugStringA((const char*)err->GetBufferPointer());
+        std::string msg = std::string(what) + " (" + entry + ", " + profile + (macros ? ", " + std::string(macros[0].Name) : std::string()) + "):\n";
+        msg += err ? (const char*)err->GetBufferPointer() : "no compiler output\n";
+        g_shaderErrors += msg + "\n";
+        OutputDebugStringA(("Shader compile failed: " + msg).c_str());
         if (err) err->Release();
         if (blob) blob->Release();
         return nullptr;
@@ -1028,6 +1036,11 @@ static ID3DBlob* CompileShader(const char* src, const char* entry, const char* p
     if (err) err->Release();
     return blob;
 }
+
+bool ShadowsAvailable() { return g_shadowsAvailable; }
+bool PostEffectsAvailable() { return g_postAvailable; }
+bool BloomAvailable() { return g_bloomAvailable; }
+const std::string& ShaderErrors() { return g_shaderErrors; }
 
 // The backbuffer's render target, the depth buffer and the viewport --
 // everything whose size is the window's. Recreated on every resize.
@@ -1149,12 +1162,12 @@ bool InitD3D(HWND hwnd) {
     // the sky exactly), prepended at compile time.
     const std::string worldSrc = std::string(g_atmosphereSrc) + g_shaderSrc;
     const std::string skySrc = std::string(g_atmosphereSrc) + g_skyShaderSrc;
-    ID3DBlob* vsBlob = CompileShader(worldSrc.c_str(), "VSMain", "vs_4_0");
-    ID3DBlob* psBlob = CompileShader(worldSrc.c_str(), "PSMain", "ps_4_0");
+    ID3DBlob* vsBlob = CompileShader(worldSrc.c_str(), "VSMain", "vs_4_0", nullptr, "world");
+    ID3DBlob* psBlob = CompileShader(worldSrc.c_str(), "PSMain", "ps_4_0", nullptr, "world");
     bool worldShadows = psBlob != nullptr;
     if (!psBlob) {
         const D3D_SHADER_MACRO noShadows[] = { { "NO_SHADOWS", "1" }, { nullptr, nullptr } };
-        psBlob = CompileShader(worldSrc.c_str(), "PSMain", "ps_4_0", noShadows);
+        psBlob = CompileShader(worldSrc.c_str(), "PSMain", "ps_4_0", noShadows, "world");
     }
     if (!vsBlob || !psBlob) return false;
     g_device->CreateVertexShader(vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(), nullptr, &g_vs);
@@ -1293,8 +1306,8 @@ bool InitD3D(HWND hwnd) {
     // --- Sky pass pipeline objects: depth off (g_uiDepthState is reused
     // here -- it's the same DepthEnable=FALSE state the UI pass already
     // needed, no reason to create a second identical one) ---
-    ID3DBlob* skyVsBlob = CompileShader(skySrc.c_str(), "VSMain", "vs_4_0");
-    ID3DBlob* skyPsBlob = CompileShader(skySrc.c_str(), "PSMain", "ps_4_0");
+    ID3DBlob* skyVsBlob = CompileShader(skySrc.c_str(), "VSMain", "vs_4_0", nullptr, "sky");
+    ID3DBlob* skyPsBlob = CompileShader(skySrc.c_str(), "PSMain", "ps_4_0", nullptr, "sky");
     if (!skyVsBlob || !skyPsBlob) {
         if (skyVsBlob) skyVsBlob->Release();
         if (skyPsBlob) skyPsBlob->Release();
@@ -1320,7 +1333,7 @@ bool InitD3D(HWND hwnd) {
     // --- Sun shadows (Section 4.8). Optional: any failure here just
     // leaves shadows unavailable (the Graphics toggle then does nothing).
     if (worldShadows) {
-        ID3DBlob* sv = CompileShader(g_shadowShaderSrc, "VSMain", "vs_4_0");
+        ID3DBlob* sv = CompileShader(g_shadowShaderSrc, "VSMain", "vs_4_0", nullptr, "shadow map");
         if (sv) {
             g_device->CreateVertexShader(sv->GetBufferPointer(), sv->GetBufferSize(), nullptr, &g_shadowVS);
             sv->Release();
@@ -1357,8 +1370,8 @@ bool InitD3D(HWND hwnd) {
 
     // --- Post pass (Section 4.8): outlines and SSAO. Optional too.
     {
-        ID3DBlob* pv = CompileShader(g_postShaderSrc, "VSMain", "vs_4_0");
-        ID3DBlob* pp = CompileShader(g_postShaderSrc, "PSMain", "ps_4_0");
+        ID3DBlob* pv = CompileShader(g_postShaderSrc, "VSMain", "vs_4_0", nullptr, "post");
+        ID3DBlob* pp = CompileShader(g_postShaderSrc, "PSMain", "ps_4_0", nullptr, "post");
         if (pv) { g_device->CreateVertexShader(pv->GetBufferPointer(), pv->GetBufferSize(), nullptr, &g_postVS); pv->Release(); }
         if (pp) { g_device->CreatePixelShader(pp->GetBufferPointer(), pp->GetBufferSize(), nullptr, &g_postPS); pp->Release(); }
         D3D11_BUFFER_DESC pb = {};
@@ -1375,8 +1388,8 @@ bool InitD3D(HWND hwnd) {
         g_postAvailable = g_postVS && g_postPS && g_postCB && g_pointClampSampler && g_linearClampSampler;
 
         // Bloom (Section 4.10) rides on the post pass.
-        ID3DBlob* bd = CompileShader(g_bloomDownShaderSrc, "PSMain", "ps_4_0");
-        ID3DBlob* bb = CompileShader(g_bloomBlurShaderSrc, "PSMain", "ps_4_0");
+        ID3DBlob* bd = CompileShader(g_bloomDownShaderSrc, "PSMain", "ps_4_0", nullptr, "bloom downsample");
+        ID3DBlob* bb = CompileShader(g_bloomBlurShaderSrc, "PSMain", "ps_4_0", nullptr, "bloom blur");
         if (bd) { g_device->CreatePixelShader(bd->GetBufferPointer(), bd->GetBufferSize(), nullptr, &g_bloomDownPS); bd->Release(); }
         if (bb) { g_device->CreatePixelShader(bb->GetBufferPointer(), bb->GetBufferSize(), nullptr, &g_bloomBlurPS); bb->Release(); }
         pb.ByteWidth = 4 * sizeof(float);
@@ -1386,8 +1399,8 @@ bool InitD3D(HWND hwnd) {
 
     // --- Debug line pipeline (optional).
     {
-        ID3DBlob* dv = CompileShader(g_debugShaderSrc, "VSMain", "vs_4_0");
-        ID3DBlob* dp = CompileShader(g_debugShaderSrc, "PSMain", "ps_4_0");
+        ID3DBlob* dv = CompileShader(g_debugShaderSrc, "VSMain", "vs_4_0", nullptr, "debug lines");
+        ID3DBlob* dp = CompileShader(g_debugShaderSrc, "PSMain", "ps_4_0", nullptr, "debug lines");
         if (dv && dp) {
             g_device->CreateVertexShader(dv->GetBufferPointer(), dv->GetBufferSize(), nullptr, &g_debugVS);
             g_device->CreatePixelShader(dp->GetBufferPointer(), dp->GetBufferSize(), nullptr, &g_debugPS);
@@ -1407,6 +1420,17 @@ bool InitD3D(HWND hwnd) {
         }
         if (dv) dv->Release();
         if (dp) dp->Release();
+    }
+
+    // Any effect that failed to compile on this machine is written up
+    // beside the working directory (and the menu shows it as unavailable)
+    // rather than silently not appearing; a stale report is removed.
+    std::error_code ec;
+    if (g_shaderErrors.empty()) std::filesystem::remove("shader_errors.txt", ec);
+    else {
+        std::ofstream f("shader_errors.txt", std::ios::trunc);
+        f << "Voxistics: these shaders failed to compile on this machine. The effects that need them are switched off.\n\n"
+          << g_shaderErrors;
     }
     return true;
 }
