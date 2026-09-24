@@ -27,7 +27,7 @@ struct LineTuning {
     float spinHalfLife = 3.0f * 3600.0f; // seconds of play for the spin memory to halve
     float turnSeconds = 3600.0f;     // one sweep per in-game day
     float heightFollow = 5.0f;       // seconds for the line's height to settle on the player's
-    float heightAboveFeet = 1.0f;    // the line runs at about waist height
+    float heightAboveFeet = 0.5f;    // through the middle of blocks at the player's own level
     // Falloff: intensity = 10^-(steps of distance / blocksPerDecade).
     float decadeWith = 12.0f;        // blocks per order of magnitude, moving with the sweep
     float decadeAgainst = 3.0f;      // ... moving against it

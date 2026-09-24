@@ -8,6 +8,7 @@
 #include "icons.h"
 #include "sky.h"
 #include "theline.h"
+#include "audio.h"
 #include "persist.h"
 #include "vtex.h"
 #include <filesystem>
@@ -110,11 +111,12 @@ UINT g_skyIndexCount = 0;
 // as-is and, should that fail on some driver, again with NO_SHADOWS
 // (the pre-shadow shader), so a shadow problem can never cost the world.
 static const char* g_shaderSrc =
-    "cbuffer CB : register(b0) { row_major matrix mvp; row_major matrix lightViewProj; float4 sun; float4 params; };\n"
-    // sun.xyz: toward the sun. params: x shadows on, y daylight, z sun strength, w shadow half-texel
+    "cbuffer CB : register(b0) { row_major matrix mvp; row_major matrix lightViewProj; float4 sun; float4 params; float4 lineA; float4 lineB; };\n"
+    // sun.xyz: toward the sun. params: x shadows on, y daylight, z sun strength, w shadow half-texel.
+    // lineA: The Line's pivot x, height, pivot z, intensity; lineB: its direction x, z, the music level, unused.
     "cbuffer ChunkCB : register(b1) { float4 chunkOrigin; };\n"
     "struct VSIn { uint4 pos:POSITION; uint layer:TEXCOORD0; uint2 uv:TEXCOORD1; };\n"
-    "struct PSIn { float4 pos:SV_POSITION; float3 uvl:TEXCOORD0; float light:TEXCOORD1; float3 wpos:TEXCOORD2; float sunFacing:TEXCOORD3; };\n"
+    "struct PSIn { float4 pos:SV_POSITION; float3 uvl:TEXCOORD0; float light:TEXCOORD1; float3 wpos:TEXCOORD2; float sunFacing:TEXCOORD3; float4 glowInfo:TEXCOORD4; };\n"
     // +X -X +Y -Y +Z -Z: top brightest, bottom darkest, X and Z sides
     // distinct so edges between two side faces still read; then slopes
     // facing up (ramps, pyramids) and down (funnels).
@@ -132,6 +134,7 @@ static const char* g_shaderSrc =
     "    float3 n = faceNormal[face];\n"
     "    o.wpos = p + n * 0.08f;\n"                                   // normal offset (> 1 shadow texel): no acne
     "    o.sunFacing = saturate(dot(n, sun.xyz) * 4.0f);\n"
+    "    o.glowInfo = float4((float)((i.pos.w >> 5) & 3u), n);\n"   // glow kind, face normal
     "    return o;\n"
     "}\n"
     "Texture2DArray tex0 : register(t0);\n"
@@ -159,7 +162,22 @@ static const char* g_shaderSrc =
     "        light *= lerp(1.0f - 0.4f * params.z, 1.0f, lit);\n"
     "    }\n"
     "#endif\n"
-    "    return float4(c.rgb * light, 1.0f);\n"
+    // Reactive blocks (blocks.h BlockGlow): 1 = the music playing now,
+    // 2 = The Line passing through this block's cell (found per pixel from
+    // the world position minus the face normal: a vertex on a corner could
+    // floor into the neighbouring cell).
+    "    float glow = 0.0f;\n"
+    "    float3 glowCol = float3(1.0f, 0.8f, 0.45f);\n"
+    "    if (i.glowInfo.x > 1.5f) {\n"
+    "        float3 cell = floor(i.wpos - i.glowInfo.yzw * 0.58f) + 0.5f;\n"
+    "        float2 r = cell.xz - lineA.xz;\n"
+    "        float across = abs(r.x * lineB.y - r.y * lineB.x);\n"
+    "        glow = saturate(1.0f - across / 0.75f) * saturate((0.6f - abs(cell.y - lineA.y)) * 4.0f);\n"
+    "        glowCol = float3(0.55f, 0.9f, 1.0f);\n"
+    "    } else if (i.glowInfo.x > 0.5f) {\n"
+    "        glow = lineB.z;\n"
+    "    }\n"
+    "    return float4(saturate(c.rgb * light + glow * (c.rgb * 0.9f + glowCol * 0.35f)), 1.0f);\n"
     "}\n";
 
 // Depth-only pass into the shadow map, from the sun (Section 4.8).
@@ -626,6 +644,9 @@ void RenderScene(World& w, const Mat4& view, const Mat4& proj, Vec3 eye, Vec3 fo
         cb.params[1] = sky.daylight;
         cb.params[2] = sky.sunLight;
         cb.params[3] = 0.5f / SHADOW_SIZE;
+        Vec3 ld = LineDirection(g_line);
+        cb.lineA[0] = g_line.pivotX; cb.lineA[1] = g_line.lineY; cb.lineA[2] = g_line.pivotZ; cb.lineA[3] = g_line.intensity;
+        cb.lineB[0] = ld.x; cb.lineB[1] = ld.z; cb.lineB[2] = CurrentMusicLevel(); cb.lineB[3] = 0.0f;
         UpdateCBuffer(cb);
         g_context->VSSetShader(g_vs, nullptr, 0);
         g_context->PSSetShader(g_ps, nullptr, 0);

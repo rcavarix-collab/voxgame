@@ -26,6 +26,8 @@ enum BlockID : uint8_t {
     BLOCK_STONE_PYRAMID_HALF,
     BLOCK_STONE_FUNNEL,
     BLOCK_STONE_FUNNEL_HALF,
+    BLOCK_MUSIC,
+    BLOCK_TIMESTREAM,
     BLOCK_COUNT
 };
 
@@ -40,6 +42,15 @@ enum BlockShape : uint8_t {
     SHAPE_PYRAMID_HALF,  // half-height pyramid
     SHAPE_FUNNEL,        // upside-down pyramid
     SHAPE_FUNNEL_HALF,   // upside-down half pyramid, in the top half
+};
+
+// Blocks that light up on their own (world shader, Section 4.2): the
+// kind rides in spare vertex bits, the driving value is one per-frame
+// constant, so a glowing block costs nothing on the CPU.
+enum BlockGlow : uint8_t {
+    GLOW_NONE = 0,
+    GLOW_MUSIC,       // pulses with the music actually playing
+    GLOW_TIMESTREAM,  // lights while The Line passes through it (Part XVIII)
 };
 
 // How placement sets the state byte.
@@ -78,6 +89,7 @@ struct BlockDef {
     bool hasData;         // may carry a per-block data record (contents, machine state)
     BlockShape shape;
     PlaceRule place;
+    BlockGlow glow;
     // Texture names (assets/textures/TEXTURE_BRIEF.md). The most specific
     // one set wins: front > side > all for the four sides, top/bottom >
     // all for those faces. nullptr = not set. A texture with no authored
@@ -91,25 +103,28 @@ struct BlockDef {
 };
 
 // Columns: name, solid, foundational, placeable, orientable, hasData,
-// shape, place rule, then textures all / top / bottom / side / front.
+// shape, place rule, glow, then textures all / top / bottom / side / front.
 #define TEX(all, top, bottom, side, front) all, top, bottom, side, front
 inline const BlockDef g_blocks[BLOCK_COUNT] = {
-    { "air",                false, false, false, false, false, SHAPE_CUBE,         PLACE_PLAIN,        TEX(nullptr, nullptr, nullptr, nullptr, nullptr) },
-    { "foundation",         true,  true,  true,  false, false, SHAPE_CUBE,         PLACE_PLAIN,        TEX("foundation", nullptr, nullptr, nullptr, nullptr) },
-    { "stone",              true,  false, true,  false, false, SHAPE_CUBE,         PLACE_PLAIN,        TEX("stone", nullptr, nullptr, nullptr, nullptr) },
-    { "dirt",               true,  false, true,  false, false, SHAPE_CUBE,         PLACE_PLAIN,        TEX("dirt", nullptr, nullptr, nullptr, nullptr) },
-    { "wood",               true,  false, true,  false, false, SHAPE_CUBE,         PLACE_PLAIN,        TEX("wood", nullptr, nullptr, nullptr, nullptr) },
-    { "chest",              true,  true,  true,  true,  true,  SHAPE_CUBE,         PLACE_FACE_PLAYER,  TEX("chest", nullptr, nullptr, nullptr, "chest_front") },
-    { "machine",            true,  true,  true,  true,  true,  SHAPE_CUBE,         PLACE_FACE_PLAYER,  TEX("machine", nullptr, nullptr, nullptr, "machine_front") },
+    { "air",                false, false, false, false, false, SHAPE_CUBE,         PLACE_PLAIN, GLOW_NONE,        TEX(nullptr, nullptr, nullptr, nullptr, nullptr) },
+    { "foundation",         true,  true,  true,  false, false, SHAPE_CUBE,         PLACE_PLAIN, GLOW_NONE,        TEX("foundation", nullptr, nullptr, nullptr, nullptr) },
+    { "stone",              true,  false, true,  false, false, SHAPE_CUBE,         PLACE_PLAIN, GLOW_NONE,        TEX("stone", nullptr, nullptr, nullptr, nullptr) },
+    { "dirt",               true,  false, true,  false, false, SHAPE_CUBE,         PLACE_PLAIN, GLOW_NONE,        TEX("dirt", nullptr, nullptr, nullptr, nullptr) },
+    { "wood",               true,  false, true,  false, false, SHAPE_CUBE,         PLACE_PLAIN, GLOW_NONE,        TEX("wood", nullptr, nullptr, nullptr, nullptr) },
+    { "chest",              true,  true,  true,  true,  true,  SHAPE_CUBE,         PLACE_FACE_PLAYER, GLOW_NONE,  TEX("chest", nullptr, nullptr, nullptr, "chest_front") },
+    { "machine",            true,  true,  true,  true,  true,  SHAPE_CUBE,         PLACE_FACE_PLAYER, GLOW_NONE,  TEX("machine", nullptr, nullptr, nullptr, "machine_front") },
     // Shape test blocks (the Prismative.cpp primitives), foundational for
     // now so a test build doesn't collapse while it's being looked at.
-    { "stone_slab",         true,  true,  true,  false, false, SHAPE_SLAB,         PLACE_SLAB_HALF,    TEX("stone", nullptr, nullptr, nullptr, nullptr) },
-    { "wood_ramp",          true,  true,  true,  false, false, SHAPE_RAMP,         PLACE_AWAY,         TEX("wood", nullptr, nullptr, nullptr, nullptr) },
-    { "tube",               true,  true,  true,  false, false, SHAPE_TUBE,         PLACE_CLICKED_AXIS, TEX("tube", nullptr, nullptr, nullptr, nullptr) },
-    { "stone_pyramid",      true,  true,  true,  false, false, SHAPE_PYRAMID,      PLACE_PLAIN,        TEX("stone", nullptr, nullptr, nullptr, nullptr) },
-    { "stone_pyramid_half", true,  true,  true,  false, false, SHAPE_PYRAMID_HALF, PLACE_PLAIN,        TEX("stone", nullptr, nullptr, nullptr, nullptr) },
-    { "stone_funnel",       true,  true,  true,  false, false, SHAPE_FUNNEL,       PLACE_PLAIN,        TEX("stone", nullptr, nullptr, nullptr, nullptr) },
-    { "stone_funnel_half",  true,  true,  true,  false, false, SHAPE_FUNNEL_HALF,  PLACE_PLAIN,        TEX("stone", nullptr, nullptr, nullptr, nullptr) },
+    { "stone_slab",         true,  true,  true,  false, false, SHAPE_SLAB,         PLACE_SLAB_HALF, GLOW_NONE,    TEX("stone", nullptr, nullptr, nullptr, nullptr) },
+    { "wood_ramp",          true,  true,  true,  false, false, SHAPE_RAMP,         PLACE_AWAY, GLOW_NONE,         TEX("wood", nullptr, nullptr, nullptr, nullptr) },
+    { "tube",               true,  true,  true,  false, false, SHAPE_TUBE,         PLACE_CLICKED_AXIS, GLOW_NONE, TEX("tube", nullptr, nullptr, nullptr, nullptr) },
+    { "stone_pyramid",      true,  true,  true,  false, false, SHAPE_PYRAMID,      PLACE_PLAIN, GLOW_NONE,        TEX("stone", nullptr, nullptr, nullptr, nullptr) },
+    { "stone_pyramid_half", true,  true,  true,  false, false, SHAPE_PYRAMID_HALF, PLACE_PLAIN, GLOW_NONE,        TEX("stone", nullptr, nullptr, nullptr, nullptr) },
+    { "stone_funnel",       true,  true,  true,  false, false, SHAPE_FUNNEL,       PLACE_PLAIN, GLOW_NONE,        TEX("stone", nullptr, nullptr, nullptr, nullptr) },
+    { "stone_funnel_half",  true,  true,  true,  false, false, SHAPE_FUNNEL_HALF,  PLACE_PLAIN, GLOW_NONE,        TEX("stone", nullptr, nullptr, nullptr, nullptr) },
+    // Reactive blocks: plain cubes that light up on their own.
+    { "music_block",        true,  false, true,  false, false, SHAPE_CUBE,         PLACE_PLAIN, GLOW_MUSIC,       TEX("music_block", nullptr, nullptr, nullptr, nullptr) },
+    { "timestream_block",   true,  false, true,  false, false, SHAPE_CUBE,         PLACE_PLAIN, GLOW_TIMESTREAM,  TEX("timestream_block", nullptr, nullptr, nullptr, nullptr) },
 };
 #undef TEX
 

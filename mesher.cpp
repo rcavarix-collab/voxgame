@@ -88,7 +88,7 @@ void BuildChunkMesh(World& w, const ChunkCoord& cc, const Chunk& c,
                             v.x = (uint8_t)(lx * SHAPE_UNITS + sp.v[k].x);
                             v.y = (uint8_t)(ly * SHAPE_UNITS + sp.v[k].y);
                             v.z = (uint8_t)(lz * SHAPE_UNITS + sp.v[k].z);
-                            v.aoFace = (uint8_t)(3 | (sp.shade << 2));
+                            v.aoFace = (uint8_t)(3 | (sp.shade << 2) | (g_blocks[id].glow << 5));
                             v.layer = layer;
                             v.u = sp.v[k].u; v.v = sp.v[k].v;
                             verts.push_back(v);
@@ -136,7 +136,7 @@ void BuildChunkMesh(World& w, const ChunkCoord& cc, const Chunk& c,
                         v.x = (uint8_t)((lx + cr[0]) * SHAPE_UNITS);
                         v.y = (uint8_t)((ly + cr[1]) * SHAPE_UNITS);
                         v.z = (uint8_t)((lz + cr[2]) * SHAPE_UNITS);
-                        v.aoFace = (uint8_t)(ao[k] | (f << 2));
+                        v.aoFace = (uint8_t)(ao[k] | (f << 2) | (g_blocks[id].glow << 5));
                         v.layer = layer;
                         v.u = (uint8_t)(kCornerU[k] * SHAPE_UNITS); v.v = (uint8_t)(kCornerV[k] * SHAPE_UNITS);
                         verts.push_back(v);

@@ -25,6 +25,7 @@
 #include "world.h"   // g_dayTimeSeconds
 #include "persist.h" // g_masterVolume / g_musicVolume / g_musicIntensity
 #include <cstdint>
+#include <cmath>
 
 #pragma comment(lib, "xaudio2.lib")
 
@@ -56,6 +57,15 @@ static const int MUSIC_PRIME_CHUNKS = 4;
 static const int MUSIC_POOL_SIZE = MUSIC_LOOKAHEAD_CHUNKS + 1;
 static int16_t (*g_musicPool)[MUSIC_CHUNK_SAMPLES] = nullptr;
 static int g_musicPoolNext = 0;
+// Loudness of each pooled chunk in quarters (1/16 s each), measured when
+// the chunk is synthesized; read back at the chunk actually playing, so
+// anything that reacts to the music follows what's heard, not the audio
+// generated seconds ahead (Section 10.4).
+static const int LEVEL_STEPS = 4;
+static float g_chunkLevels[MUSIC_POOL_SIZE][LEVEL_STEPS] = {};
+static int g_levelSlot = -1;          // pool slot last seen playing
+static double g_levelSlotStart = 0;   // when it started, seconds (QPC)
+static float g_levelSmoothed = 0;
 // Set after Stop+Flush: the flush only takes effect on the audio
 // thread's next processing pass, so no pool slot may be rewritten until
 // BuffersQueued has actually reached zero.
@@ -90,6 +100,15 @@ static void SubmitOneMusicChunk() {
     int16_t* chunk = g_musicPool[g_musicPoolNext];
     g_musicPoolNext = (g_musicPoolNext + 1) % MUSIC_POOL_SIZE;
     GenerateMusicChunk(g_nextChunkStartTime, MUSIC_CHUNK_SAMPLES, (double)g_musicIntensity, &g_musicState, chunk);
+    int slot = (int)(chunk - g_musicPool[0]) / MUSIC_CHUNK_SAMPLES;
+    const int per = MUSIC_CHUNK_SAMPLES / LEVEL_STEPS;
+    for (int q = 0; q < LEVEL_STEPS; q++) {
+        double sum = 0;
+        for (int i = q * per; i < (q + 1) * per; i++) sum += (double)chunk[i] * chunk[i];
+        float rms = (float)(sqrt(sum / per) / 32768.0);
+        float level = rms / 0.18f; // typical loud passages ~1
+        g_chunkLevels[slot][q] = level > 1.0f ? 1.0f : level;
+    }
     g_nextChunkStartTime += (double)MUSIC_CHUNK_SAMPLES / MUSIC_SAMPLE_RATE;
     XAUDIO2_BUFFER buf = {};
     buf.AudioBytes = MUSIC_CHUNK_SAMPLES * sizeof(int16_t);
@@ -135,6 +154,24 @@ void StopMusicPlayback() {
 void RefillMusicQueueIfNeeded() {
     if (!g_musicVoice || g_nextChunkStartTime < 0.0) return;
     if (QueuedMusicBuffers() < (UINT32)MUSIC_LOOKAHEAD_CHUNKS) SubmitOneMusicChunk();
+}
+
+float CurrentMusicLevel() {
+    if (!g_musicVoice || g_nextChunkStartTime < 0.0 || !g_musicPool) { g_levelSmoothed = 0; g_levelSlot = -1; return 0.0f; }
+    LARGE_INTEGER f, n; QueryPerformanceFrequency(&f); QueryPerformanceCounter(&n);
+    double now = (double)n.QuadPart / (double)f.QuadPart;
+    UINT32 queued = QueuedMusicBuffers();
+    if (queued == 0) return g_levelSmoothed *= 0.9f;
+    // Pool slots are used in order, so the oldest still-queued buffer --
+    // the one playing -- is `queued` slots behind the next free one.
+    int slot = (g_musicPoolNext - (int)queued + MUSIC_POOL_SIZE) % MUSIC_POOL_SIZE;
+    if (slot != g_levelSlot) { g_levelSlot = slot; g_levelSlotStart = now; }
+    int q = (int)((now - g_levelSlotStart) * MUSIC_SAMPLE_RATE / (MUSIC_CHUNK_SAMPLES / LEVEL_STEPS));
+    q = q < 0 ? 0 : (q >= LEVEL_STEPS ? LEVEL_STEPS - 1 : q);
+    float target = g_chunkLevels[slot][q];
+    // Quick to rise, slower to fall: reads as a pulse, not flicker.
+    g_levelSmoothed = target > g_levelSmoothed ? g_levelSmoothed + (target - g_levelSmoothed) * 0.5f : g_levelSmoothed * 0.92f + target * 0.08f;
+    return g_levelSmoothed;
 }
 
 // Failure anywhere here (no audio device, driver issue, etc.) leaves

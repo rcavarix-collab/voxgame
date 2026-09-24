@@ -80,6 +80,7 @@ Adding a block is one enum entry plus one row. No virtual dispatch, no per-block
 | Chest | yes | yes | Storage container (item-handler interface, Part VI) |
 | Machine | yes | yes | Placeholder processing block |
 | Stone slab, wood ramp, tube, stone pyramid / half pyramid / funnel / half funnel | yes (for testing) | per shape | The Prismative.cpp primitives (4.4) |
+| Music block, timestream block | no | no | Light up with the music / where The Line passes (18.1) |
 
 ---
 
@@ -484,10 +485,13 @@ A thin, one-dimensional distortion in local time, personal to the player (`theli
 
 **Spin** is the sign of the player's net angular momentum about the pivot, viewed top-down (+X right, +Z up; counterclockwise positive): Σ (r × v) over actual movement, with a slow memory (3-hour half-life of play) so it follows current habits. Teleport-sized jumps (loads) don't count as movement.
 
-**The line** runs horizontally through the pivot at about the player's waist height (following the player's height over ~5 s) and sweeps around the pivot in the spin's direction, one turn per in-game day. It is evaluated only within loaded space and never constrains building — it has no blocks, no collision, no geometry.
+**The line** runs horizontally through the pivot at the player's own level — half a block above their feet, through the middle of the blocks they stand among (following the player's height over ~5 s) and sweeps around the pivot in the spin's direction, one turn per in-game day. It is evaluated only within loaded space and never constrains building — it has no blocks, no collision, no geometry.
 
 **Intensity** falls off exponentially in whole orders of magnitude of the player's horizontal distance to the line: I = 10^−steps(d / L), where `steps` is a smooth staircase (flat treads, short risers — legible decades rather than a continuous slope). L, the blocks per decade, is asymmetric with motion: stretched to 12 when moving with the line's sweep (strong effect with little distance closed), shrunk to 3 against it, 6 standing still. All of these are open parameters in `LineTuning`, meant to be prototyped and tuned, not a finished curve.
 
 **Sky expression.** The star field (procedural, in the sky shader) keeps its normal east-to-west streaming — turning about the celestial pole, which lies perpendicular to the sun's path — and The Line composites a small **precession** on top: a tilt of up to ~6° about a horizontal axis that starts along the line and circles at a rate rising with intensity, in the spin's direction. The stars still do their normal thing, but subtly wrong, and more so the closer the player is to the line. The **moon** gets a ghost image from the same precession at a quarter of the amplitude, drawn at under a quarter of the moon's brightness — a soft double exposure, always subtler than the star effect. Nothing here needs UI; wind, when a wind system exists, is meant to take the same intensity value.
 
 **Persistence:** the pivot history (a float per cell visited), the spin accumulator and the line's angle are saved (v7); everything else is re-derived each tick. **Debug:** F7 toggles the marker (the line across the loaded area — cyan for counterclockwise, orange for clockwise — with strokes showing which way it's sweeping and a white pole at the pivot) and a top-right readout of distance, blocks per decade, intensity, spin, alignment and pivot.
+
+### 18.1 Reactive blocks
+Two plain blocks light up on their own, at no CPU cost per block: the registry gives them a glow kind (`BlockGlow`), the mesher writes it into spare vertex bits, and the world shader reads one per-frame value. The **music block** brightens with the loudness of the music actually audible — each queued music chunk is measured in 1/16 s steps as it's synthesized, and the level is read back at the chunk XAudio2 is playing now (submitted minus still queued), so it follows what's heard rather than the four seconds generated ahead. The **timestream block** lights while The Line passes through its cell: the pixel shader finds the block's cell from the world position and face normal and measures its distance to the line (across it, and vertically against the line's height). It is the one deliberate exception to The Line's invisibility — a detector the player chooses to place.

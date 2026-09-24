@@ -17,7 +17,8 @@
 // (~32 blocks), so merged (greedy) quads can later tile a texture
 // across several blocks with no format change. `aoFace`: ambient
 // occlusion 0-3 (3 = open) in bits 0-1, shade class (BlockFace, or a
-// shapes.h slope class) in bits 2-4.
+// shapes.h slope class) in bits 2-4, glow kind (blocks.h BlockGlow) in
+// bits 5-6.
 struct Vertex {
     uint8_t x, y, z;
     uint8_t aoFace;
@@ -28,6 +29,7 @@ static_assert(sizeof(Vertex) == 8, "chunk vertex must stay 8 bytes");
 
 static inline int VertexAO(const Vertex& v) { return v.aoFace & 3; }
 static inline int VertexFace(const Vertex& v) { return (v.aoFace >> 2) & 7; }
+static inline int VertexGlow(const Vertex& v) { return (v.aoFace >> 5) & 3; }
 
 // Texture-array layer per [block][facing][face]; filled once at load
 // (InitTextures, from blocktex.h). The mesher's only texture lookup.

@@ -153,6 +153,30 @@ void DrawTubeTile(TileCanvas& t) {
     for (int x = 0; x < s; x += s / 2) t.Fill(x, 0, s / 16, s, { 105, 110, 120 });
 }
 
+// A speaker-like face: dark casing, a round grille in the middle.
+void DrawMusicBlockTile(TileCanvas& t) {
+    int s = t.size;
+    t.Fill(0, 0, s, s, { 46, 40, 52 });
+    t.Border(3, { 24, 20, 28 });
+    t.Disc(s / 6, s / 6, s * 2 / 3, { 150, 110, 70 });
+    t.Disc(s / 4, s / 4, s / 2, { 70, 55, 45 });
+    for (int y = s / 4 + 2; y < s * 3 / 4; y += 4)
+        for (int x = s / 4 + 2; x < s * 3 / 4; x += 4) t.Fill(x, y, 2, 2, { 40, 32, 30 });
+    t.Disc(s / 2 - s / 12, s / 2 - s / 12, s / 6, { 190, 150, 90 });
+}
+
+// Pale, faintly veined stone, like something that remembers light.
+void DrawTimestreamBlockTile(TileCanvas& t) {
+    int s = t.size;
+    t.Fill(0, 0, s, s, { 150, 165, 180 });
+    for (int i = 0; i < s; i++) {
+        t.Put(i, (i * 3 / 4 + s / 5) % s, { 185, 205, 225 });
+        t.Put((i * 5 / 7 + s / 3) % s, i, { 120, 135, 155 });
+        t.Put(i, (s - 1 - i / 2 + s / 2) % s, { 175, 195, 215 });
+    }
+    t.Border(1, { 110, 125, 145 });
+}
+
 using DrawFn = void (*)(TileCanvas&);
 struct Procedural { const char* name; DrawFn draw; };
 // Drawn in this fixed order after srand(1234), so the random speckle is
@@ -167,6 +191,8 @@ const Procedural kProcedural[] = {
     { "machine", DrawMachineTile },
     { "machine_front", DrawMachineFrontTile },
     { "tube", DrawTubeTile },
+    { "music_block", DrawMusicBlockTile },
+    { "timestream_block", DrawTimestreamBlockTile },
 };
 
 const size_t LAYER_BYTES = (size_t)BLOCK_TEX_SIZE * BLOCK_TEX_SIZE * 4;

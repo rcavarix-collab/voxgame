@@ -99,7 +99,7 @@ static void TestBlockTextures() {
     BlockTextureSet t;
     BuildBlockTextures(none, t);
     CHECK(t.warnings.empty());
-    CHECK(t.layerCount == 9); // foundation stone dirt wood chest chest_front machine machine_front tube
+    CHECK(t.layerCount == 11); // foundation stone dirt wood chest chest_front machine machine_front tube music_block timestream_block
     CHECK(t.mipCount == 7);
     CHECK(t.faceLayer[BLOCK_CHEST][FACE_POS_Z][FACE_POS_Z] != t.faceLayer[BLOCK_CHEST][FACE_POS_Z][FACE_POS_X]); // front vs side
     CHECK(t.faceLayer[BLOCK_CHEST][FACE_NEG_X][FACE_NEG_X] == t.faceLayer[BLOCK_CHEST][FACE_POS_Z][FACE_POS_Z]); // front follows facing
@@ -293,6 +293,13 @@ static void TestMesher() {
     BuildChunkMesh(w2, { 0, 0, 0 }, *w2.FindChunk({ 0, 0, 0 }), v, idx);
     uint16_t front = t.faceLayer[BLOCK_CHEST][FACE_NEG_X][FACE_NEG_X];
     for (auto& x : v) CHECK((x.layer == front) == (VertexFace(x) == FACE_NEG_X));
+
+    // Glow kinds ride in the vertex for the reactive blocks only.
+    World wg; wg.Set(1, 1, 1, BLOCK_MUSIC); wg.Set(3, 1, 1, BLOCK_TIMESTREAM); wg.Set(5, 1, 1, BLOCK_STONE);
+    BuildChunkMesh(wg, { 0, 0, 0 }, *wg.FindChunk({ 0, 0, 0 }), v, idx);
+    int glowMusic = 0, glowLine = 0, glowNone = 0;
+    for (auto& x : v) { int g = VertexGlow(x); if (g == GLOW_MUSIC) glowMusic++; else if (g == GLOW_TIMESTREAM) glowLine++; else glowNone++; }
+    CHECK(glowMusic == 24 && glowLine == 24 && glowNone == 24);
 
     // Worst case fits 16-bit indices.
     World w3;
