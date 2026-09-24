@@ -66,6 +66,7 @@ static const int LEVEL_STEPS = 16;
 static float g_chunkLevels[MUSIC_POOL_SIZE][LEVEL_STEPS] = {};
 static MusicLevelMeter g_levelMeter;  // carried from chunk to chunk, in generation order
 static double g_levelLastNow = 0;     // last CurrentMusicLevel call, seconds (QPC)
+static MusicGlow g_musicGlow;         // the slow, flash-safe swell the block shows
 static int g_levelSlot = -1;          // pool slot last seen playing
 static double g_levelSlotStart = 0;   // when it started, seconds (QPC)
 static float g_levelSmoothed = 0;
@@ -154,24 +155,28 @@ void RefillMusicQueueIfNeeded() {
 }
 
 float CurrentMusicLevel() {
-    if (!g_musicVoice || g_nextChunkStartTime < 0.0 || !g_musicPool) { g_levelSmoothed = 0; g_levelSlot = -1; return 0.0f; }
+    // Silent (title, menus, paused): the glow resets; it swells back in
+    // from dark when the music starts again.
+    if (!g_musicVoice || g_nextChunkStartTime < 0.0 || !g_musicPool) {
+        g_levelSmoothed = 0; g_levelSlot = -1; g_musicGlow = MusicGlow(); g_levelLastNow = 0;
+        return 0.0f;
+    }
     LARGE_INTEGER f, n; QueryPerformanceFrequency(&f); QueryPerformanceCounter(&n);
     double now = (double)n.QuadPart / (double)f.QuadPart;
+    double dt = g_levelLastNow > 0 ? now - g_levelLastNow : 0.0;
+    g_levelLastNow = now;
+    float step = (float)(dt < 0.25 ? dt : 0.25);
+    // A slow swell with the notes, never a flash per note (musiclevel.h:
+    // photosensitivity), the same at any frame rate.
     UINT32 queued = QueuedMusicBuffers();
-    if (queued == 0) return g_levelSmoothed *= 0.9f;
+    if (queued == 0) return g_levelSmoothed = MusicGlowStep(g_musicGlow, 0.0f, step); // starved: fade out gently
     // Pool slots are used in order, so the oldest still-queued buffer --
     // the one playing -- is `queued` slots behind the next free one.
     int slot = (g_musicPoolNext - (int)queued + MUSIC_POOL_SIZE) % MUSIC_POOL_SIZE;
     if (slot != g_levelSlot) { g_levelSlot = slot; g_levelSlotStart = now; }
     int q = (int)((now - g_levelSlotStart) * MUSIC_SAMPLE_RATE / (MUSIC_CHUNK_SAMPLES / LEVEL_STEPS));
     q = q < 0 ? 0 : (q >= LEVEL_STEPS ? LEVEL_STEPS - 1 : q);
-    float target = g_chunkLevels[slot][q];
-    // Flashes on a note at once, then fades in ~0.1 s: a pulse per note,
-    // the same at any frame rate.
-    double dt = g_levelLastNow > 0 ? now - g_levelLastNow : 0.0;
-    g_levelLastNow = now;
-    float fade = (float)exp(-(dt < 0.25 ? dt : 0.25) / 0.1);
-    g_levelSmoothed = target > g_levelSmoothed * fade ? target : g_levelSmoothed * fade;
+    g_levelSmoothed = MusicGlowStep(g_musicGlow, g_chunkLevels[slot][q], step);
     return g_levelSmoothed;
 }
 

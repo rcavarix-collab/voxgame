@@ -52,3 +52,32 @@ static inline void MeasureMusicLevels(MusicLevelMeter& m, const int16_t* pcm, in
         out[q] = u * u * (3 - 2 * u) * gate;
     }
 }
+
+// What the block actually shows: never the onsets themselves (several a
+// second -- a strobe, and a seizure risk; photosensitivity guidance caps
+// flashes at 3 a second), but a slow swell that follows how busy the
+// notes are: rising over ~1/4 s as they cluster, fading over ~1 s. On the
+// game's own music that is under one noticeable swing a second (measured
+// offline over the day). On top of that a hard slew limit -- the full
+// range takes at least half a second either way -- guarantees no fast
+// flicker whatever the input.
+struct MusicGlow {
+    float envelope = 0; // follows the onset level
+    float shown = 0;    // the output, slew-limited
+};
+static const float MUSIC_GLOW_ATTACK = 0.25f;  // seconds
+static const float MUSIC_GLOW_RELEASE = 1.0f;  // seconds
+static const float MUSIC_GLOW_GAIN = 2.0f;     // the envelope sits around 0.1-0.45: spread it over the full range
+static const float MUSIC_GLOW_MAX_RATE = 2.0f; // output units per second, up or down
+
+static inline float MusicGlowStep(MusicGlow& g, float onsetLevel, float dt) {
+    if (dt <= 0) return g.shown;
+    float tau = onsetLevel > g.envelope ? MUSIC_GLOW_ATTACK : MUSIC_GLOW_RELEASE;
+    g.envelope += (onsetLevel - g.envelope) * (1.0f - expf(-dt / tau));
+    float want = g.envelope * MUSIC_GLOW_GAIN;
+    want = want > 1.0f ? 1.0f : want;
+    float step = MUSIC_GLOW_MAX_RATE * dt;
+    float d = want - g.shown;
+    g.shown += d > step ? step : (d < -step ? -step : d);
+    return g.shown;
+}

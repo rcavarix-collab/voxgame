@@ -562,6 +562,29 @@ static void TestMusicLevel() {
     }, 20, &mx, &mean);
     printf("    plucks over a pad: peak %.2f, mean %.2f\n", mx, mean);
     CHECK(mx > 0.9f && mean < 0.35f);
+    // What's shown can't strobe: fed notes at 8 a second (full on, full
+    // off), the output never moves faster than the slew limit, settles to
+    // a gentle ripple, and a single note swells and fades over about a second.
+    {
+        MusicGlow g; const float fdt = 1.0f / 60.0f;
+        float maxStep = 0, lo = 1, hi = 0;
+        for (int i = 0; i < 60 * 10; i++) {
+            float before = g.shown;
+            float v = MusicGlowStep(g, (i / 4) % 2 == 0 ? 1.0f : 0.0f, fdt); // 8 Hz square
+            maxStep = std::max(maxStep, fabsf(v - before));
+            if (i > 60 * 5) { lo = std::min(lo, v); hi = std::max(hi, v); }
+        }
+        printf("    8 Hz notes -> shown ripples %.2f..%.2f, fastest %.3f per frame\n", lo, hi, maxStep);
+        CHECK(maxStep <= MUSIC_GLOW_MAX_RATE * fdt + 1e-5f);
+        CHECK(hi - lo < 0.15f); // no flashing: at most a faint shimmer
+        MusicGlow one; float peak = 0; int peakAt = 0, darkAgain = -1;
+        for (int i = 0; i < 60 * 4; i++) {
+            float v = MusicGlowStep(one, i < 6 ? 1.0f : 0.0f, fdt); // one 0.1 s note
+            if (v > peak) { peak = v; peakAt = i; }
+            if (darkAgain < 0 && i > peakAt && peak > 0 && v < peak * 0.2f) darkAgain = i;
+        }
+        CHECK(peak > 0.3f && peakAt >= 6 && darkAgain > 60); // a swell, not a blink: still glowing a second later
+    }
     // Near-silence never flashes, however it wobbles.
     MusicLevelMeter q;
     run(q, [&](int i) { return (i / 441) % 7 == 0 ? 3.0 : -2.0; }, 20, &mx, &mean);
