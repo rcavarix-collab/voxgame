@@ -216,6 +216,8 @@ Standard FPS mouse-look: yaw from horizontal delta, pitch from vertical delta, p
 
 ---
 
+
+**After the first playtest:** sprint is 7.5 blocks/s and a slide bursts at 10; the slide forgives timing — crouch and sprint may come in either order, a crouch press stays fresh for 0.3 s and a sprint counts for 0.4 s after it ends (so a crouch just before landing, or just after letting go of sprint, still slides), one slide per press.
 ### 4.15 Faceted props and building pieces
 Set-dressing that breaks up the cube grid cheaply: small faceted shapes baked into the chunk mesh like any other shape (4.4), one mesh reused across many materials, so the terrain stops reading as uniform cubes without new geometry per biome. Faceted on purpose (octagons, not circles) to match the pixel-sampled look, and authored on the same 1/8-block grid as every shape.
 
