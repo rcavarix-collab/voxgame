@@ -78,6 +78,7 @@ void ProfBeginFrame() {
     g_counters[PCOUNT_CHUNKS_DRAWN] = 0;
     g_counters[PCOUNT_TRIANGLES_DRAWN] = 0;
     g_counters[PCOUNT_MESHES_BUILT] = 0;
+    g_counters[PCOUNT_SHADOW_RENDERS] = 0;
 }
 
 void ProfAdd(ProfSection s, int64_t ticks) { g_current[s] += ticks; }
@@ -101,14 +102,14 @@ const ProfReport& ProfGetReport() { return g_report; }
 
 const char* ProfSectionName(ProfSection s) {
     static const char* names[PROF_COUNT] = {
-        "TERRAIN", "EVICT", "PHYSICS", "UPDATES", "MUSIC", "MESH", "WORLD DRAW", "UI", "PRESENT",
+        "TERRAIN", "EVICT", "PHYSICS", "UPDATES", "MUSIC", "MESH", "SHADOW MAP", "WORLD DRAW", "POST", "UI", "PRESENT",
     };
     return names[s];
 }
 
 const char* ProfCounterName(ProfCounter c) {
     static const char* names[PCOUNT_COUNT] = {
-        "CHUNKS RESIDENT", "CHUNKS DRAWN", "TRIANGLES", "MESHES BUILT", "DIRTY WAITING", "COLUMNS WAITING", "UPDATES WAITING",
+        "CHUNKS RESIDENT", "CHUNKS DRAWN", "TRIANGLES", "MESHES BUILT", "DIRTY WAITING", "COLUMNS WAITING", "UPDATES WAITING", "SHADOW RENDERS",
     };
     return names[c];
 }

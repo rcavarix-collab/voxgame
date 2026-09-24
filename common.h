@@ -89,6 +89,17 @@ static inline Mat4 MatPerspectiveFovLH(float fovY, float aspect, float zn, float
     r.m[3][2] = -zn * zf / (zf - zn);
     return r;
 }
+// Orthographic projection (row-vector, left-handed, D3D [0,1] depth),
+// centred on the view axis.
+static inline Mat4 MatOrthoLH(float w, float h, float zn, float zf) {
+    Mat4 r = {};
+    r.m[0][0] = 2.0f / w;
+    r.m[1][1] = 2.0f / h;
+    r.m[2][2] = 1.0f / (zf - zn);
+    r.m[3][2] = -zn / (zf - zn);
+    r.m[3][3] = 1.0f;
+    return r;
+}
 
 // =======================================================================
 // Part II/III - World representation and block model

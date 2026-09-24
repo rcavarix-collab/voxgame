@@ -6,6 +6,8 @@
 #include "profiler.h"
 #include "blocktex.h"
 #include "icons.h"
+#include "sky.h"
+#include "persist.h"
 #include "vtex.h"
 #include <filesystem>
 #include <fstream>
@@ -46,6 +48,29 @@ ID3D11SamplerState* g_sampler = nullptr;
 ID3D11RasterizerState* g_rasterState = nullptr;
 ID3D11DepthStencilState* g_depthState = nullptr;
 ID3D11Buffer* g_chunkCBuffer = nullptr;
+
+// Off-screen scene target + a readable depth buffer, for the post pass.
+static ID3D11RenderTargetView* g_sceneRTV = nullptr;
+static ID3D11ShaderResourceView* g_sceneSRV = nullptr;
+static ID3D11ShaderResourceView* g_depthSRV = nullptr;
+// Sun shadow map (Section 4.8).
+static const int SHADOW_SIZE = 2048;
+static ID3D11DepthStencilView* g_shadowDSV = nullptr;
+static ID3D11ShaderResourceView* g_shadowSRV = nullptr;
+static ID3D11SamplerState* g_shadowSampler = nullptr;
+static ID3D11RasterizerState* g_shadowRaster = nullptr;
+static ID3D11VertexShader* g_shadowVS = nullptr;
+static ID3D11Buffer* g_shadowCB = nullptr;
+static bool g_shadowsAvailable = false; // shader compiled and resources created
+// Post pass.
+static ID3D11VertexShader* g_postVS = nullptr;
+static ID3D11PixelShader* g_postPS = nullptr;
+static ID3D11Buffer* g_postCB = nullptr;
+static ID3D11SamplerState* g_pointClampSampler = nullptr;
+static bool g_postAvailable = false;
+// Bumped on every chunk mesh rebuild: the shadow map re-renders when the
+// geometry it was drawn from has changed.
+static uint32_t g_meshVersion = 0;
 ID3D11ShaderResourceView* g_blockTexSRV = nullptr;
 ID3D11ShaderResourceView* g_iconSRV = nullptr;
 
@@ -69,30 +94,131 @@ UINT g_skyIndexCount = 0;
 
 // World pass shader (Section 4.2). Vertices arrive packed (mesher.h):
 // chunk-local position plus a per-draw chunk origin, a texture-array
-// layer, and bits for u/v, ambient occlusion and face. Lighting is a
-// fixed brightness per face direction times an AO darkening, both
-// decided at mesh time -- the pixel shader just multiplies.
+// layer, and bits for u/v, ambient occlusion and shade class. Lighting is
+// a fixed brightness per face direction times an AO darkening (both
+// decided at mesh time), times the day/night level, times -- when
+// shadows are on -- a shadow-map test toward the sun. Compiled once
+// as-is and, should that fail on some driver, again with NO_SHADOWS
+// (the pre-shadow shader), so a shadow problem can never cost the world.
 static const char* g_shaderSrc =
-    "cbuffer CB : register(b0) { row_major matrix mvp; };\n"
+    "cbuffer CB : register(b0) { row_major matrix mvp; row_major matrix lightViewProj; float4 sun; float4 params; };\n"
+    // sun.xyz: toward the sun. params: x shadows on, y daylight, z sun strength, w shadow half-texel
     "cbuffer ChunkCB : register(b1) { float4 chunkOrigin; };\n"
     "struct VSIn { uint4 pos:POSITION; uint layer:TEXCOORD0; uint2 uv:TEXCOORD1; };\n"
-    "struct PSIn { float4 pos:SV_POSITION; float3 uvl:TEXCOORD0; float light:TEXCOORD1; };\n"
+    "struct PSIn { float4 pos:SV_POSITION; float3 uvl:TEXCOORD0; float light:TEXCOORD1; float3 wpos:TEXCOORD2; float sunFacing:TEXCOORD3; };\n"
     // +X -X +Y -Y +Z -Z: top brightest, bottom darkest, X and Z sides
-    // distinct so edges between two side faces still read.
-    // then slopes facing up (ramps, pyramids) and down (funnels).
+    // distinct so edges between two side faces still read; then slopes
+    // facing up (ramps, pyramids) and down (funnels).
     "static const float faceShade[8] = { 0.80f, 0.80f, 1.00f, 0.55f, 0.68f, 0.68f, 0.90f, 0.62f };\n"
+    "static const float3 faceNormal[8] = { float3(1,0,0), float3(-1,0,0), float3(0,1,0), float3(0,-1,0),\n"
+    "                                      float3(0,0,1), float3(0,0,-1), float3(0,1,0), float3(0,-1,0) };\n"
     "static const float aoCurve[4] = { 0.50f, 0.66f, 0.83f, 1.00f };\n"
     "PSIn VSMain(VSIn i) {\n"
     "    PSIn o;\n"
     "    float3 p = float3(i.pos.xyz) * 0.125f + chunkOrigin.xyz;\n"   // 1/8-block fixed point
     "    o.pos = mul(float4(p, 1.0f), mvp);\n"
     "    o.uvl = float3(float2(i.uv) * 0.125f, (float)i.layer);\n"
-    "    o.light = faceShade[(i.pos.w >> 2) & 7u] * aoCurve[i.pos.w & 3u];\n"
+    "    uint face = (i.pos.w >> 2) & 7u;\n"
+    "    o.light = faceShade[face] * aoCurve[i.pos.w & 3u];\n"
+    "    float3 n = faceNormal[face];\n"
+    "    o.wpos = p + n * 0.08f;\n"                                   // normal offset (> 1 shadow texel): no acne
+    "    o.sunFacing = saturate(dot(n, sun.xyz) * 4.0f);\n"
     "    return o;\n"
     "}\n"
     "Texture2DArray tex0 : register(t0);\n"
     "SamplerState samp0 : register(s0);\n"
-    "float4 PSMain(PSIn i) : SV_TARGET { float4 c = tex0.Sample(samp0, i.uvl); return float4(c.rgb * i.light, 1.0f); }\n";
+    "#ifndef NO_SHADOWS\n"
+    "Texture2D<float> shadowMap : register(t1);\n"
+    "SamplerComparisonState shadowSamp : register(s1);\n"
+    "#endif\n"
+    "float4 PSMain(PSIn i) : SV_TARGET {\n"
+    "    float4 c = tex0.Sample(samp0, i.uvl);\n"
+    "    float light = i.light * params.y;\n"
+    "#ifndef NO_SHADOWS\n"
+    "    if (params.x > 0.5f) {\n"
+    "        float4 lp = mul(float4(i.wpos, 1.0f), lightViewProj);\n"
+    "        float2 suv = float2(lp.x * 0.5f + 0.5f, 0.5f - lp.y * 0.5f);\n"
+    "        float lit = 1.0f;\n"
+    "        if (suv.x > 0.0f && suv.x < 1.0f && suv.y > 0.0f && suv.y < 1.0f && lp.z < 1.0f) {\n"
+    "            float o = params.w;\n"                               // 2x2 taps of hardware PCF
+    "            lit = 0.25f * (shadowMap.SampleCmpLevelZero(shadowSamp, suv + float2(-o, -o), lp.z)\n"
+    "                         + shadowMap.SampleCmpLevelZero(shadowSamp, suv + float2( o, -o), lp.z)\n"
+    "                         + shadowMap.SampleCmpLevelZero(shadowSamp, suv + float2(-o,  o), lp.z)\n"
+    "                         + shadowMap.SampleCmpLevelZero(shadowSamp, suv + float2( o,  o), lp.z));\n"
+    "        }\n"
+    "        lit *= i.sunFacing;\n"
+    "        light *= lerp(1.0f - 0.4f * params.z, 1.0f, lit);\n"
+    "    }\n"
+    "#endif\n"
+    "    return float4(c.rgb * light, 1.0f);\n"
+    "}\n";
+
+// Depth-only pass into the shadow map, from the sun (Section 4.8).
+// Same vertex layout as the world pass so the chunk buffers are shared.
+static const char* g_shadowShaderSrc =
+    "cbuffer ShadowCB : register(b0) { row_major matrix lightViewProj; };\n"
+    "cbuffer ChunkCB : register(b1) { float4 chunkOrigin; };\n"
+    "struct VSIn { uint4 pos:POSITION; uint layer:TEXCOORD0; uint2 uv:TEXCOORD1; };\n"
+    "float4 VSMain(VSIn i) : SV_POSITION {\n"
+    "    float3 p = float3(i.pos.xyz) * 0.125f + chunkOrigin.xyz;\n"
+    "    return mul(float4(p, 1.0f), lightViewProj);\n"
+    "}\n";
+
+// Screen-space post pass (Section 4.8): edge outlines and ambient
+// occlusion from the depth buffer alone. A full-screen triangle made
+// from SV_VertexID, so it needs no vertex buffer.
+static const char* g_postShaderSrc =
+    "cbuffer PostCB : register(b0) { float4 p0; float4 p1; };\n"
+    // p0: x outlines on, y SSAO on, z near plane, w far plane; p1: x 1/width, y 1/height, z proj[1][1], w unused
+    "Texture2D sceneTex : register(t0);\n"
+    "Texture2D<float> depthTex : register(t1);\n"
+    "SamplerState pointSamp : register(s0);\n"
+    "struct VSOut { float4 pos:SV_POSITION; float2 uv:TEXCOORD0; };\n"
+    "VSOut VSMain(uint id : SV_VertexID) {\n"
+    "    VSOut o;\n"
+    "    float2 uv = float2((float)((id << 1) & 2u), (float)(id & 2u));\n"
+    "    o.uv = uv;\n"
+    "    o.pos = float4(uv * float2(2.0f, -2.0f) + float2(-1.0f, 1.0f), 0.0f, 1.0f);\n"
+    "    return o;\n"
+    "}\n"
+    "float LinDepth(float2 uv) {\n"
+    "    float z = depthTex.SampleLevel(pointSamp, uv, 0);\n"
+    "    return p0.z * p0.w / (p0.w - z * (p0.w - p0.z));\n"
+    "}\n"
+    "float4 PSMain(VSOut i) : SV_TARGET {\n"
+    "    float3 c = sceneTex.SampleLevel(pointSamp, i.uv, 0).rgb;\n"
+    "    float d = LinDepth(i.uv);\n"
+    "    if (d > p0.w * 0.98f) return float4(c, 1.0f);\n"          // sky: nothing to shade
+    "    float2 px = p1.xy;\n"
+    "    float l = LinDepth(i.uv - float2(px.x, 0.0f)), r = LinDepth(i.uv + float2(px.x, 0.0f));\n"
+    "    float u = LinDepth(i.uv - float2(0.0f, px.y)), dn = LinDepth(i.uv + float2(0.0f, px.y));\n"
+    "    if (p0.x > 0.5f) {\n"
+    // Outlines: the depth Laplacian is ~0 across any flat surface, however
+    // steeply it's viewed, and spikes at silhouettes and block edges.
+    "        float lap = abs(l + r + u + dn - 4.0f * d) / d;\n"
+    "        float edge = saturate((lap - 0.012f) * 30.0f);\n"
+    "        c *= 1.0f - 0.55f * edge;\n"
+    "    }\n"
+    "    if (p0.y > 0.5f) {\n"
+    // SSAO from depth only: compare each sample to the depth the local
+    // plane predicts there (central-difference gradient), so flat ground
+    // seen at a grazing angle doesn't occlude itself.
+    "        float2 grad = float2(r - l, dn - u) * 0.5f;\n"
+    "        float radius = clamp(0.6f * p1.z * 0.5f / (d * px.y), 3.0f, 48.0f);\n" // 0.6 blocks, in pixels
+    "        float ang = frac(52.9829189f * frac(dot(i.pos.xy, float2(0.06711056f, 0.00583715f)))) * 6.2831853f;\n"
+    "        float occ = 0.0f;\n"
+    "        [unroll] for (int k = 0; k < 12; k++) {\n"
+    "            float t = (k + 0.5f) / 12.0f;\n"
+    "            float a = ang + k * 2.39996f;\n"
+    "            float2 offPx = float2(cos(a), sin(a)) * radius * sqrt(t);\n"
+    "            float s = LinDepth(i.uv + offPx * px);\n"
+    "            float diff = (d + dot(grad, offPx)) - s;\n"             // how far in front of the plane
+    "            occ += saturate(diff * 3.0f) * saturate(1.5f - diff);\n"
+    "        }\n"
+    "        c *= 1.0f - 0.55f * occ / 12.0f;\n"
+    "    }\n"
+    "    return float4(c, 1.0f);\n"
+    "}\n";
 
 // UI pass shader: takes vertex positions already in pixel space and
 // maps them to NDC directly (an orthographic projection in all but
@@ -129,16 +255,28 @@ static const char* g_uiShaderSrc =
 // (renormalized) direction instead makes it smooth in every direction,
 // independent of the mesh's face boundaries.
 static const char* g_skyShaderSrc =
-    "cbuffer SkyCB : register(b0) { row_major matrix viewProj; };\n"
+    "cbuffer SkyCB : register(b0) { row_major matrix viewProj; float4 sun; float4 params; };\n"
+    // sun.xyz: toward the sun. params: x day amount 0..1, y stars visible (unused yet), z direct sun
     "struct VSIn { float3 pos:POSITION; };\n"
     "struct PSIn { float4 pos:SV_POSITION; float3 dir:TEXCOORD0; };\n"
     "PSIn VSMain(VSIn input) { PSIn o; o.pos = mul(float4(input.pos,1.0f), viewProj); o.dir = input.pos; return o; }\n"
-    "static const float3 ZENITH = float3(0.25f, 0.45f, 0.85f);\n"
-    "static const float3 HORIZON = float3(0.65f, 0.75f, 0.95f);\n"
+    "static const float3 DAY_ZENITH = float3(0.25f, 0.45f, 0.85f);\n"
+    "static const float3 DAY_HORIZON = float3(0.65f, 0.75f, 0.95f);\n"
+    "static const float3 NIGHT_ZENITH = float3(0.012f, 0.018f, 0.045f);\n"
+    "static const float3 NIGHT_HORIZON = float3(0.045f, 0.055f, 0.10f);\n"
+    "static const float3 SUNSET = float3(1.0f, 0.52f, 0.25f);\n"
     "float4 PSMain(PSIn input) : SV_TARGET {\n"
     "    float3 d = normalize(input.dir);\n"
-    "    float t = saturate(d.y);\n"
-    "    return float4(lerp(HORIZON, ZENITH, t), 1.0f);\n"
+    "    float h = saturate(d.y);\n"
+    "    float day = params.x;\n"
+    "    float3 col = lerp(lerp(NIGHT_HORIZON, DAY_HORIZON, day), lerp(NIGHT_ZENITH, DAY_ZENITH, day), h);\n"
+    "    float toward = saturate(dot(d, sun.xyz));\n"
+    // Sunrise/sunset: warm the sky around the sun while it's near the horizon.
+    "    float low = saturate(1.0f - abs(sun.y) * 4.0f);\n"
+    "    col = lerp(col, SUNSET, low * pow(toward, 6.0f) * (1.0f - h) * 0.85f);\n"
+    "    float disc = smoothstep(0.9990f, 0.9996f, toward) + pow(toward, 64.0f) * 0.35f;\n"
+    "    col += disc * float3(1.0f, 0.95f, 0.80f) * saturate(sun.y * 6.0f + 0.4f);\n"
+    "    return float4(col, 1.0f);\n"
     "}\n";
 
 // Emits one cube face (4 verts + 6 indices) for the given corners.
@@ -172,6 +310,7 @@ static void RebuildChunkMesh(World& w, const ChunkCoord& cc, Chunk& c) {
     }
 
     c.dirty = false;
+    g_meshVersion++;
 }
 
 // Capped the same way block updates (MAX_UPDATES_PER_TICK) and column generation
@@ -268,26 +407,17 @@ void BuildSkyMesh() {
     g_skyIndexCount = (UINT)indices.size();
 }
 
-void UpdateCBuffer(const Mat4& mvp) {
+void UpdateCBuffer(const CBData& data) {
     D3D11_MAPPED_SUBRESOURCE mapped;
     g_context->Map(g_cbuffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
-    CBData* data = (CBData*)mapped.pData;
-    data->mvp = mvp;
+    memcpy(mapped.pData, &data, sizeof(CBData));
     g_context->Unmap(g_cbuffer, 0);
 }
 
-void DrawWorld(World& w, const Mat4& viewProj) {
-    Frustum frustum = ExtractFrustum(viewProj);
-    g_context->VSSetShader(g_vs, nullptr, 0);
-    g_context->PSSetShader(g_ps, nullptr, 0);
-    g_context->IASetInputLayout(g_layout);
-    g_context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    ID3D11Buffer* cbs[2] = { g_cbuffer, g_chunkCBuffer };
-    g_context->VSSetConstantBuffers(0, 2, cbs);
-    g_context->PSSetSamplers(0, 1, &g_sampler);
-    UpdateCBuffer(viewProj);
-    g_context->PSSetShaderResources(0, 1, &g_blockTexSRV);
-
+// Every resident chunk whose bounds touch `frustum`, setting the per-draw
+// chunk origin. Shared by the world pass and the shadow pass; whoever
+// calls it has already bound shaders, layout and constant buffers.
+static void DrawChunks(World& w, const Frustum& frustum, bool countStats) {
     UINT stride = sizeof(Vertex), offset = 0;
     for (auto& kv : w.chunks) {
         Chunk& c = *kv.second;
@@ -304,8 +434,162 @@ void DrawWorld(World& w, const Mat4& viewProj) {
         g_context->IASetVertexBuffers(0, 1, &c.vb, &stride, &offset);
         g_context->IASetIndexBuffer(c.ib, DXGI_FORMAT_R16_UINT, 0);
         g_context->DrawIndexed(c.indexCount, 0, 0);
-        ProfAddCounter(PCOUNT_CHUNKS_DRAWN, 1);
-        ProfAddCounter(PCOUNT_TRIANGLES_DRAWN, c.indexCount / 3);
+        if (countStats) {
+            ProfAddCounter(PCOUNT_CHUNKS_DRAWN, 1);
+            ProfAddCounter(PCOUNT_TRIANGLES_DRAWN, c.indexCount / 3);
+        }
+    }
+}
+
+// ---- Sun shadow map (Section 4.8) ----
+// An orthographic depth map from the sun over the area around the
+// player. The sun crosses the sky in 50 minutes, so the map is only
+// re-rendered when it has actually gone stale: the sun moved a quarter
+// of a degree, the player moved a quarter of the covered area, or chunk
+// meshes changed. Most frames just reuse it.
+static Mat4 g_lightViewProj = {};
+static bool g_shadowValid = false;
+static Vec3 g_shadowSun = { 0, 1, 0 };
+static float g_shadowCenterX = 0, g_shadowCenterZ = 0, g_shadowExtent = 0;
+static uint32_t g_shadowMeshVersion = 0;
+
+static void UpdateShadowMap(World& w, Vec3 eye, Vec3 sun) {
+    float extent = (float)std::min(std::max((g_loadRadius + 1) * CHUNK_SIZE, 48), 112); // half-width, blocks
+    bool stale = !g_shadowValid || extent != g_shadowExtent || g_meshVersion != g_shadowMeshVersion ||
+                 Dot(sun, g_shadowSun) < 0.99999f /* ~0.25 degrees */ ||
+                 fabsf(eye.x - g_shadowCenterX) > extent * 0.25f || fabsf(eye.z - g_shadowCenterZ) > extent * 0.25f;
+    if (!stale) return;
+
+    g_lightViewProj = ShadowLightViewProj(eye, sun, extent, 200.0f, SHADOW_SIZE);
+
+    ID3D11ShaderResourceView* nullSRV = nullptr;
+    g_context->PSSetShaderResources(1, 1, &nullSRV); // the map can't be read while it's the target
+    g_context->OMSetRenderTargets(0, nullptr, g_shadowDSV);
+    g_context->ClearDepthStencilView(g_shadowDSV, D3D11_CLEAR_DEPTH, 1.0f, 0);
+    D3D11_VIEWPORT vp = {}; vp.Width = vp.Height = (float)SHADOW_SIZE; vp.MaxDepth = 1.0f;
+    g_context->RSSetViewports(1, &vp);
+    g_context->RSSetState(g_shadowRaster);
+    g_context->OMSetDepthStencilState(g_depthState, 0);
+    g_context->VSSetShader(g_shadowVS, nullptr, 0);
+    g_context->PSSetShader(nullptr, nullptr, 0); // depth only
+    g_context->IASetInputLayout(g_layout);
+    g_context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    D3D11_MAPPED_SUBRESOURCE mapped;
+    g_context->Map(g_shadowCB, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
+    memcpy(mapped.pData, &g_lightViewProj, sizeof(Mat4));
+    g_context->Unmap(g_shadowCB, 0);
+    ID3D11Buffer* cbs[2] = { g_shadowCB, g_chunkCBuffer };
+    g_context->VSSetConstantBuffers(0, 2, cbs);
+    DrawChunks(w, ExtractFrustum(g_lightViewProj), false);
+
+    D3D11_VIEWPORT svp = {}; svp.Width = (float)g_screenW; svp.Height = (float)g_screenH; svp.MaxDepth = 1.0f;
+    g_context->RSSetViewports(1, &svp);
+    g_shadowValid = true;
+    g_shadowSun = sun;
+    g_shadowCenterX = eye.x; g_shadowCenterZ = eye.z;
+    g_shadowExtent = extent;
+    g_shadowMeshVersion = g_meshVersion;
+    ProfAddCounter(PCOUNT_SHADOW_RENDERS, 1);
+}
+
+void RenderScene(World& w, const Mat4& view, const Mat4& proj, Vec3 eye, Vec3 forward, Vec3 up, float dayTime) {
+    SkyState sky = ComputeSky(dayTime);
+    bool shadows = g_shadows && g_shadowsAvailable && sky.sunLight > 0.001f;
+    if (shadows) { ProfScope prof(PROF_SHADOW); UpdateShadowMap(w, eye, sky.sunDir); }
+    if (!g_shadows) g_shadowValid = false; // re-render on re-enable
+
+    int64_t worldStart = ProfNow();
+    // With no post effect on, draw straight to the backbuffer: the post
+    // path costs nothing at all while it's switched off.
+    bool post = (g_postEdges || g_postSSAO) && g_postAvailable;
+    ID3D11RenderTargetView* target = post ? g_sceneRTV : g_rtv;
+    ID3D11ShaderResourceView* nulls[2] = { nullptr, nullptr };
+    g_context->PSSetShaderResources(0, 2, nulls); // last frame's post inputs
+    float clearColor[4] = { 0, 0, 0, 1 };
+    g_context->OMSetRenderTargets(1, &target, g_dsv);
+    g_context->ClearRenderTargetView(target, clearColor);
+    g_context->ClearDepthStencilView(g_dsv, D3D11_CLEAR_DEPTH, 1.0f, 0);
+    g_context->RSSetState(g_rasterState);
+
+    // Sky: depth off, drawn first so the world always overdraws it; its
+    // view drops the eye position so it turns with the camera but never
+    // translates with it.
+    {
+        Mat4 skyViewProj = MatMul(MatLookToLH({ 0, 0, 0 }, forward, up), proj);
+        struct { Mat4 viewProj; float sun[4]; float params[4]; } cb = {
+            skyViewProj,
+            { sky.sunDir.x, sky.sunDir.y, sky.sunDir.z, 0 },
+            { (sky.daylight - NIGHT_LIGHT) / (1.0f - NIGHT_LIGHT), sky.starsVisible, sky.sunLight, 0 },
+        };
+        g_context->OMSetDepthStencilState(g_uiDepthState, 0);
+        g_context->VSSetShader(g_skyVS, nullptr, 0);
+        g_context->PSSetShader(g_skyPS, nullptr, 0);
+        g_context->IASetInputLayout(g_skyLayout);
+        g_context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        D3D11_MAPPED_SUBRESOURCE mapped;
+        g_context->Map(g_skyCBuffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
+        memcpy(mapped.pData, &cb, sizeof(cb));
+        g_context->Unmap(g_skyCBuffer, 0);
+        g_context->VSSetConstantBuffers(0, 1, &g_skyCBuffer);
+        g_context->PSSetConstantBuffers(0, 1, &g_skyCBuffer);
+        UINT skyStride = sizeof(SkyVertex), skyOffset = 0;
+        g_context->IASetVertexBuffers(0, 1, &g_skyVB, &skyStride, &skyOffset);
+        g_context->IASetIndexBuffer(g_skyIB, DXGI_FORMAT_R32_UINT, 0);
+        g_context->DrawIndexed(g_skyIndexCount, 0, 0);
+        g_context->OMSetDepthStencilState(g_depthState, 0);
+    }
+
+    // World.
+    {
+        Mat4 viewProj = MatMul(view, proj);
+        CBData cb;
+        cb.mvp = viewProj;
+        cb.lightViewProj = g_lightViewProj;
+        cb.sun[0] = sky.sunDir.x; cb.sun[1] = sky.sunDir.y; cb.sun[2] = sky.sunDir.z; cb.sun[3] = 0;
+        cb.params[0] = shadows ? 1.0f : 0.0f;
+        cb.params[1] = sky.daylight;
+        cb.params[2] = sky.sunLight;
+        cb.params[3] = 0.5f / SHADOW_SIZE;
+        UpdateCBuffer(cb);
+        g_context->VSSetShader(g_vs, nullptr, 0);
+        g_context->PSSetShader(g_ps, nullptr, 0);
+        g_context->IASetInputLayout(g_layout);
+        g_context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        ID3D11Buffer* cbs[2] = { g_cbuffer, g_chunkCBuffer };
+        g_context->VSSetConstantBuffers(0, 2, cbs);
+        g_context->PSSetConstantBuffers(0, 1, &g_cbuffer);
+        ID3D11SamplerState* samplers[2] = { g_sampler, g_shadowSampler };
+        g_context->PSSetSamplers(0, 2, samplers);
+        ID3D11ShaderResourceView* srvs[2] = { g_blockTexSRV, shadows ? g_shadowSRV : nullptr };
+        g_context->PSSetShaderResources(0, 2, srvs);
+        DrawChunks(w, ExtractFrustum(viewProj), true);
+    }
+    ProfAdd(PROF_WORLD, ProfNow() - worldStart);
+
+    // Post pass: scene + depth in, backbuffer out.
+    if (post) {
+        ProfScope prof(PROF_POST);
+        g_context->OMSetRenderTargets(1, &g_rtv, nullptr);
+        struct { float p0[4]; float p1[4]; } cb = {
+            { g_postEdges ? 1.0f : 0.0f, g_postSSAO ? 1.0f : 0.0f, 0.1f, 500.0f }, // near/far: main.cpp's projection
+            { 1.0f / g_screenW, 1.0f / g_screenH, proj.m[1][1], 0.0f },
+        };
+        D3D11_MAPPED_SUBRESOURCE mapped;
+        g_context->Map(g_postCB, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
+        memcpy(mapped.pData, &cb, sizeof(cb));
+        g_context->Unmap(g_postCB, 0);
+        g_context->VSSetShader(g_postVS, nullptr, 0);
+        g_context->PSSetShader(g_postPS, nullptr, 0);
+        g_context->IASetInputLayout(nullptr);
+        g_context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        g_context->PSSetConstantBuffers(0, 1, &g_postCB);
+        g_context->PSSetSamplers(0, 1, &g_pointClampSampler);
+        ID3D11ShaderResourceView* srvs[2] = { g_sceneSRV, g_depthSRV };
+        g_context->PSSetShaderResources(0, 2, srvs);
+        g_context->OMSetDepthStencilState(g_uiDepthState, 0);
+        g_context->Draw(3, 0);
+        g_context->PSSetShaderResources(0, 2, nulls);
+        g_context->OMSetDepthStencilState(g_depthState, 0);
     }
 }
 
@@ -351,6 +635,23 @@ bool FrustumIntersectsAABB(const Frustum& f, Vec3 minB, Vec3 maxB) {
 // D3D11 initialization
 // =======================================================================
 
+// Compiles one entry point; on failure logs the compiler's message and
+// returns nullptr, leaving the caller to decide whether that's fatal.
+static ID3DBlob* CompileShader(const char* src, const char* entry, const char* profile,
+                               const D3D_SHADER_MACRO* macros = nullptr) {
+    ID3DBlob* blob = nullptr, * err = nullptr;
+    HRESULT hr = D3DCompile(src, strlen(src), nullptr, macros, nullptr, entry, profile, 0, 0, &blob, &err);
+    if (FAILED(hr)) {
+        OutputDebugStringA("Shader compile failed: ");
+        if (err) OutputDebugStringA((const char*)err->GetBufferPointer());
+        if (err) err->Release();
+        if (blob) blob->Release();
+        return nullptr;
+    }
+    if (err) err->Release();
+    return blob;
+}
+
 // The backbuffer's render target, the depth buffer and the viewport --
 // everything whose size is the window's. Recreated on every resize.
 static void CreateSizeDependentTargets() {
@@ -359,17 +660,40 @@ static void CreateSizeDependentTargets() {
     g_device->CreateRenderTargetView(backBuffer, nullptr, &g_rtv);
     backBuffer->Release();
 
+    // Depth is typeless so the post pass can also read it.
     D3D11_TEXTURE2D_DESC depthDesc = {};
     depthDesc.Width = g_screenW; depthDesc.Height = g_screenH;
     depthDesc.MipLevels = 1; depthDesc.ArraySize = 1;
-    depthDesc.Format = DXGI_FORMAT_D24_UNORM_S8_UINT;
+    depthDesc.Format = DXGI_FORMAT_R24G8_TYPELESS;
     depthDesc.SampleDesc.Count = 1;
     depthDesc.Usage = D3D11_USAGE_DEFAULT;
-    depthDesc.BindFlags = D3D11_BIND_DEPTH_STENCIL;
+    depthDesc.BindFlags = D3D11_BIND_DEPTH_STENCIL | D3D11_BIND_SHADER_RESOURCE;
     ID3D11Texture2D* depthTex = nullptr;
     g_device->CreateTexture2D(&depthDesc, nullptr, &depthTex);
-    g_device->CreateDepthStencilView(depthTex, nullptr, &g_dsv);
+    D3D11_DEPTH_STENCIL_VIEW_DESC dsvd = {};
+    dsvd.Format = DXGI_FORMAT_D24_UNORM_S8_UINT;
+    dsvd.ViewDimension = D3D11_DSV_DIMENSION_TEXTURE2D;
+    g_device->CreateDepthStencilView(depthTex, &dsvd, &g_dsv);
+    D3D11_SHADER_RESOURCE_VIEW_DESC dsrv = {};
+    dsrv.Format = DXGI_FORMAT_R24_UNORM_X8_TYPELESS;
+    dsrv.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+    dsrv.Texture2D.MipLevels = 1;
+    g_device->CreateShaderResourceView(depthTex, &dsrv, &g_depthSRV);
     depthTex->Release();
+
+    // Off-screen colour target the post pass reads.
+    D3D11_TEXTURE2D_DESC sceneDesc = {};
+    sceneDesc.Width = g_screenW; sceneDesc.Height = g_screenH;
+    sceneDesc.MipLevels = 1; sceneDesc.ArraySize = 1;
+    sceneDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    sceneDesc.SampleDesc.Count = 1;
+    sceneDesc.Usage = D3D11_USAGE_DEFAULT;
+    sceneDesc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+    ID3D11Texture2D* sceneTex = nullptr;
+    g_device->CreateTexture2D(&sceneDesc, nullptr, &sceneTex);
+    g_device->CreateRenderTargetView(sceneTex, nullptr, &g_sceneRTV);
+    g_device->CreateShaderResourceView(sceneTex, nullptr, &g_sceneSRV);
+    sceneTex->Release();
 
     D3D11_VIEWPORT vp = {};
     vp.Width = (float)g_screenW; vp.Height = (float)g_screenH;
@@ -385,6 +709,9 @@ void ResizeRenderTargets(int w, int h) {
     g_context->OMSetRenderTargets(0, nullptr, nullptr);
     if (g_rtv) { g_rtv->Release(); g_rtv = nullptr; }
     if (g_dsv) { g_dsv->Release(); g_dsv = nullptr; }
+    if (g_depthSRV) { g_depthSRV->Release(); g_depthSRV = nullptr; }
+    if (g_sceneRTV) { g_sceneRTV->Release(); g_sceneRTV = nullptr; }
+    if (g_sceneSRV) { g_sceneSRV->Release(); g_sceneSRV = nullptr; }
     g_swapChain->ResizeBuffers(0, (UINT)w, (UINT)h, DXGI_FORMAT_UNKNOWN, 0);
     CreateSizeDependentTargets();
 }
@@ -413,19 +740,15 @@ bool InitD3D(HWND hwnd) {
 
     CreateSizeDependentTargets();
 
-    ID3DBlob* vsBlob = nullptr, * psBlob = nullptr, * errBlob = nullptr;
-    hr = D3DCompile(g_shaderSrc, strlen(g_shaderSrc), nullptr, nullptr, nullptr,
-                     "VSMain", "vs_4_0", 0, 0, &vsBlob, &errBlob);
-    if (FAILED(hr)) {
-        if (errBlob) OutputDebugStringA((const char*)errBlob->GetBufferPointer());
-        return false;
+    ID3DBlob* errBlob = nullptr;
+    ID3DBlob* vsBlob = CompileShader(g_shaderSrc, "VSMain", "vs_4_0");
+    ID3DBlob* psBlob = CompileShader(g_shaderSrc, "PSMain", "ps_4_0");
+    bool worldShadows = psBlob != nullptr;
+    if (!psBlob) {
+        const D3D_SHADER_MACRO noShadows[] = { { "NO_SHADOWS", "1" }, { nullptr, nullptr } };
+        psBlob = CompileShader(g_shaderSrc, "PSMain", "ps_4_0", noShadows);
     }
-    hr = D3DCompile(g_shaderSrc, strlen(g_shaderSrc), nullptr, nullptr, nullptr,
-                     "PSMain", "ps_4_0", 0, 0, &psBlob, &errBlob);
-    if (FAILED(hr)) {
-        if (errBlob) OutputDebugStringA((const char*)errBlob->GetBufferPointer());
-        return false;
-    }
+    if (!vsBlob || !psBlob) return false;
     g_device->CreateVertexShader(vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(), nullptr, &g_vs);
     g_device->CreatePixelShader(psBlob->GetBufferPointer(), psBlob->GetBufferSize(), nullptr, &g_ps);
 
@@ -567,11 +890,66 @@ bool InitD3D(HWND hwnd) {
 
     D3D11_BUFFER_DESC skyCbd = {};
     skyCbd.Usage = D3D11_USAGE_DYNAMIC;
-    skyCbd.ByteWidth = sizeof(Mat4);
+    skyCbd.ByteWidth = sizeof(Mat4) + 2 * 4 * sizeof(float); // viewProj, sun, params
     skyCbd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
     skyCbd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
     g_device->CreateBuffer(&skyCbd, nullptr, &g_skyCBuffer);
 
+    // --- Sun shadows (Section 4.8). Optional: any failure here just
+    // leaves shadows unavailable (the Graphics toggle then does nothing).
+    if (worldShadows) {
+        ID3DBlob* sv = CompileShader(g_shadowShaderSrc, "VSMain", "vs_4_0");
+        if (sv) {
+            g_device->CreateVertexShader(sv->GetBufferPointer(), sv->GetBufferSize(), nullptr, &g_shadowVS);
+            sv->Release();
+        }
+        D3D11_TEXTURE2D_DESC sd = {};
+        sd.Width = SHADOW_SIZE; sd.Height = SHADOW_SIZE; sd.MipLevels = 1; sd.ArraySize = 1;
+        sd.Format = DXGI_FORMAT_R32_TYPELESS; sd.SampleDesc.Count = 1;
+        sd.Usage = D3D11_USAGE_DEFAULT; sd.BindFlags = D3D11_BIND_DEPTH_STENCIL | D3D11_BIND_SHADER_RESOURCE;
+        ID3D11Texture2D* st = nullptr;
+        if (SUCCEEDED(g_device->CreateTexture2D(&sd, nullptr, &st))) {
+            D3D11_DEPTH_STENCIL_VIEW_DESC dd = {}; dd.Format = DXGI_FORMAT_D32_FLOAT; dd.ViewDimension = D3D11_DSV_DIMENSION_TEXTURE2D;
+            g_device->CreateDepthStencilView(st, &dd, &g_shadowDSV);
+            D3D11_SHADER_RESOURCE_VIEW_DESC rd = {}; rd.Format = DXGI_FORMAT_R32_FLOAT; rd.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D; rd.Texture2D.MipLevels = 1;
+            g_device->CreateShaderResourceView(st, &rd, &g_shadowSRV);
+            st->Release();
+        }
+        D3D11_SAMPLER_DESC cs = {};
+        cs.Filter = D3D11_FILTER_COMPARISON_MIN_MAG_LINEAR_MIP_POINT; // hardware 2x2 PCF per tap
+        cs.AddressU = cs.AddressV = cs.AddressW = D3D11_TEXTURE_ADDRESS_BORDER;
+        cs.BorderColor[0] = cs.BorderColor[1] = cs.BorderColor[2] = cs.BorderColor[3] = 1.0f; // outside = lit
+        cs.ComparisonFunc = D3D11_COMPARISON_LESS_EQUAL;
+        cs.MaxLOD = D3D11_FLOAT32_MAX;
+        g_device->CreateSamplerState(&cs, &g_shadowSampler);
+        D3D11_RASTERIZER_DESC rs = {};
+        rs.FillMode = D3D11_FILL_SOLID; rs.CullMode = D3D11_CULL_NONE; rs.DepthClipEnable = TRUE;
+        rs.DepthBias = 40; rs.SlopeScaledDepthBias = 1.5f; rs.DepthBiasClamp = 0.0f;
+        g_device->CreateRasterizerState(&rs, &g_shadowRaster);
+        D3D11_BUFFER_DESC sb = {};
+        sb.Usage = D3D11_USAGE_DYNAMIC; sb.ByteWidth = sizeof(Mat4);
+        sb.BindFlags = D3D11_BIND_CONSTANT_BUFFER; sb.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+        g_device->CreateBuffer(&sb, nullptr, &g_shadowCB);
+        g_shadowsAvailable = g_shadowVS && g_shadowDSV && g_shadowSRV && g_shadowSampler && g_shadowRaster && g_shadowCB;
+    }
+
+    // --- Post pass (Section 4.8): outlines and SSAO. Optional too.
+    {
+        ID3DBlob* pv = CompileShader(g_postShaderSrc, "VSMain", "vs_4_0");
+        ID3DBlob* pp = CompileShader(g_postShaderSrc, "PSMain", "ps_4_0");
+        if (pv) { g_device->CreateVertexShader(pv->GetBufferPointer(), pv->GetBufferSize(), nullptr, &g_postVS); pv->Release(); }
+        if (pp) { g_device->CreatePixelShader(pp->GetBufferPointer(), pp->GetBufferSize(), nullptr, &g_postPS); pp->Release(); }
+        D3D11_BUFFER_DESC pb = {};
+        pb.Usage = D3D11_USAGE_DYNAMIC; pb.ByteWidth = 2 * 4 * sizeof(float);
+        pb.BindFlags = D3D11_BIND_CONSTANT_BUFFER; pb.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+        g_device->CreateBuffer(&pb, nullptr, &g_postCB);
+        D3D11_SAMPLER_DESC ps = {};
+        ps.Filter = D3D11_FILTER_MIN_MAG_MIP_POINT;
+        ps.AddressU = ps.AddressV = ps.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
+        ps.MaxLOD = D3D11_FLOAT32_MAX;
+        g_device->CreateSamplerState(&ps, &g_pointClampSampler);
+        g_postAvailable = g_postVS && g_postPS && g_postCB && g_pointClampSampler;
+    }
     return true;
 }
 

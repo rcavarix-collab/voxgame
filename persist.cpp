@@ -38,6 +38,7 @@ float g_sensitivityMultX = 1.0f, g_sensitivityMultY = 1.0f;
 bool g_invertX = false, g_invertY = false;
 bool g_showFPS = false;
 bool g_fullscreen = false;
+bool g_shadows = false, g_postEdges = false, g_postSSAO = false;
 float g_masterVolume = 1.0f;
 float g_musicVolume = 1.0f;
 float g_fov = 45.0f;
@@ -177,6 +178,9 @@ bool SaveSettings() {
     ss << "showFPS=" << (g_showFPS ? 1 : 0) << "\n";
     ss << "showProfiler=" << (g_showProfiler ? 1 : 0) << "\n";
     ss << "fullscreen=" << (g_fullscreen ? 1 : 0) << "\n";
+    ss << "shadows=" << (g_shadows ? 1 : 0) << "\n";
+    ss << "outlines=" << (g_postEdges ? 1 : 0) << "\n";
+    ss << "ssao=" << (g_postSSAO ? 1 : 0) << "\n";
     ss << "masterVolume=" << g_masterVolume << "\n";
     ss << "musicVolume=" << g_musicVolume << "\n";
     ss << "fov=" << g_fov << "\n";
@@ -246,6 +250,9 @@ void LoadSettings() {
     g_showFPS = getB("showFPS", g_showFPS);
     g_showProfiler = getB("showProfiler", g_showProfiler);
     g_fullscreen = getB("fullscreen", g_fullscreen);
+    g_shadows = getB("shadows", g_shadows);
+    g_postEdges = getB("outlines", g_postEdges);
+    g_postSSAO = getB("ssao", g_postSSAO);
     g_masterVolume = getF("masterVolume", g_masterVolume);
     g_musicVolume = getF("musicVolume", g_musicVolume);
     g_fov = getF("fov", g_fov);

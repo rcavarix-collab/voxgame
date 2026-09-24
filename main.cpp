@@ -202,55 +202,15 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
         ProfSetCounter(PCOUNT_DIRTY_WAITING, (int64_t)g_world.dirtyChunks.size());
         ProfSetCounter(PCOUNT_COLUMNS_WAITING, (int64_t)g_pendingColumns.size());
         ProfSetCounter(PCOUNT_UPDATES_WAITING, (int64_t)ScheduledUpdateCount());
-        int64_t worldStart = ProfNow();
-
-        float clearColor[4] = { 0.4f, 0.6f, 0.9f, 1.0f };
-        g_context->OMSetRenderTargets(1, &g_rtv, g_dsv);
-        g_context->ClearRenderTargetView(g_rtv, clearColor);
-        g_context->ClearDepthStencilView(g_dsv, D3D11_CLEAR_DEPTH, 1.0f, 0);
-        g_context->RSSetState(g_rasterState);
-        g_context->OMSetDepthStencilState(g_depthState, 0);
-
         Vec3 f, r, u;
         GetCameraVectors(g_player, f, r, u);
         Vec3 eye = { g_player.x, g_player.y + PLAYER_EYE, g_player.z };
         Mat4 view = MatLookToLH(eye, f, u);
         // g_fov (Accessibility, Section 11) is stored in degrees since
-        // that's the meaningful unit for a player-facing slider; 45 deg
-        // is this constant's old fixed value, unchanged until the
-        // slider is touched.
+        // that's the meaningful unit for a player-facing slider.
         float fovRadians = g_fov * (3.14159265359f / 180.0f);
         Mat4 proj = MatPerspectiveFovLH(fovRadians, (float)g_screenW / g_screenH, 0.1f, 500.0f);
-        Mat4 viewProj = MatMul(view, proj);
-
-        // Sky pass: depth off (reusing the UI pass's depth-disabled
-        // state), drawn before the opaque world pass so normal depth-
-        // tested geometry always overdraws it regardless of the sky
-        // box's actual size. Its view matrix drops the eye position
-        // (rotation only) so the sky rotates with the camera but never
-        // translates with it, same as any conventional skybox.
-        {
-            Mat4 skyView = MatLookToLH({ 0, 0, 0 }, f, u);
-            Mat4 skyViewProj = MatMul(skyView, proj);
-            g_context->OMSetDepthStencilState(g_uiDepthState, 0);
-            g_context->VSSetShader(g_skyVS, nullptr, 0);
-            g_context->PSSetShader(g_skyPS, nullptr, 0);
-            g_context->IASetInputLayout(g_skyLayout);
-            g_context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-            g_context->VSSetConstantBuffers(0, 1, &g_skyCBuffer);
-            D3D11_MAPPED_SUBRESOURCE mapped;
-            g_context->Map(g_skyCBuffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
-            *(Mat4*)mapped.pData = skyViewProj;
-            g_context->Unmap(g_skyCBuffer, 0);
-            UINT skyStride = sizeof(SkyVertex), skyOffset = 0;
-            g_context->IASetVertexBuffers(0, 1, &g_skyVB, &skyStride, &skyOffset);
-            g_context->IASetIndexBuffer(g_skyIB, DXGI_FORMAT_R32_UINT, 0);
-            g_context->DrawIndexed(g_skyIndexCount, 0, 0);
-            g_context->OMSetDepthStencilState(g_depthState, 0);
-        }
-
-        DrawWorld(g_world, viewProj);
-        ProfAdd(PROF_WORLD, ProfNow() - worldStart);
+        RenderScene(g_world, view, proj, eye, f, u, g_dayTimeSeconds);
 
         {
             ProfScope prof(PROF_UI);

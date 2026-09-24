@@ -13,6 +13,7 @@
 #include "../mesher.h"
 #include "../shapes.h"
 #include "../icons.h"
+#include "../sky.h"
 #include <cstdio>
 #include <cstring>
 #include <cmath>
@@ -422,6 +423,40 @@ static void TestIcons() {
     }
 }
 
+static Vec3 XformPoint(const Mat4& m, Vec3 p) {
+    float x = p.x * m.m[0][0] + p.y * m.m[1][0] + p.z * m.m[2][0] + m.m[3][0];
+    float y = p.x * m.m[0][1] + p.y * m.m[1][1] + p.z * m.m[2][1] + m.m[3][1];
+    float z = p.x * m.m[0][2] + p.y * m.m[1][2] + p.z * m.m[2][2] + m.m[3][2];
+    float w = p.x * m.m[0][3] + p.y * m.m[1][3] + p.z * m.m[2][3] + m.m[3][3];
+    return { x / w, y / w, z / w };
+}
+
+static void TestSky() {
+    printf("sky model and shadow projection\n");
+    SkyState dawn = ComputeSky(0), noon = ComputeSky(1500), dusk = ComputeSky(3000), night = ComputeSky(3300);
+    CHECK(fabsf(dawn.sunDir.y) < 1e-4f && dawn.sunDir.x > 0.99f);     // rises in the east (+X)
+    CHECK(noon.sunDir.y > 0.9f && noon.sunDir.z < 0);                 // high, tilted south
+    CHECK(fabsf(dusk.sunDir.y) < 1e-3f && dusk.sunDir.x < -0.99f);    // sets in the west
+    CHECK(night.sunDir.y < -0.9f && night.moonDir.y > 0.3f);          // moon up at night
+    CHECK(noon.daylight == 1.0f && fabsf(night.daylight - NIGHT_LIGHT) < 1e-5f);
+    CHECK(night.starsVisible == 1.0f && noon.starsVisible == 0.0f);
+    CHECK(night.sunLight == 0.0f && noon.sunLight == 1.0f);
+    SkyState wrap = ComputeSky(3600.0f);
+    CHECK(fabsf(wrap.sunDir.x - dawn.sunDir.x) < 1e-4f && fabsf(wrap.sunDir.y - dawn.sunDir.y) < 1e-4f); // loops
+
+    Vec3 eye = { 100.3f, 30.0f, -42.7f };
+    Mat4 lvp = ShadowLightViewProj(eye, noon.sunDir, 64.0f, 200.0f, 2048);
+    Vec3 c = XformPoint(lvp, eye);
+    CHECK(fabsf(c.x) < 0.01f && fabsf(c.y) < 0.01f && c.z > 0.4f && c.z < 0.6f); // centred, mid-depth
+    Vec3 towardSun = XformPoint(lvp, { eye.x + noon.sunDir.x * 10, eye.y + noon.sunDir.y * 10, eye.z + noon.sunDir.z * 10 });
+    CHECK(towardSun.z < c.z && fabsf(towardSun.x - c.x) < 1e-3f);    // nearer the light, same texel
+    Vec3 edge = XformPoint(lvp, { eye.x + 60, eye.y, eye.z });
+    CHECK(fabsf(edge.x) < 1.0f && fabsf(edge.y) < 1.0f);              // 60 blocks out is still on the map
+    // Moving less than a texel doesn't move the map.
+    Mat4 lvp2 = ShadowLightViewProj({ eye.x + 0.001f, eye.y, eye.z }, noon.sunDir, 64.0f, 200.0f, 2048);
+    CHECK(fabsf(lvp2.m[3][0] - lvp.m[3][0]) < 1e-3f || fabsf(lvp2.m[3][0] - lvp.m[3][0]) > 2.0f / 2048 * 0.9f);
+}
+
 int main() {
     TestVtex();
     TestBlockTextures();
@@ -433,6 +468,7 @@ int main() {
     TestShapes();
     TestIcons();
     TestScheduledUpdates();
+    TestSky();
     printf("\n%d checks, %d failed\n", g_checks, g_failures);
     return g_failures ? 1 : 0;
 }

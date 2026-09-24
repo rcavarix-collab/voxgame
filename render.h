@@ -35,7 +35,7 @@ extern ID3D11Buffer* g_chunkCBuffer;          // per-draw chunk origin (b1)
 extern ID3D11ShaderResourceView* g_blockTexSRV; // Texture2DArray: one layer per block face texture, mipped
 extern ID3D11ShaderResourceView* g_iconSRV;     // hotbar icon strip, one cell per BlockID
 
-struct CBData { Mat4 mvp; };
+struct CBData { Mat4 mvp; Mat4 lightViewProj; float sun[4]; float params[4]; }; // world shader b0
 
 // UVs of block `id`'s cell in the icon strip.
 static inline void IconRect(BlockID id, float& u0, float& v0, float& u1, float& v1) {
@@ -120,9 +120,10 @@ void ResizeRenderTargets(int w, int h);
 // assets/textures/_errors.txt), else stays empty.
 bool InitTextures(std::string& problems);
 void BuildSkyMesh();
-void UpdateCBuffer(const Mat4& mvp);
-// World pass: every resident chunk whose bounds touch the frustum.
-void DrawWorld(World& w, const Mat4& viewProj);
+void UpdateCBuffer(const CBData& data);
+// The whole 3D frame: shadow map (when stale), sky, world, and the post
+// pass when an effect is on. The UI pass draws over the result.
+void RenderScene(World& w, const Mat4& view, const Mat4& proj, Vec3 eye, Vec3 forward, Vec3 up, float dayTime);
 
 // Capped per-frame chunk mesh rebuild (Section 4.2/4-perf) -- see
 // render.cpp for the full reasoning; this is the single entry point

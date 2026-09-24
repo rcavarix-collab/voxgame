@@ -261,8 +261,10 @@ enum LookRow { LROW_INVERT_X = 0, LROW_SENS_X = 1, LROW_INVERT_Y = 2, LROW_SENS_
 // Graphics: one real setting -- render distance -- rather than stubbing
 // out controls (fog distance, shadow quality, etc.) this prototype has
 // no rendering path for yet.
-static const SubmenuLayout GRAPHICS_LAYOUT = { 380.0f, 56.0f, 12.0f, 70.0f, 20.0f, 3 };
-enum GraphicsRow { GROW_RENDER_DIST = 0, GROW_RESET = 1, GROW_BACK = 2 };
+// Row height 50 still fits the slider row (label, track, 50px hit area)
+// while keeping six rows comfortably inside a 720p screen.
+static const SubmenuLayout GRAPHICS_LAYOUT = { 400.0f, 50.0f, 10.0f, 70.0f, 20.0f, 6 };
+enum GraphicsRow { GROW_RENDER_DIST = 0, GROW_SHADOWS = 1, GROW_OUTLINES = 2, GROW_SSAO = 3, GROW_RESET = 4, GROW_BACK = 5 };
 
 // Display: one real setting -- an FPS counter toggle. Resolution/
 // fullscreen switching would need swap-chain resize and WM_SIZE
@@ -389,6 +391,7 @@ static const float SENS_MIN = 0.25f, SENS_MAX = 3.0f;
 static void ResetLookSettings() { g_sensitivityMultX = 1.0f; g_sensitivityMultY = 1.0f; g_invertX = false; g_invertY = false; }
 static void ResetGraphicsSettings() {
     g_loadRadius = 3;
+    g_shadows = false; g_postEdges = false; g_postSSAO = false;
     g_lastPlayerChunkX = INT32_MIN; g_lastPlayerChunkZ = INT32_MIN; // force a rescan at the new radius
 }
 static void ResetDisplaySettings() { g_showFPS = false; g_showProfiler = false; if (g_fullscreen) { g_fullscreen = false; ApplyFullscreen(false); } }
@@ -610,6 +613,9 @@ static void HandleLookSettingsClick(int mx, int my) {
 }
 static void HandleGraphicsClick(int mx, int my) {
     if (PointInRect(mx, my, GetSliderHitRect(SubmenuRowRect(GRAPHICS_LAYOUT, GROW_RENDER_DIST)))) { BeginSliderDrag(SLIDER_RENDER_DIST, mx); return; }
+    if (PointInRect(mx, my, SubmenuRowRect(GRAPHICS_LAYOUT, GROW_SHADOWS))) { g_shadows = !g_shadows; SaveSettings(); return; }
+    if (PointInRect(mx, my, SubmenuRowRect(GRAPHICS_LAYOUT, GROW_OUTLINES))) { g_postEdges = !g_postEdges; SaveSettings(); return; }
+    if (PointInRect(mx, my, SubmenuRowRect(GRAPHICS_LAYOUT, GROW_SSAO))) { g_postSSAO = !g_postSSAO; SaveSettings(); return; }
     if (PointInRect(mx, my, SubmenuRowRect(GRAPHICS_LAYOUT, GROW_RESET))) { ResetGraphicsSettings(); SaveSettings(); return; }
     if (PointInRect(mx, my, SubmenuRowRect(GRAPHICS_LAYOUT, GROW_BACK))) { g_menuScreen = MenuScreen::OptionsHub; return; }
 }
@@ -1175,6 +1181,9 @@ void RenderUIPass() {
         drawPanelTitle(panel, GRAPHICS_LAYOUT.panelW, "GRAPHICS SETTINGS", 1.0f);
 
         drawSliderRow(SubmenuRowRect(GRAPHICS_LAYOUT, GROW_RENDER_DIST), SLIDER_RENDER_DIST);
+        drawRowButton(SubmenuRowRect(GRAPHICS_LAYOUT, GROW_SHADOWS), g_shadows ? "SUN SHADOWS: ON" : "SUN SHADOWS: OFF");
+        drawRowButton(SubmenuRowRect(GRAPHICS_LAYOUT, GROW_OUTLINES), g_postEdges ? "EDGE OUTLINES: ON" : "EDGE OUTLINES: OFF");
+        drawRowButton(SubmenuRowRect(GRAPHICS_LAYOUT, GROW_SSAO), g_postSSAO ? "SCREEN-SPACE AO: ON" : "SCREEN-SPACE AO: OFF");
         drawRowButton(SubmenuRowRect(GRAPHICS_LAYOUT, GROW_RESET), "RESET TO DEFAULT");
         drawRowButton(SubmenuRowRect(GRAPHICS_LAYOUT, GROW_BACK), "BACK");
     } else if (g_menuScreen == MenuScreen::Display) {

@@ -19,7 +19,9 @@ enum ProfSection {
     PROF_UPDATES,   // scheduled block updates (gravity, ...)
     PROF_MUSIC,     // music chunk synthesis
     PROF_MESH,      // chunk mesh rebuilds + GPU uploads
+    PROF_SHADOW,    // shadow map re-render (only when stale)
     PROF_WORLD,     // sky + world draw submission (CPU side)
+    PROF_POST,      // post pass (outlines, SSAO)
     PROF_UI,        // UI build + draw submission
     PROF_PRESENT,   // Present(): mostly vsync wait, not work
     PROF_COUNT
@@ -33,6 +35,7 @@ enum ProfCounter {
     PCOUNT_DIRTY_WAITING,
     PCOUNT_COLUMNS_WAITING,
     PCOUNT_UPDATES_WAITING,
+    PCOUNT_SHADOW_RENDERS,
     PCOUNT_COUNT
 };
 
