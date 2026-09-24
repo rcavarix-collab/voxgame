@@ -4,7 +4,9 @@
 // settings.cfg read/write, save-directory/slot resolution, and the
 // versioned world+player SaveGame/LoadGame.
 
+#ifndef NOMINMAX // also set project-wide (Voxistics.vcxproj)
 #define NOMINMAX
+#endif
 #include <windows.h>
 #include <shlobj.h> // SHGetKnownFolderPath
 #include "persist.h"
@@ -409,9 +411,9 @@ bool LoadGame(World& w, Player& p, int slot) {
 std::string WriteTextToSaveFolder(const char* fileName, const std::string& text) {
     std::filesystem::path dir = GetSaveDirectory();
     std::filesystem::path path = dir.empty() ? std::filesystem::path(fileName) : dir / fileName;
-    FILE* f = _wfopen(path.wstring().c_str(), L"wb");
+    std::ofstream f(path, std::ios::binary | std::ios::trunc); // wide paths, and no deprecated CRT calls (MSVC SDL checks)
     if (!f) return "";
-    bool ok = fwrite(text.data(), 1, text.size(), f) == text.size();
-    ok = fclose(f) == 0 && ok;
-    return ok ? path.string() : "";
+    f.write(text.data(), (std::streamsize)text.size());
+    f.close();
+    return f ? path.string() : "";
 }

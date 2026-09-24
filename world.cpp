@@ -5,7 +5,9 @@
 // including), gravity, terrain generation/column loading, player
 // physics, and the DDA raycast.
 
+#ifndef NOMINMAX // also set project-wide (Voxistics.vcxproj)
 #define NOMINMAX // see render.cpp for why this precedes windows.h (pulled in transitively via d3d11.h here)
+#endif
 #include "world.h"
 #include "shapes.h"
 #include <d3d11.h>

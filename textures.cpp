@@ -9,7 +9,9 @@
 // render.cpp by extern "C" declaration rather than a header, keeping
 // GDI+ out of every other file.
 
+#ifndef NOMINMAX // also set project-wide (Voxistics.vcxproj)
 #define NOMINMAX // see main.cpp for why this precedes windows.h
+#endif
 #include <windows.h>
 #include <gdiplus.h>
 #include <cstdint>

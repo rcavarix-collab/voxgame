@@ -1,6 +1,8 @@
 // profiler.cpp -- see profiler.h.
 
+#ifndef NOMINMAX // also set project-wide (Voxistics.vcxproj)
 #define NOMINMAX
+#endif
 #include <windows.h>
 #include "profiler.h"
 #include <cstring>

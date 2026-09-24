@@ -3,7 +3,9 @@
 // Menu/UI state machine, input dispatch, WndProc, and the UI render
 // pass -- see game.h for what crosses into main.cpp's own loop.
 
+#ifndef NOMINMAX // also set project-wide (Voxistics.vcxproj)
 #define NOMINMAX
+#endif
 #include <windows.h>
 #include "game.h"
 #include "world.h"

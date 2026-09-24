@@ -11,7 +11,9 @@
 // set first -- without it, any bare std::min/std::max call anywhere in
 // this project would silently break at the token that happens to be
 // followed by '('.
+#ifndef NOMINMAX // also set project-wide (Voxistics.vcxproj)
 #define NOMINMAX
+#endif
 #include <windows.h>
 #include <d3d11.h>
 #include <cmath>
