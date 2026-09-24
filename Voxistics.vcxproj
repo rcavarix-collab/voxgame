@@ -108,6 +108,8 @@
     <ClCompile Include="vtex.cpp" />
     <ClCompile Include="blocktex.cpp" />
     <ClCompile Include="mesher.cpp" />
+    <ClCompile Include="shapes.cpp" />
+    <ClCompile Include="icons.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="common.h" />
@@ -123,6 +125,8 @@
     <ClInclude Include="vtex.h" />
     <ClInclude Include="blocktex.h" />
     <ClInclude Include="mesher.h" />
+    <ClInclude Include="shapes.h" />
+    <ClInclude Include="icons.h" />
   </ItemGroup>
   <ItemGroup>
     <None Include="DESIGN.md" />

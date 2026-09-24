@@ -13,6 +13,7 @@
 #include "profiler.h"
 #include <cstdio>
 #include <cstring>
+#include <cctype>
 #include <cmath>
 #include <string>
 #include <vector>
@@ -154,12 +155,31 @@ static void PickAndAct(bool breakBlock) {
                            && pz + 1 > p.z - PLAYER_HALFW && pz < p.z + PLAYER_HALFW;
         if (overlapsPlayer) return;
         BlockID toPlace = g_placeableList.ids[g_player.hotbarIndex];
-        // Orientable blocks turn their front toward the player: the
-        // opposite of the dominant horizontal axis they're looking along.
+        // The state byte, by the block's placement rule (blocks.h).
+        BlockFace look = fabsf(f.x) > fabsf(f.z) ? (f.x > 0 ? FACE_POS_X : FACE_NEG_X)
+                                                  : (f.z > 0 ? FACE_POS_Z : FACE_NEG_Z);
+        static const BlockFace opposite[FACE_COUNT] = { FACE_NEG_X, FACE_POS_X, FACE_NEG_Y, FACE_POS_Y, FACE_NEG_Z, FACE_POS_Z };
+        int nx = px - hx, ny = py - hy, nz = pz - hz; // normal of the face clicked
         uint8_t state = 0;
-        if (g_blocks[toPlace].orientable) {
-            if (fabsf(f.x) > fabsf(f.z)) state = f.x > 0 ? FACE_NEG_X : FACE_POS_X;
-            else state = f.z > 0 ? FACE_NEG_Z : FACE_POS_Z;
+        switch (g_blocks[toPlace].place) {
+        case PLACE_FACE_PLAYER: state = opposite[look]; break;  // front toward the player
+        case PLACE_AWAY:        state = look; break;            // ramp rises away from the player
+        case PLACE_CLICKED_AXIS:
+            state = nx > 0 ? FACE_POS_X : nx < 0 ? FACE_NEG_X : ny > 0 ? FACE_POS_Y : ny < 0 ? FACE_NEG_Y : nz > 0 ? FACE_POS_Z : FACE_NEG_Z;
+            break;
+        case PLACE_SLAB_HALF: {
+            // Under a block -> top half; on top of one -> bottom half; on a
+            // side -> whichever half of that face the crosshair was on.
+            bool upper = ny < 0;
+            if (nx != 0 || nz != 0) {
+                float plane = nx > 0 ? hx + 1.0f : nx < 0 ? (float)hx : nz > 0 ? hz + 1.0f : (float)hz;
+                float o = nx != 0 ? ex : ez, d = nx != 0 ? dx : dz;
+                if (fabsf(d) > 1e-6f) upper = (ey + (plane - o) / d * dy) - py > 0.5f;
+            }
+            state = upper ? STATE_UPPER : 0;
+            break;
+        }
+        default: break;
         }
         LiveEdit(g_world, px, py, pz, toPlace, state);
     }
@@ -752,6 +772,13 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         g_mouseY = (int)(short)HIWORD(lParam);
         ApplySliderDrag(g_mouseX); // no-op unless a slider is actively held
         return 0;
+    case WM_MOUSEWHEEL:
+        // Scroll through the hotbar (keys 1-9 reach only the first nine).
+        if (g_menuScreen == MenuScreen::None && g_gameState == GameState::InGame && g_placeableList.count > 0) {
+            int step = GET_WHEEL_DELTA_WPARAM(wParam) > 0 ? -1 : 1;
+            g_player.hotbarIndex = (g_player.hotbarIndex + step + g_placeableList.count) % g_placeableList.count;
+        }
+        return 0;
     case WM_LBUTTONDOWN: {
         g_mouseButtonDown[0] = true;
         int mx = (int)(short)LOWORD(lParam), my = (int)(short)HIWORD(lParam);
@@ -924,6 +951,7 @@ void RenderUIPass() {
 
     if (!menuIsOpen) {
         std::string name = g_blocks[g_placeableList.ids[g_player.hotbarIndex]].name;
+        for (char& ch : name) ch = ch == '_' ? ' ' : (char)toupper((unsigned char)ch); // "stone_slab" -> "STONE SLAB"
         float scale = 0.8f;
         float tw = UITextWidth(name, scale);
         UIDrawText(glyphVerts, name, (SCREEN_W - tw) / 2.0f, hbY0 - 26.0f, scale, 1, 1, 1, 0.9f);

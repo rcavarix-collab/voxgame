@@ -7,6 +7,7 @@
 
 #define NOMINMAX // see render.cpp for why this precedes windows.h (pulled in transitively via d3d11.h here)
 #include "world.h"
+#include "shapes.h"
 #include <d3d11.h>
 #include <cmath>
 #include <cfloat>
@@ -375,13 +376,32 @@ void ProcessColumnEviction(World& w) {
 // extent overlaps (not just a few discrete height samples) -- a
 // complete AABB-vs-voxel-grid overlap rather than sampled points.
 static bool BoxIntersectsSolid(World& w, float cx, float cy, float cz) {
-    int minX = (int)floor(cx - PLAYER_HALFW), maxX = (int)floor(cx + PLAYER_HALFW);
-    int minY = (int)floor(cy),                  maxY = (int)floor(cy + PLAYER_HEIGHT);
-    int minZ = (int)floor(cz - PLAYER_HALFW), maxZ = (int)floor(cz + PLAYER_HALFW);
+    float ax0 = cx - PLAYER_HALFW, ax1 = cx + PLAYER_HALFW;
+    float ay0 = cy,                ay1 = cy + PLAYER_HEIGHT;
+    float az0 = cz - PLAYER_HALFW, az1 = cz + PLAYER_HALFW;
+    int minX = (int)floor(ax0), maxX = (int)floor(ax1);
+    int minY = (int)floor(ay0), maxY = (int)floor(ay1);
+    int minZ = (int)floor(az0), maxZ = (int)floor(az1);
     for (int x = minX; x <= maxX; x++)
         for (int y = minY; y <= maxY; y++)
-            for (int z = minZ; z <= maxZ; z++)
-                if (w.Solid(x, y, z)) return true;
+            for (int z = minZ; z <= maxZ; z++) {
+                BlockID id = w.Get(x, y, z);
+                if (!BlockSolid(id)) continue;
+                if (g_blocks[id].shape == SHAPE_CUBE) return true;
+                // Shaped block: only its own collision boxes count, so a
+                // slab is half height and a tube is only as thick as it
+                // looks. Touching (sharing a surface) isn't overlapping,
+                // which is what lets the player stand on top of one.
+                ShapeBox boxes[MAX_SHAPE_BOXES];
+                int n = ShapeBoxes(g_blocks[id].shape, w.GetState(x, y, z), boxes);
+                const float k = 1.0f / SHAPE_UNITS;
+                for (int i = 0; i < n; i++) {
+                    const ShapeBox& b = boxes[i];
+                    if (ax0 < x + b.x1 * k && ax1 > x + b.x0 * k &&
+                        ay0 < y + b.y1 * k && ay1 > y + b.y0 * k &&
+                        az0 < z + b.z1 * k && az1 > z + b.z0 * k) return true;
+                }
+            }
     return false;
 }
 
@@ -421,9 +441,22 @@ void UpdatePlayerPhysics(World& w, Player& p, float dt, bool fwd, bool back, boo
     float mlen = sqrtf(mx * mx + mz * mz);
     if (mlen > 0.0001f) { mx = mx / mlen * SPEED * dt; mz = mz / mlen * SPEED * dt; }
 
-    // Don't walk off the edge of generated ground either.
-    if (ColumnResidentAt(p.x + mx, p.z) && !BoxIntersectsSolid(w, p.x + mx, p.y, p.z)) p.x += mx;
-    if (ColumnResidentAt(p.x, p.z + mz) && !BoxIntersectsSolid(w, p.x, p.y, p.z + mz)) p.z += mz;
+    // Horizontal moves, one axis at a time. Don't walk off the edge of
+    // generated ground; and when blocked while standing, step up onto
+    // anything up to half a block high (slabs, ramps, pyramid bases) --
+    // but never a full block.
+    const float STEP = 0.5f;
+    auto tryMove = [&](float dx, float dz) {
+        if (dx == 0.0f && dz == 0.0f) return;
+        if (!ColumnResidentAt(p.x + dx, p.z + dz)) return;
+        if (!BoxIntersectsSolid(w, p.x + dx, p.y, p.z + dz)) { p.x += dx; p.z += dz; return; }
+        if (p.onGround && !BoxIntersectsSolid(w, p.x, p.y + STEP, p.z) &&
+            !BoxIntersectsSolid(w, p.x + dx, p.y + STEP, p.z + dz)) {
+            p.x += dx; p.z += dz; p.y += STEP;
+        }
+    };
+    tryMove(mx, 0.0f);
+    tryMove(0.0f, mz);
 
     const float GRAVITY = 20.0f;
     const float JUMP_SPEED = 7.0f;

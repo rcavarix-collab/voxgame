@@ -19,7 +19,36 @@ enum BlockID : uint8_t {
     BLOCK_WOOD,
     BLOCK_CHEST,
     BLOCK_MACHINE,
+    BLOCK_STONE_SLAB,
+    BLOCK_WOOD_RAMP,
+    BLOCK_TUBE,
+    BLOCK_STONE_PYRAMID,
+    BLOCK_STONE_PYRAMID_HALF,
+    BLOCK_STONE_FUNNEL,
+    BLOCK_STONE_FUNNEL_HALF,
     BLOCK_COUNT
+};
+
+// Geometry (shapes.h). Everything but CUBE is baked into the chunk mesh
+// from a canonical definition rotated by the block's state.
+enum BlockShape : uint8_t {
+    SHAPE_CUBE = 0,
+    SHAPE_SLAB,          // half height; STATE_UPPER puts it in the top half
+    SHAPE_RAMP,          // rises toward its facing
+    SHAPE_TUBE,          // quarter-block bar along its facing's axis
+    SHAPE_PYRAMID,
+    SHAPE_PYRAMID_HALF,  // half-height pyramid
+    SHAPE_FUNNEL,        // upside-down pyramid
+    SHAPE_FUNNEL_HALF,   // upside-down half pyramid, in the top half
+};
+
+// How placement sets the state byte.
+enum PlaceRule : uint8_t {
+    PLACE_PLAIN = 0,     // state 0
+    PLACE_FACE_PLAYER,   // front turns toward the player (chest, machine)
+    PLACE_AWAY,          // facing = the way the player looks (a ramp rises away from you)
+    PLACE_CLICKED_AXIS,  // facing = normal of the face clicked (tubes run out from what you click)
+    PLACE_SLAB_HALF,     // upper or lower half, by where on the face you click
 };
 
 // Face order is shared by the mesher, the per-face shading table and a
@@ -34,6 +63,7 @@ enum BlockFace : uint8_t {
 // a machine's on/off, a slab's half -- so they can be claimed without a
 // storage or save-format change.
 static const uint8_t STATE_FACING_MASK = 0x07;
+static const uint8_t STATE_UPPER = 0x08; // slab in the top half
 static inline BlockFace StateFacing(uint8_t state) {
     uint8_t f = state & STATE_FACING_MASK;
     return f < FACE_COUNT ? (BlockFace)f : FACE_POS_Z;
@@ -46,6 +76,8 @@ struct BlockDef {
     bool placeable;       // appears on the hotbar
     bool orientable;      // stores a facing; its `front` texture goes on that side
     bool hasData;         // may carry a per-block data record (contents, machine state)
+    BlockShape shape;
+    PlaceRule place;
     // Texture names (assets/textures/TEXTURE_BRIEF.md). The most specific
     // one set wins: front > side > all for the four sides, top/bottom >
     // all for those faces. nullptr = not set. A texture with no authored
@@ -58,18 +90,32 @@ struct BlockDef {
     const char* texFront;
 };
 
-//                      name          solid  found. place  orient data   all           top     bottom  side    front
+// Columns: name, solid, foundational, placeable, orientable, hasData,
+// shape, place rule, then textures all / top / bottom / side / front.
+#define TEX(all, top, bottom, side, front) all, top, bottom, side, front
 inline const BlockDef g_blocks[BLOCK_COUNT] = {
-    /* air        */ { "air",        false, false, false, false, false, nullptr,      nullptr, nullptr, nullptr, nullptr },
-    /* foundation */ { "foundation", true,  true,  true,  false, false, "foundation", nullptr, nullptr, nullptr, nullptr },
-    /* stone      */ { "stone",      true,  false, true,  false, false, "stone",      nullptr, nullptr, nullptr, nullptr },
-    /* dirt       */ { "dirt",       true,  false, true,  false, false, "dirt",       nullptr, nullptr, nullptr, nullptr },
-    /* wood       */ { "wood",       true,  false, true,  false, false, "wood",       nullptr, nullptr, nullptr, nullptr },
-    /* chest      */ { "chest",      true,  true,  true,  true,  true,  "chest",      nullptr, nullptr, nullptr, "chest_front" },
-    /* machine    */ { "machine",    true,  true,  true,  true,  true,  "machine",    nullptr, nullptr, nullptr, "machine_front" },
+    { "air",                false, false, false, false, false, SHAPE_CUBE,         PLACE_PLAIN,        TEX(nullptr, nullptr, nullptr, nullptr, nullptr) },
+    { "foundation",         true,  true,  true,  false, false, SHAPE_CUBE,         PLACE_PLAIN,        TEX("foundation", nullptr, nullptr, nullptr, nullptr) },
+    { "stone",              true,  false, true,  false, false, SHAPE_CUBE,         PLACE_PLAIN,        TEX("stone", nullptr, nullptr, nullptr, nullptr) },
+    { "dirt",               true,  false, true,  false, false, SHAPE_CUBE,         PLACE_PLAIN,        TEX("dirt", nullptr, nullptr, nullptr, nullptr) },
+    { "wood",               true,  false, true,  false, false, SHAPE_CUBE,         PLACE_PLAIN,        TEX("wood", nullptr, nullptr, nullptr, nullptr) },
+    { "chest",              true,  true,  true,  true,  true,  SHAPE_CUBE,         PLACE_FACE_PLAYER,  TEX("chest", nullptr, nullptr, nullptr, "chest_front") },
+    { "machine",            true,  true,  true,  true,  true,  SHAPE_CUBE,         PLACE_FACE_PLAYER,  TEX("machine", nullptr, nullptr, nullptr, "machine_front") },
+    // Shape test blocks (the Prismative.cpp primitives), foundational for
+    // now so a test build doesn't collapse while it's being looked at.
+    { "stone_slab",         true,  true,  true,  false, false, SHAPE_SLAB,         PLACE_SLAB_HALF,    TEX("stone", nullptr, nullptr, nullptr, nullptr) },
+    { "wood_ramp",          true,  true,  true,  false, false, SHAPE_RAMP,         PLACE_AWAY,         TEX("wood", nullptr, nullptr, nullptr, nullptr) },
+    { "tube",               true,  true,  true,  false, false, SHAPE_TUBE,         PLACE_CLICKED_AXIS, TEX("tube", nullptr, nullptr, nullptr, nullptr) },
+    { "stone_pyramid",      true,  true,  true,  false, false, SHAPE_PYRAMID,      PLACE_PLAIN,        TEX("stone", nullptr, nullptr, nullptr, nullptr) },
+    { "stone_pyramid_half", true,  true,  true,  false, false, SHAPE_PYRAMID_HALF, PLACE_PLAIN,        TEX("stone", nullptr, nullptr, nullptr, nullptr) },
+    { "stone_funnel",       true,  true,  true,  false, false, SHAPE_FUNNEL,       PLACE_PLAIN,        TEX("stone", nullptr, nullptr, nullptr, nullptr) },
+    { "stone_funnel_half",  true,  true,  true,  false, false, SHAPE_FUNNEL_HALF,  PLACE_PLAIN,        TEX("stone", nullptr, nullptr, nullptr, nullptr) },
 };
+#undef TEX
 
 static inline bool BlockSolid(BlockID id) { return g_blocks[id].solid; }
+// Solid and a full cube: hides the faces beside it and darkens AO.
+static inline bool BlockFullCube(BlockID id) { return g_blocks[id].solid && g_blocks[id].shape == SHAPE_CUBE; }
 
 // The placeable blocks in registry order: the hotbar's contents.
 struct PlaceableList {

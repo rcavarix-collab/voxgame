@@ -1,6 +1,7 @@
 // mesher.cpp -- see mesher.h.
 
 #include "mesher.h"
+#include "shapes.h"
 #include <cstring>
 
 uint16_t g_blockFaceLayer[BLOCK_COUNT][FACE_COUNT][FACE_COUNT];
@@ -37,8 +38,9 @@ void BuildChunkMesh(World& w, const ChunkCoord& cc, const Chunk& c,
     verts.clear();
     indices.clear();
 
-    // Solidity of the chunk plus a one-cell shell of its 26 neighbours
-    // (absent neighbours read as air). Built once; every culling and AO
+    // Which cells are full cubes -- the chunk plus a one-cell shell of its
+    // 26 neighbours (absent neighbours read as air). Only a full cube
+    // hides a face or darkens AO; shaped blocks let light and sight past. Built once; every culling and AO
     // test below is then a plain array read.
     static thread_local uint8_t solid[P * P * P];
     const Chunk* around[3][3][3];
@@ -53,7 +55,7 @@ void BuildChunkMesh(World& w, const ChunkCoord& cc, const Chunk& c,
             for (int px = 0; px < P; px++) {
                 int lx = px - 1, ox = lx < 0 ? 0 : (lx >= CHUNK_SIZE ? 2 : 1), sx = lx - (ox - 1) * CHUNK_SIZE;
                 const Chunk* n = around[oy][oz][ox];
-                solid[PIndex(px, py, pz)] = n ? (uint8_t)BlockSolid((BlockID)n->blocks[Chunk::LocalIndex(sx, sy, sz)]) : 0;
+                solid[PIndex(px, py, pz)] = n ? (uint8_t)BlockFullCube((BlockID)n->blocks[Chunk::LocalIndex(sx, sy, sz)]) : 0;
             }
         }
     }
@@ -63,9 +65,39 @@ void BuildChunkMesh(World& w, const ChunkCoord& cc, const Chunk& c,
             for (int lx = 0; lx < CHUNK_SIZE; lx++) {
                 int li = Chunk::LocalIndex(lx, ly, lz);
                 BlockID id = (BlockID)c.blocks[li];
-                if (!BlockSolid(id)) continue;
+                if (id == BLOCK_AIR) continue;
                 BlockFace facing = StateFacing(c.state[li]);
                 int px = lx + 1, py = ly + 1, pz = lz + 1;
+
+                if (g_blocks[id].shape != SHAPE_CUBE) {
+                    // Shaped block: its oriented polygons, with any lying
+                    // flat on the cell boundary hidden by a full neighbour.
+                    // No AO on shapes (their faces rarely meet the grid).
+                    ShapePoly polys[MAX_SHAPE_POLYS];
+                    int np = ShapePolys(g_blocks[id].shape, c.state[li], polys);
+                    for (int i = 0; i < np; i++) {
+                        const ShapePoly& sp = polys[i];
+                        if (sp.boundary >= 0) {
+                            const FaceDef& bd = kFaces[sp.boundary];
+                            if (solid[PIndex(px + bd.nx, py + bd.ny, pz + bd.nz)]) continue;
+                        }
+                        uint16_t layer = g_blockFaceLayer[id][facing][sp.texFace];
+                        uint16_t base = (uint16_t)verts.size();
+                        for (int k = 0; k < sp.count; k++) {
+                            Vertex v;
+                            v.x = (uint8_t)(lx * SHAPE_UNITS + sp.v[k].x);
+                            v.y = (uint8_t)(ly * SHAPE_UNITS + sp.v[k].y);
+                            v.z = (uint8_t)(lz * SHAPE_UNITS + sp.v[k].z);
+                            v.aoFace = (uint8_t)(3 | (sp.shade << 2));
+                            v.layer = layer;
+                            v.u = sp.v[k].u; v.v = sp.v[k].v;
+                            verts.push_back(v);
+                        }
+                        const uint16_t tri[6] = { 0, 1, 2, 0, 2, 3 };
+                        for (int k = 0; k < (sp.count == 4 ? 6 : 3); k++) indices.push_back((uint16_t)(base + tri[k]));
+                    }
+                    continue;
+                }
 
                 for (int f = 0; f < FACE_COUNT; f++) {
                     const FaceDef& fd = kFaces[f];
@@ -101,9 +133,12 @@ void BuildChunkMesh(World& w, const ChunkCoord& cc, const Chunk& c,
                     for (int k = 0; k < 4; k++) {
                         const int* cr = fd.corners[k];
                         Vertex v;
-                        v.x = (uint8_t)(lx + cr[0]); v.y = (uint8_t)(ly + cr[1]); v.z = (uint8_t)(lz + cr[2]); v.pad = 0;
+                        v.x = (uint8_t)((lx + cr[0]) * SHAPE_UNITS);
+                        v.y = (uint8_t)((ly + cr[1]) * SHAPE_UNITS);
+                        v.z = (uint8_t)((lz + cr[2]) * SHAPE_UNITS);
+                        v.aoFace = (uint8_t)(ao[k] | (f << 2));
                         v.layer = layer;
-                        v.bits = (uint16_t)(kCornerU[k] | (kCornerV[k] << 5) | (ao[k] << 10) | (f << 12));
+                        v.u = (uint8_t)(kCornerU[k] * SHAPE_UNITS); v.v = (uint8_t)(kCornerV[k] * SHAPE_UNITS);
                         verts.push_back(v);
                     }
                     // Split the quad along its brighter diagonal: splitting

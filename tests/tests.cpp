@@ -11,6 +11,8 @@
 #include "../vtex.h"
 #include "../blocktex.h"
 #include "../mesher.h"
+#include "../shapes.h"
+#include "../icons.h"
 #include <cstdio>
 #include <cstring>
 #include <cmath>
@@ -95,7 +97,7 @@ static void TestBlockTextures() {
     BlockTextureSet t;
     BuildBlockTextures(none, t);
     CHECK(t.warnings.empty());
-    CHECK(t.layerCount == 8); // foundation stone dirt wood chest chest_front machine machine_front
+    CHECK(t.layerCount == 9); // foundation stone dirt wood chest chest_front machine machine_front tube
     CHECK(t.mipCount == 7);
     CHECK(t.faceLayer[BLOCK_CHEST][FACE_POS_Z][FACE_POS_Z] != t.faceLayer[BLOCK_CHEST][FACE_POS_Z][FACE_POS_X]); // front vs side
     CHECK(t.faceLayer[BLOCK_CHEST][FACE_NEG_X][FACE_NEG_X] == t.faceLayer[BLOCK_CHEST][FACE_POS_Z][FACE_POS_Z]); // front follows facing
@@ -271,7 +273,7 @@ static void TestMesher() {
     CHECK(v.size() == (6 + 6 + 6 - 2) * 4); // one touching pair hides 2 faces
     // The (5,5,5) +Z face: its two bottom corners sit over the block at (5,4,6).
     int darkened = 0;
-    for (auto& x : v) if (VertexFace(x) == FACE_POS_Z && x.z == 6 && x.y == 5 && x.x <= 6 && VertexAO(x) < 3) darkened++;
+    for (auto& x : v) if (VertexFace(x) == FACE_POS_Z && x.z == 6 * 8 && x.y == 5 * 8 && x.x <= 6 * 8 && VertexAO(x) < 3) darkened++;
     CHECK(darkened >= 2);
 
     // Across a chunk boundary: a block at x=15 next to one at x=16 in the
@@ -294,6 +296,94 @@ static void TestMesher() {
     CHECK(v.size() == 2048u * 24u && v.size() <= 65536u);
 }
 
+static void TestShapes() {
+    printf("shapes\n");
+    ShapePoly polys[MAX_SHAPE_POLYS];
+    ShapeBox boxes[MAX_SHAPE_BOXES];
+
+    // Slab: lower half by default, upper with STATE_UPPER; its top face is
+    // interior (never culled), its bottom lies on the boundary.
+    CHECK(ShapeBoxes(SHAPE_SLAB, 0, boxes) == 1 && boxes[0].y0 == 0 && boxes[0].y1 == 4);
+    CHECK(ShapeBoxes(SHAPE_SLAB, STATE_UPPER, boxes) == 1 && boxes[0].y0 == 4 && boxes[0].y1 == 8);
+    int n = ShapePolys(SHAPE_SLAB, 0, polys);
+    CHECK(n == 6);
+    for (int i = 0; i < n; i++) {
+        if (polys[i].texFace == FACE_POS_Y) CHECK(polys[i].boundary == -1);
+        if (polys[i].texFace == FACE_NEG_Y) CHECK(polys[i].boundary == FACE_NEG_Y);
+        if (polys[i].texFace == FACE_POS_X) CHECK(polys[i].v[0].v >= 4); // side shows the texture's lower half
+    }
+
+    // Ramp: rises toward its facing -- the full-height wall sits on that side.
+    for (BlockFace f : { FACE_POS_X, FACE_NEG_X, FACE_POS_Z, FACE_NEG_Z }) {
+        n = ShapePolys(SHAPE_RAMP, f, polys);
+        CHECK(n == 5);
+        bool wall = false;
+        for (int i = 0; i < n; i++) if (polys[i].boundary == f && polys[i].count == 4 && polys[i].texFace == f) wall = true;
+        CHECK(wall);
+        int nb = ShapeBoxes(SHAPE_RAMP, f, boxes);
+        CHECK(nb == 2);
+        // The upper step is on the facing side.
+        const ShapeBox& up = boxes[1];
+        if (f == FACE_POS_X) CHECK(up.x0 == 4 && up.x1 == 8);
+        if (f == FACE_NEG_X) CHECK(up.x0 == 0 && up.x1 == 4);
+        if (f == FACE_POS_Z) CHECK(up.z0 == 4 && up.z1 == 8);
+        if (f == FACE_NEG_Z) CHECK(up.z0 == 0 && up.z1 == 4);
+    }
+
+    // Tube: runs along its facing's axis.
+    ShapeBoxes(SHAPE_TUBE, FACE_POS_Y, boxes); CHECK(boxes[0].y0 == 0 && boxes[0].y1 == 8 && boxes[0].x1 - boxes[0].x0 == 2);
+    ShapeBoxes(SHAPE_TUBE, FACE_NEG_X, boxes); CHECK(boxes[0].x0 == 0 && boxes[0].x1 == 8 && boxes[0].y1 - boxes[0].y0 == 2);
+
+    // Meshing: a slab on the ground hides the ground's top? No -- only full
+    // cubes hide faces. But the ground hides the slab's bottom.
+    VtexSet none; BlockTextureSet t; BuildBlockTextures(none, t);
+    memcpy(g_blockFaceLayer, t.faceLayer, sizeof(g_blockFaceLayer));
+    World w; ResetWorldState(w);
+    w.Set(4, 4, 4, BLOCK_STONE);
+    w.Set(4, 5, 4, BLOCK_STONE_SLAB);
+    std::vector<Vertex> v; std::vector<uint16_t> idx;
+    BuildChunkMesh(w, { 0, 0, 0 }, *w.FindChunk({ 0, 0, 0 }), v, idx);
+    CHECK(v.size() == (6 + 5) * 4); // cube keeps its top (slab isn't full); slab loses its bottom
+    int slabTop = 0;
+    for (auto& x : v) if (VertexFace(x) == FACE_POS_Y && x.y == 5 * 8 + 4) slabTop++;
+    CHECK(slabTop == 4); // at y = 5.5
+    // A pyramid is 1 quad + 4 triangles.
+    World w2; w2.Set(1, 1, 1, BLOCK_STONE_PYRAMID);
+    BuildChunkMesh(w2, { 0, 0, 0 }, *w2.FindChunk({ 0, 0, 0 }), v, idx);
+    CHECK(v.size() == 4 + 4 * 3 && idx.size() == 6 + 4 * 3);
+
+    // Collision: stand on a slab at half height; step up onto it from the
+    // ground; a full block can't be stepped onto.
+    World g; ResetWorldState(g);
+    g_loadRadius = 1; g_worldGen = WorldGenParams(); g_worldGen.type = GEN_FLAT;
+    Stream(g, 8, 8, 20);
+    g.Set(10, 13, 8, BLOCK_STONE_SLAB);
+    g.Set(8, 13, 11, BLOCK_STONE);
+    Player p; p.x = 8.5f; p.z = 8.5f; p.y = 13.0f; p.yaw = 1.5707963f; // facing +X
+    for (int i = 0; i < 10; i++) UpdatePlayerPhysics(g, p, 1.0f / 60.0f, false, false, false, false, false);
+    CHECK(p.onGround && fabsf(p.y - 13.0f) < 1e-3f);
+    for (int i = 0; i < 30; i++) UpdatePlayerPhysics(g, p, 1.0f / 60.0f, true, false, false, false, false);
+    CHECK(p.x > 10.3f && p.x < 11.0f && fabsf(p.y - 13.5f) < 1e-3f); // walked up onto the slab (and is standing on it)
+    Player q; q.x = 8.5f; q.z = 8.5f; q.y = 13.0f; q.yaw = 0.0f; // facing +Z, toward the cube
+    for (int i = 0; i < 10; i++) UpdatePlayerPhysics(g, q, 1.0f / 60.0f, false, false, false, false, false);
+    for (int i = 0; i < 90; i++) UpdatePlayerPhysics(g, q, 1.0f / 60.0f, true, false, false, false, false);
+    CHECK(q.z < 11.0f - PLAYER_HALFW + 1e-3f && fabsf(q.y - 13.0f) < 1e-3f); // stopped at the full block
+}
+
+static void TestIcons() {
+    printf("icons\n");
+    VtexSet none; BlockTextureSet t; BuildBlockTextures(none, t);
+    memcpy(g_blockFaceLayer, t.faceLayer, sizeof(g_blockFaceLayer));
+    RenderBlockIcons(t);
+    for (int id = 1; id < BLOCK_COUNT; id++) {
+        auto alpha = [&](int x, int y) { return t.icons[((size_t)y * t.iconsW + (size_t)id * BLOCK_TEX_SIZE + x) * 4 + 3]; };
+        CHECK(alpha(0, 0) == 0 && alpha(BLOCK_TEX_SIZE - 1, 0) == 0); // transparent corners
+        int opaque = 0;
+        for (int y = 0; y < BLOCK_TEX_SIZE; y++) for (int x = 0; x < BLOCK_TEX_SIZE; x++) if (alpha(x, y) == 255) opaque++;
+        CHECK(opaque > 40); // something drawn (the thin tube is the smallest)
+    }
+}
+
 int main() {
     TestVtex();
     TestBlockTextures();
@@ -302,6 +392,8 @@ int main() {
     TestStreaming();
     TestPlayer();
     TestMesher();
+    TestShapes();
+    TestIcons();
     printf("\n%d checks, %d failed\n", g_checks, g_failures);
     return g_failures ? 1 : 0;
 }

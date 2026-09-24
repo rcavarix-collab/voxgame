@@ -5,6 +5,7 @@
 #include "render.h"
 #include "profiler.h"
 #include "blocktex.h"
+#include "icons.h"
 #include "vtex.h"
 #include <filesystem>
 #include <fstream>
@@ -73,19 +74,19 @@ UINT g_skyIndexCount = 0;
 static const char* g_shaderSrc =
     "cbuffer CB : register(b0) { row_major matrix mvp; };\n"
     "cbuffer ChunkCB : register(b1) { float4 chunkOrigin; };\n"
-    "struct VSIn { uint4 pos:POSITION; uint2 attr:TEXCOORD0; };\n"
+    "struct VSIn { uint4 pos:POSITION; uint layer:TEXCOORD0; uint2 uv:TEXCOORD1; };\n"
     "struct PSIn { float4 pos:SV_POSITION; float3 uvl:TEXCOORD0; float light:TEXCOORD1; };\n"
     // +X -X +Y -Y +Z -Z: top brightest, bottom darkest, X and Z sides
     // distinct so edges between two side faces still read.
-    "static const float faceShade[6] = { 0.80f, 0.80f, 1.00f, 0.55f, 0.68f, 0.68f };\n"
+    // then slopes facing up (ramps, pyramids) and down (funnels).
+    "static const float faceShade[8] = { 0.80f, 0.80f, 1.00f, 0.55f, 0.68f, 0.68f, 0.90f, 0.62f };\n"
     "static const float aoCurve[4] = { 0.50f, 0.66f, 0.83f, 1.00f };\n"
     "PSIn VSMain(VSIn i) {\n"
     "    PSIn o;\n"
-    "    float3 p = float3(i.pos.xyz) + chunkOrigin.xyz;\n"
+    "    float3 p = float3(i.pos.xyz) * 0.125f + chunkOrigin.xyz;\n"   // 1/8-block fixed point
     "    o.pos = mul(float4(p, 1.0f), mvp);\n"
-    "    uint b = i.attr.y;\n"
-    "    o.uvl = float3((float)(b & 31u), (float)((b >> 5) & 31u), (float)i.attr.x);\n"
-    "    o.light = faceShade[(b >> 12) & 7u] * aoCurve[(b >> 10) & 3u];\n"
+    "    o.uvl = float3(float2(i.uv) * 0.125f, (float)i.layer);\n"
+    "    o.light = faceShade[(i.pos.w >> 2) & 7u] * aoCurve[i.pos.w & 3u];\n"
     "    return o;\n"
     "}\n"
     "Texture2DArray tex0 : register(t0);\n"
@@ -410,10 +411,11 @@ bool InitD3D(HWND hwnd) {
     g_device->CreatePixelShader(psBlob->GetBufferPointer(), psBlob->GetBufferSize(), nullptr, &g_ps);
 
     D3D11_INPUT_ELEMENT_DESC layoutDesc[] = { // mesher.h's packed Vertex
-        { "POSITION", 0, DXGI_FORMAT_R8G8B8A8_UINT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0 },
-        { "TEXCOORD", 0, DXGI_FORMAT_R16G16_UINT, 0, 4, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+        { "POSITION", 0, DXGI_FORMAT_R8G8B8A8_UINT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0 }, // x, y, z, aoFace
+        { "TEXCOORD", 0, DXGI_FORMAT_R16_UINT, 0, 4, D3D11_INPUT_PER_VERTEX_DATA, 0 },      // layer
+        { "TEXCOORD", 1, DXGI_FORMAT_R8G8_UINT, 0, 6, D3D11_INPUT_PER_VERTEX_DATA, 0 },     // u, v
     };
-    g_device->CreateInputLayout(layoutDesc, 2, vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(), &g_layout);
+    g_device->CreateInputLayout(layoutDesc, 3, vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(), &g_layout);
     vsBlob->Release();
     psBlob->Release();
 
@@ -618,6 +620,7 @@ bool InitTextures(std::string& problemSummary) {
         problemSummary = std::to_string(problems.size()) + " TEXTURE PROBLEM" + (problems.size() == 1 ? "" : "S") +
                          " - SEE ASSETS\\TEXTURES\\_ERRORS.TXT";
     memcpy(g_blockFaceLayer, set.faceLayer, sizeof(g_blockFaceLayer));
+    RenderBlockIcons(set); // hotbar icons from the real meshes (needs the face layers above)
 
     // Block faces: one Texture2DArray, a layer per distinct face texture,
     // full mip chain uploaded from the CPU-built mips.

@@ -143,6 +143,16 @@ static void DrawMachineFrontTile(TileCanvas& t) {
 }
 
 
+// Brushed metal with a lit band and a shadow band across the middle rows
+// (the slice a tube's narrow faces show) and darker coupling rings.
+void DrawTubeTile(TileCanvas& t) {
+    int s = t.size;
+    t.Fill(0, 0, s, s, { 140, 145, 155 });
+    t.Fill(0, s * 7 / 16, s, s / 16, { 185, 190, 200 });
+    t.Fill(0, s * 9 / 16, s, s / 16, { 95, 100, 110 });
+    for (int x = 0; x < s; x += s / 2) t.Fill(x, 0, s / 16, s, { 105, 110, 120 });
+}
+
 using DrawFn = void (*)(TileCanvas&);
 struct Procedural { const char* name; DrawFn draw; };
 // Drawn in this fixed order after srand(1234), so the random speckle is
@@ -156,6 +166,7 @@ const Procedural kProcedural[] = {
     { "chest_front", DrawChestFrontTile },
     { "machine", DrawMachineTile },
     { "machine_front", DrawMachineFrontTile },
+    { "tube", DrawTubeTile },
 };
 
 const size_t LAYER_BYTES = (size_t)BLOCK_TEX_SIZE * BLOCK_TEX_SIZE * 4;

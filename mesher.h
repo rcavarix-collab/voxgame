@@ -11,23 +11,23 @@
 #include <cstdint>
 #include <vector>
 
-// Chunk mesh vertex, 8 bytes. Position is chunk-local (0..16 on each
-// axis); the chunk's world origin comes from a per-draw constant.
-// `bits`: u (5) | v (5) << 5 | ambient occlusion 0-3 (2) << 10 |
-// face (3) << 12. u/v go up to 16 so merged (greedy) quads can tile a
-// texture across several blocks without a format change. AO 3 = open,
-// 0 = fully occluded corner.
+// Chunk mesh vertex, 8 bytes. Positions and texture coordinates are in
+// 1/8-block fixed point (shapes.h), chunk-local: 0..128 per axis, the
+// chunk's world origin coming from a per-draw constant. u/v reach 255
+// (~32 blocks), so merged (greedy) quads can later tile a texture
+// across several blocks with no format change. `aoFace`: ambient
+// occlusion 0-3 (3 = open) in bits 0-1, shade class (BlockFace, or a
+// shapes.h slope class) in bits 2-4.
 struct Vertex {
-    uint8_t x, y, z, pad;
+    uint8_t x, y, z;
+    uint8_t aoFace;
     uint16_t layer;
-    uint16_t bits;
+    uint8_t u, v;
 };
 static_assert(sizeof(Vertex) == 8, "chunk vertex must stay 8 bytes");
 
-static inline int VertexU(const Vertex& v) { return v.bits & 31; }
-static inline int VertexV(const Vertex& v) { return (v.bits >> 5) & 31; }
-static inline int VertexAO(const Vertex& v) { return (v.bits >> 10) & 3; }
-static inline int VertexFace(const Vertex& v) { return (v.bits >> 12) & 7; }
+static inline int VertexAO(const Vertex& v) { return v.aoFace & 3; }
+static inline int VertexFace(const Vertex& v) { return (v.aoFace >> 2) & 7; }
 
 // Texture-array layer per [block][facing][face]; filled once at load
 // (InitTextures, from blocktex.h). The mesher's only texture lookup.
