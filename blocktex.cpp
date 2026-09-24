@@ -309,18 +309,37 @@ void DrawMissing(uint8_t* px) {
 // normals by central differences that wrap round the edges (the tile
 // repeats, so its slopes do too), plus shine and glow.
 void BuildSurface(const VtexTexture& t, uint8_t* sf) {
-    const int N = BLOCK_TEX_SIZE, k = N / t.size;
+    const int N = BLOCK_TEX_SIZE, k = N / t.size, S = t.size;
     auto at = [&](const std::vector<float>& m, int x, int y) {
         x = ((x % N) + N) % N; y = ((y % N) + N) % N;
         return m[(size_t)(y / k) * t.size + (x / k)];
     };
+    // Heights come in 36 steps, so a gentle slope drawn at 32 or 64 pixels
+    // would light up as contour-line terraces. Soften those heights a
+    // little (two wrapping [1 2 1] passes each way) before taking slopes;
+    // chunky 8/16-pixel art keeps its crisp pixel bevels.
+    std::vector<float> smooth;
+    const std::vector<float>* height = &t.height;
+    if (!t.height.empty() && S >= 32) {
+        smooth = t.height;
+        std::vector<float> tmp(smooth.size());
+        for (int pass = 0; pass < 2; pass++) {
+            for (int y = 0; y < S; y++)
+                for (int x = 0; x < S; x++)
+                    tmp[(size_t)y * S + x] = 0.25f * smooth[(size_t)y * S + (x + S - 1) % S] + 0.5f * smooth[(size_t)y * S + x] + 0.25f * smooth[(size_t)y * S + (x + 1) % S];
+            for (int y = 0; y < S; y++)
+                for (int x = 0; x < S; x++)
+                    smooth[(size_t)y * S + x] = 0.25f * tmp[(size_t)((y + S - 1) % S) * S + x] + 0.5f * tmp[(size_t)y * S + x] + 0.25f * tmp[(size_t)((y + 1) % S) * S + x];
+        }
+        height = &smooth;
+    }
     const float slope = SURFACE_DEPTH * N * 0.5f; // height units per texel -> tangent-space slope, over a 2-texel difference
     for (int y = 0; y < N; y++)
         for (int x = 0; x < N; x++) {
             uint8_t* o = sf + ((size_t)y * N + x) * 4;
             if (!t.height.empty()) {
-                float dx = (at(t.height, x + 1, y) - at(t.height, x - 1, y)) * slope;
-                float dy = (at(t.height, x, y + 1) - at(t.height, x, y - 1)) * slope;
+                float dx = (at(*height, x + 1, y) - at(*height, x - 1, y)) * slope;
+                float dy = (at(*height, x, y + 1) - at(*height, x, y - 1)) * slope;
                 float len = sqrtf(dx * dx + dy * dy + 1.0f);
                 o[0] = (uint8_t)std::lround((-dx / len * 0.5f + 0.5f) * 255.0f);
                 o[1] = (uint8_t)std::lround((-dy / len * 0.5f + 0.5f) * 255.0f);

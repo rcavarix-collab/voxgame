@@ -40,6 +40,28 @@ enum BlockID : uint8_t {
     BLOCK_MAGMA_ROCK,
     BLOCK_LOG,
     BLOCK_MOSS,
+    BLOCK_MOSS_STONE,
+    BLOCK_MEADOW_GRASS,
+    BLOCK_SHALLOW_WATER,
+    BLOCK_GLACIER_ICE,
+    BLOCK_VOLCANIC_ASH,
+    BLOCK_CORAL_REEF,
+    BLOCK_JUNGLE_CANOPY,
+    BLOCK_AUTUMN_LEAF_LITTER,
+    BLOCK_PEAT_BOG,
+    BLOCK_SALT_FLAT,
+    BLOCK_RIVER_PEBBLE,
+    BLOCK_COASTAL_SAND,
+    BLOCK_VEINED_FLESH,
+    BLOCK_FLESH_WOUND,
+    BLOCK_PULSING_MEMBRANE,
+    BLOCK_WEEPING_SORE,
+    BLOCK_CORRUPTED_FLESH,
+    BLOCK_GENESIS_SOIL,
+    BLOCK_SEEDLING_SPROUT,
+    BLOCK_DAWN_LIGHT,
+    BLOCK_STAR_FORGE,
+    BLOCK_NEW_LOG,
     BLOCK_COUNT
 };
 
@@ -64,7 +86,10 @@ enum BlockGlow : uint8_t {
     GLOW_MUSIC,       // pulses with the music actually playing
     GLOW_TIMESTREAM,  // lights while The Line passes through it (Part XVIII)
     GLOW_EMBER,       // a steady warm light source (magma); what glows on it is the texture's glow map (4.13)
+    GLOW_PULSE,       // its texture's glow map breathes slowly (well under 1 Hz: flash-safe); casts no light
 };
+// Whether a glow kind lights the world around it (glowlight.h).
+static inline bool GlowCastsLight(BlockGlow g) { return g == GLOW_MUSIC || g == GLOW_TIMESTREAM || g == GLOW_EMBER; }
 
 // How placement sets the state byte.
 enum PlaceRule : uint8_t {
@@ -157,6 +182,31 @@ inline const BlockDef g_blocks[BLOCK_COUNT] = {
     { "magma_rock",         true,  false, true,  false, false, SHAPE_CUBE,         PLACE_PLAIN, GLOW_EMBER, false,       TEX("magma_rock", nullptr, nullptr, nullptr, nullptr) },
     { "log",                true,  false, true,  false, false, SHAPE_CUBE,         PLACE_PLAIN, GLOW_NONE, false,        TEX(nullptr, "log_top", "log_top", "log_bark", nullptr) },
     { "moss",               true,  false, true,  false, false, SHAPE_CUBE,         PLACE_PLAIN, GLOW_NONE, false,        TEX("moss", nullptr, nullptr, nullptr, nullptr) },
+    // More natural materials (the second art batch), then the dark set and
+    // its light counterpart, the genesis set. Water and ice are provisional
+    // solid see-through blocks until fluids exist.
+    { "moss_stone",        true,  false, true,  false, false, SHAPE_CUBE,         PLACE_PLAIN, GLOW_NONE,      false,       TEX("moss_stone", nullptr, nullptr, nullptr, nullptr) },
+    { "meadow_grass",      true,  false, true,  false, false, SHAPE_CUBE,         PLACE_PLAIN, GLOW_NONE,      false,       TEX("meadow_grass", nullptr, nullptr, nullptr, nullptr) },
+    { "shallow_water",     true,  false, true,  false, false, SHAPE_CUBE,         PLACE_PLAIN, GLOW_NONE,      true ,       TEX("shallow_water", nullptr, nullptr, nullptr, nullptr) },
+    { "glacier_ice",       true,  false, true,  false, false, SHAPE_CUBE,         PLACE_PLAIN, GLOW_NONE,      true ,       TEX("glacier_ice", nullptr, nullptr, nullptr, nullptr) },
+    { "volcanic_ash",      true,  false, true,  false, false, SHAPE_CUBE,         PLACE_PLAIN, GLOW_NONE,      false,       TEX("volcanic_ash", nullptr, nullptr, nullptr, nullptr) },
+    { "coral_reef",        true,  false, true,  false, false, SHAPE_CUBE,         PLACE_PLAIN, GLOW_NONE,      false,       TEX("coral_reef", nullptr, nullptr, nullptr, nullptr) },
+    { "jungle_canopy",     true,  false, true,  false, false, SHAPE_CUBE,         PLACE_PLAIN, GLOW_NONE,      false,       TEX("jungle_canopy", nullptr, nullptr, nullptr, nullptr) },
+    { "autumn_leaf_litter", true,  false, true,  false, false, SHAPE_CUBE,         PLACE_PLAIN, GLOW_NONE,      false,       TEX("autumn_leaf_litter", nullptr, nullptr, nullptr, nullptr) },
+    { "peat_bog",          true,  false, true,  false, false, SHAPE_CUBE,         PLACE_PLAIN, GLOW_NONE,      false,       TEX("peat_bog", nullptr, nullptr, nullptr, nullptr) },
+    { "salt_flat",         true,  false, true,  false, false, SHAPE_CUBE,         PLACE_PLAIN, GLOW_NONE,      false,       TEX("salt_flat", nullptr, nullptr, nullptr, nullptr) },
+    { "river_pebble",      true,  false, true,  false, false, SHAPE_CUBE,         PLACE_PLAIN, GLOW_NONE,      false,       TEX("river_pebble", nullptr, nullptr, nullptr, nullptr) },
+    { "coastal_sand",      true,  false, true,  false, false, SHAPE_CUBE,         PLACE_PLAIN, GLOW_NONE,      false,       TEX("coastal_sand", nullptr, nullptr, nullptr, nullptr) },
+    { "veined_flesh",      true,  false, true,  false, false, SHAPE_CUBE,         PLACE_PLAIN, GLOW_NONE,      false,       TEX("veined_flesh", nullptr, nullptr, nullptr, nullptr) },
+    { "flesh_wound",       true,  false, true,  false, false, SHAPE_CUBE,         PLACE_PLAIN, GLOW_NONE,      false,       TEX("flesh_wound", nullptr, nullptr, nullptr, nullptr) },
+    { "pulsing_membrane",  true,  false, true,  false, false, SHAPE_CUBE,         PLACE_PLAIN, GLOW_PULSE,     false,       TEX("pulsing_membrane", nullptr, nullptr, nullptr, nullptr) },
+    { "weeping_sore",      true,  false, true,  false, false, SHAPE_CUBE,         PLACE_PLAIN, GLOW_NONE,      false,       TEX("weeping_sore", nullptr, nullptr, nullptr, nullptr) },
+    { "corrupted_flesh",   true,  false, true,  false, false, SHAPE_CUBE,         PLACE_PLAIN, GLOW_NONE,      false,       TEX("corrupted_flesh", nullptr, nullptr, nullptr, nullptr) },
+    { "genesis_soil",      true,  false, true,  false, false, SHAPE_CUBE,         PLACE_PLAIN, GLOW_NONE,      false,       TEX("genesis_soil", nullptr, nullptr, nullptr, nullptr) },
+    { "seedling_sprout",   true,  false, true,  false, false, SHAPE_CUBE,         PLACE_PLAIN, GLOW_NONE,      false,       TEX("seedling_sprout", nullptr, nullptr, nullptr, nullptr) },
+    { "dawn_light",        true,  false, true,  false, false, SHAPE_CUBE,         PLACE_PLAIN, GLOW_NONE,      false,       TEX("dawn_light", nullptr, nullptr, nullptr, nullptr) },
+    { "star_forge",        true,  false, true,  false, false, SHAPE_CUBE,         PLACE_PLAIN, GLOW_EMBER,     false,       TEX("star_forge", nullptr, nullptr, nullptr, nullptr) },
+    { "new_log",           true,  false, true,  false, false, SHAPE_CUBE,         PLACE_PLAIN, GLOW_NONE,      false,       TEX(nullptr, "log_top", "log_top", "new_bark", nullptr) },
 };
 #undef TEX
 

@@ -143,7 +143,7 @@ static void TestBlockTextures() {
     BlockTextureSet t;
     BuildBlockTextures(none, t);
     CHECK(t.warnings.empty());
-    CHECK(t.layerCount == 25); // 14 procedural (foundation .. crystal) + 11 natural-material names, magenta without their art
+    CHECK(t.layerCount == 14 + 33); // 14 procedural (foundation .. crystal) + 33 more names only the generated art provides (magenta without it)
 
     // The natural materials' art in the repo loads cleanly and covers
     // every natural block (no magenta fallback), with seamless wrap.
@@ -155,11 +155,12 @@ static void TestBlockTextures() {
             while ((got = fread(buf, 1, sizeof buf, fp)) > 0) text.append(buf, got);
             fclose(fp);
             VtexSet nat; ParseVtex(text, "natural.vtex", nat);
-            CHECK(nat.errors.empty() && nat.textures.size() == 11 && nat.blocks.size() == 9);
+            CHECK(nat.errors.empty() && nat.textures.size() == 36 && nat.blocks.size() == 34);
+            for (auto& tx : nat.textures) CHECK(tx.size == 64 && !tx.height.empty()); // one density for everything, all with relief
             BlockTextureSet nt; BuildBlockTextures(nat, nt);
             CHECK(nt.warnings.empty());
             for (auto& w : nt.warnings) printf("    %s\n", w.c_str());
-            for (BlockID id : { BLOCK_SNOW, BLOCK_SAND, BLOCK_SANDSTONE, BLOCK_CRACKED_EARTH, BLOCK_CLAY, BLOCK_BASALT, BLOCK_MAGMA_ROCK, BLOCK_LOG, BLOCK_MOSS })
+            for (int id = BLOCK_SNOW; id < BLOCK_COUNT; id++)
                 for (int f = 0; f < FACE_COUNT; f++) {
                     const std::string& name = nt.layerNames[nt.faceLayer[id][FACE_POS_Z][f]];
                     bool art = false; for (auto& tx : nat.textures) if (tx.name == name) art = true;
@@ -170,17 +171,19 @@ static void TestBlockTextures() {
             for (auto& tx : nat.textures) {
                 if (tx.name == "log_top") continue;
                 auto d = [&](uint32_t a, uint32_t b) { return abs((int)(a >> 16 & 255) - (int)(b >> 16 & 255)) + abs((int)(a >> 8 & 255) - (int)(b >> 8 & 255)) + abs((int)(a & 255) - (int)(b & 255)); };
-                double maxIn = 0, wrap = 0;
-                for (int b = 1; b < 16; b++) {
+                const int N = tx.size;
+                double maxC = 0, maxR = 0;
+                for (int b = 1; b < N; b++) {
                     double c = 0, r = 0;
-                    for (int i = 0; i < 16; i++) { c += d(tx.rgb[i * 16 + b - 1], tx.rgb[i * 16 + b]); r += d(tx.rgb[(b - 1) * 16 + i], tx.rgb[b * 16 + i]); }
-                    maxIn = std::max(maxIn, std::max(c, r) / 16);
+                    for (int i = 0; i < N; i++) { c += d(tx.rgb[i * N + b - 1], tx.rgb[i * N + b]); r += d(tx.rgb[(b - 1) * N + i], tx.rgb[b * N + i]); }
+                    maxC = std::max(maxC, c / N); maxR = std::max(maxR, r / N);
                 }
-                double c = 0, r = 0;
-                for (int i = 0; i < 16; i++) { c += d(tx.rgb[i * 16 + 15], tx.rgb[i * 16]); r += d(tx.rgb[15 * 16 + i], tx.rgb[i]); }
-                wrap = std::max(c, r) / 16;
-                if (!(wrap <= maxIn * 1.05 + 1)) printf("    seam in %s: wrap %.1f vs inner %.1f\n", tx.name.c_str(), wrap, maxIn);
-                CHECK(wrap <= maxIn * 1.05 + 1);
+                double wc = 0, wr = 0;
+                for (int i = 0; i < N; i++) { wc += d(tx.rgb[i * N + N - 1], tx.rgb[i * N]); wr += d(tx.rgb[(N - 1) * N + i], tx.rgb[i]); }
+                wc /= N; wr /= N;
+                bool ok = wc <= maxC * 1.05 + 1 && wr <= maxR * 1.05 + 1;
+                if (!ok) printf("    seam in %s: across %.1f (inner max %.1f), down %.1f (inner max %.1f)\n", tx.name.c_str(), wc, maxC, wr, maxR);
+                CHECK(ok);
             }
         }
     }

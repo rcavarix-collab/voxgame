@@ -66,7 +66,7 @@ void BuildGlowGrid(World& w, int ox, int oy, int oz, GlowGrid& g) {
                             int gx = cx * CHUNK_SIZE + lx, gy = cy * CHUNK_SIZE + ly, gz = cz * CHUNK_SIZE + lz;
                             solid[Cell(gx, gy, gz)] = BlockOpaqueCube(id) ? 1 : 0;
                             BlockGlow glow = g_blocks[id].glow;
-                            if (glow != GLOW_NONE)
+                            if (GlowCastsLight(glow))
                                 g.emitters.push_back({ ox + gx, oy + gy, oz + gz, (uint8_t)(glow == GLOW_MUSIC ? 0 : (glow == GLOW_TIMESTREAM ? 1 : 2)) });
                         }
             }
@@ -112,6 +112,6 @@ bool ChunkAffectsGlow(const GlowGrid& g, const ChunkCoord& cc, const Chunk& c) {
     for (const GlowEmitter& e : g.emitters)
         if (e.x >= x0 - R && e.x < x1 + R && e.y >= y0 - R && e.y < y1 + R && e.z >= z0 - R && e.z < z1 + R) return true;
     for (int i = 0; i < CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE; i++)
-        if (g_blocks[c.blocks[i]].glow != GLOW_NONE) return true;
+        if (GlowCastsLight(g_blocks[c.blocks[i]].glow)) return true;
     return false;
 }

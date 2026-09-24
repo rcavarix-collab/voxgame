@@ -214,7 +214,7 @@ static const char* g_shaderSrc =
     "    o.aoBias = float2(aoCurve[i.pos.w & 3u], faceBias[face]);\n"
     "    float3 n = normalize(faceNormal[face]);\n"
     "    o.wpos = p + n * 0.08f;\n"                                   // normal offset (> 1 shadow texel): no acne
-    "    o.glowInfo = float4((float)((i.pos.w >> 5) & 3u), n);\n"   // glow kind, face normal
+    "    o.glowInfo = float4((float)((i.pos.w >> 5) & 7u), n);\n"   // glow kind, face normal
     "    return o;\n"
     "}\n"
     "Texture2DArray tex0 : register(t0);\n"
@@ -315,8 +315,12 @@ static const char* g_shaderSrc =
     "    col += glow * (albedo * 1.2f + glowCol * 0.8f);\n"
     // The texture's own glow map (4.13): veins, cores, runes light up by
     // themselves, whatever the lighting, and bloom.
-    "    col += albedo * surf.a * 2.5f;\n"
-    "    float outAlpha = saturate(max(glow, surf.a));\n"               // opaque pass: the bloom mask
+    // GLOW_PULSE blocks breathe it slowly: a smooth 0.4 Hz swell, never
+    // below a third -- far under the 3-per-second flash limit.
+    "    float texGlow = surf.a;\n"
+    "    if (i.glowInfo.x > 3.5f && i.glowInfo.x < 4.5f) texGlow *= 0.35f + 0.65f * (0.5f + 0.5f * sin(fCamPos.w * 2.5133f));\n"
+    "    col += albedo * texGlow * 2.5f;\n"
+    "    float outAlpha = saturate(max(glow, texGlow));\n"              // opaque pass: the bloom mask
     // See-through blocks (4.11), faked: the tinted body lets the world
     // behind show through by the texture's alpha; toward grazing angles it
     // turns into a mirror of the sky (Schlick's Fresnel) and grows more

@@ -55,8 +55,20 @@ Rules:
 - Every pixel row must be exactly `size` characters with no spaces, there
   must be exactly `size` rows, and every character must be in that
   texture's palette. Please re-check row counts and lengths before sending.
-- Keep all textures in one set the same size. 16 is recommended; if you use
-  32, use it everywhere.
+- The game's materials are 64 pixels per block, lit per pixel (a height
+  map becomes surface relief). Hand-drawing 64×64 in text is impractical,
+  so there are two good ways to contribute:
+  1. **A material brief** (preferred): a name, a one-line description, a
+     palette of 4–8 colours and a note on its structure (plates, strata,
+     pebbles, fibres, veins, a framed motif…). It's turned into a 64-px
+     material by `tools/natural_textures.py`, following the rules below.
+  2. **Pixel art at 16 or 32**, which the engine scales up by whole pixels;
+     it may add the optional maps below. Keep one size per set.
+- Optional maps, after a texture's `pixels` grid and before `end`, each a
+  grid the same size as the pixels:
+  - `height` — `0`–`9` then `a`–`z` (36 levels, low to high): relief.
+  - `shine` — `0`–`9`: how glossy (wet, icy, polished).
+  - `glow` — `0`–`9`: what lights up by itself (veins, cores, runes).
 - Transparency is only for see-through blocks (`glass`, `crystal`): give
   those palette entries 8 hex digits, `rrggbbaa`, where `aa` is how solid
   the pixel is (`00` invisible, `ff` solid). Glass reads best mostly clear
