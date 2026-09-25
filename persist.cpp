@@ -11,6 +11,7 @@
 #include <shlobj.h> // SHGetKnownFolderPath
 #include "persist.h"
 #include "pulse.h"
+#include "fliers.h"
 #include "worldfile.h"
 #include "theline.h"
 #include "essence.h"
@@ -413,6 +414,7 @@ bool LoadGame(World& w, Player& p, int slot) {
     ClearScheduledUpdates();
     RestoreScheduledUpdates(d.updates); // unknown kinds are dropped
     RestoreLine(g_line, g_lineTuning, d.line); // empty history for pre-v7 saves
+    g_fliers.Reset(d.gen.seed ^ (uint64_t)(d.dayTime * 1000.0f)); // fliers aren't saved: a fresh population
     g_pulse.Reset(); // pipes start empty; stores keep their counts (block data), harvesters are found as their chunks arrive
     g_essence.Restore(d.gen.seed, d.essence);  // nothing discovered for pre-v8 saves
     g_pendingColumns.clear();

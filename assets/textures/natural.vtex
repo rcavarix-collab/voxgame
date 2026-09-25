@@ -5357,6 +5357,98 @@ shine
   00000110000110001100110001100000
 end
 
+# Mold: soft pale colonies over dark ground, where a flier fell
+texture mold
+size 32
+palette
+  a 372d20
+  b 3b2f22
+  c 3e3224
+  d 819b67
+  e 8aa46e
+  f 94ad77
+  g 9ea48b
+  h 9eb77f
+  i a3a791
+  j a8ae94
+  k a8c088
+  l abaf99
+  m b1c891
+  n b3b89f
+  o b4b8a2
+  p bbd09b
+  q bdc2a9
+  r c8ccb4
+  s d1d4be
+  t d9dcc8
+pixels
+  ttttnibbbbbccdfebbbbekmhealgsttt
+  ttttnbbbbbbbempphbojqjddlaajtttt
+  tttsjbbbbbbbhpppmdgtttgbbbbgsttt
+  stsqgbaalbbbfpppmdjtttjbbbbgnsts
+  jjjbibaaaabidkpmebaqtrbgjbbaggjj
+  bbbbiaaggaaaadddaaiaagqttrgblbbl
+  lbgbblgttnaagqqjaaaobnttttqggbob
+  bnssjanttsagrttsgaaabqttttstsnbb
+  gtttragttnajttttnaaabnttttttttjb
+  gtttraaggaagstttjlaaagrttsttttnb
+  bntsjbbbbaagnssqgaalibgjjjttttjb
+  bbbiddbibbbgbgjgaaaalabbbbnrrjbb
+  bccfppkbbjrsqgboaaaaaabbbbbblcgb
+  jcompppegstttnaaaaaaaaabbbbbjrsr
+  sgcmpppejttttrgaaaagjjgbiibgsttt
+  tjcfpphbjttttqaagjjrttqaabbjtttt
+  tjccidbbbnstrglgqtttttsgabbjtttt
+  rlccibibbigjgiagttttttrbbbbcrttt
+  cccicbbbbbbbbaagttttqqgbbbbccnqn
+  lcdhkkebibbbbbbgqtttjiblbbiccccc
+  cchpppmdbbbbbbbbgnqjbbbbiljrrnlc
+  ldmppppfabbbblbqttrglbbccjstttjb
+  bdmppppfaibabbjttttnbjttnqttttqb
+  bbfpppmdbaaabinttttqcsttsqttttqb
+  bbdfhhejjgibbbgstttjcsttsjsttsgb
+  ldmppmnttsjbbbbjqrnccgrrccgnnglb
+  lfppppstttrgbbbbgjjcccccccbbbbbb
+  bfppppttttsgbbbgrttndhkhebbaabbb
+  bdkppmrtttqbbbbqtttskpppkdbaaabl
+  bgdffejrrqgbbblqttttpppppeaaaabb
+  nqngbibbgbblbbbjsttqpppppeaigjnj
+  tttrgbbbbbbcclbbjnjdmpppkdagnstt
+height
+  qqqqha9999aaadgf9889glnke7aenqqq
+  qqqqi9999999eoqqj9afkfdca88fpqqq
+  qqqpf9888999jqqqpcdqqqd8998enqqq
+  opoic888a899hqqqoceqqqf9998cgoqp
+  ffe9a877788acmqog88jpk9ee998cegf
+  9999a87cc8888cdc87a88cjppld8a88a
+  a9c88adpqh87dijf777a8gqqqqkdd9a8
+  8hpoe8iqqo7clqqnd7888jqqqqoppi88
+  cpqqm8eqqi7epqqqg7888hqqqqqqqqe9
+  dqqqm88cd87doqqqga778dlqqoqqqqg9
+  9ipoe888888chopkc77aa8cfgfqqqpe9
+  999add8a888c8eec8777a89999hmmg99
+  aaahqqm99fmojc8a877778999999aad9
+  faaoqqqgdoqqqi88877777899999fmpm
+  odaoqqqfgqqqqlc8877cggc8aa9dnqqq
+  qgbhpqk9epqqqj88cfglqqk8889fqqqq
+  qfabad999iopldacjqqpqqoc889fqqqq
+  laaaaaa99adeca8dpqqqqql8899alqqq
+  aaaaa9999999988dpqqqkid8899aaikh
+  aadimlf9a999998ckqqpga8a99aaaaaa
+  aakqqqoe89999999dhif9999aaflmhaa
+  adoqqqqg88889a9kqqmda99aaepqqqg9
+  9dnqqqqg8a8889gqqqqiagqqgjqqqqj9
+  98hpqqnd88889ahqqqqkapqqpjqqqqj9
+  98eijieegda899eoqqqganqqnenqqoe9
+  adnqqpipqof9999ekmhaadllaadhhda9
+  ahqqqqpqqqmc9999cfeaaaaaaa999999
+  9hqqqqqqqqod999dnqpiejmje9988899
+  9dmqqomqqqk9999jqqqolqqqlc88788a
+  8cdhifflnjd999ajqqqpqqqqpe877888
+  ikid8a99c99a999epqqjqqqqpe7acfhg
+  qqqld999999aaa99ehfeoqqqlc7choqp
+end
+
 block stone
   all stone
 end

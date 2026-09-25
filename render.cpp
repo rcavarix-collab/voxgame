@@ -13,6 +13,7 @@
 #include "vtex.h"
 #include "glowlight.h"
 #include "pulse.h"
+#include "fliers.h"
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -209,7 +210,7 @@ static const char* g_atmosphereSrc =
 // world.
 static const char* g_shaderSrc =
     "// uses atmosphere\n"
-    "cbuffer CB : register(b0) { row_major matrix mvp; row_major matrix lightViewProj; float4 params; float4 lineA; float4 lineB; float4 glowGrid; };\n"
+    "cbuffer CB : register(b0) { row_major matrix mvp; row_major matrix lightViewProj; float4 params; float4 lineA; float4 lineB; float4 glowGrid; float4 spots[8]; float4 spotInfo[8]; };\n"
     // params: x shadows on, y shadow half-texel, z 1 while drawing see-through blocks (4.11).
     // lineA: The Line's pivot x, height, pivot z, intensity; lineB: its direction x, z, the music level, unused.
     // glowGrid: xyz the glow-light grid's world origin, w 1 when it holds any light (4.12).
@@ -391,6 +392,21 @@ static const char* g_shaderSrc =
     "    if (i.glowInfo.x > 3.5f && i.glowInfo.x < 4.5f) texGlow *= 0.35f + 0.65f * (0.5f + 0.5f * sin(fCamPos.w * 2.5133f));\n"
     "    col += albedo * texGlow * 2.5f;\n"
     "    float outAlpha = saturate(max(glow, texGlow));\n"              // opaque pass: the bloom mask
+    // Where a flier fell on grass (fliers.h): the ground's tops within the
+    // patch take on a vivid colour and glow a little, strongest at the
+    // middle -- each patch its own hue, drifting slightly across the ground.
+    // Eight per-frame constants; strength fades over minutes, never flickers.
+    "    [unroll] for (int k = 0; k < 8; k++) {\n"
+    "        if (spotInfo[k].y <= 0.0f) continue;\n"
+    "        float r = length(i.wpos.xz - spots[k].xz) / spots[k].w;\n"
+    "        float s = saturate(1.0f - r) * saturate(1.0f - abs(i.wpos.y - spots[k].y) * 1.5f) * saturate(nGeo.y * 2.0f - 1.0f);\n"
+    "        s = s * s * (3.0f - 2.0f * s) * spotInfo[k].y;\n"
+    "        float h = spotInfo[k].x + 0.12f * sin(dot(i.wpos.xz, float2(1.3f, 0.7f))) + 0.2f * r;\n"
+    "        float3 vivid = saturate(abs(frac(h + float3(0.0f, 2.0f / 3.0f, 1.0f / 3.0f)) * 6.0f - 3.0f) - 1.0f);\n"
+    "        col = lerp(col, col * 0.35f + vivid * (0.5f + 0.9f * dot(albedo, float3(0.3f, 0.6f, 0.1f))), s * 0.8f);\n"
+    "        col += vivid * s * 0.35f;\n"
+    "        outAlpha = max(outAlpha, s * 0.55f);\n"
+    "    }\n"
     // See-through blocks (4.11), faked: the tinted body lets the world
     // behind show through by the texture's alpha; toward grazing angles it
     // turns into a mirror of the sky (Schlick's Fresnel) and grows more
@@ -938,6 +954,7 @@ static void UpdateShadowMap(World& w, Vec3 eye, Vec3 sun) {
 
 static void DrawLineDebug(const Mat4& viewProj, Vec3 player); // below InitD3D, beside its pipeline
 static void DrawPulses(const Mat4& viewProj, Vec3 eye);
+static void DrawFliers(const Mat4& viewProj, Vec3 eye);
 
 // Bloom (Section 4.10): the scene's glow (rgb * alpha) down to quarter
 // resolution, then blurred three times, each pass twice as wide as the
@@ -1166,6 +1183,15 @@ void RenderScene(World& w, const Mat4& view, const Mat4& proj, Vec3 eye, Vec3 fo
         cb.lineB[0] = ld.x; cb.lineB[1] = ld.z; cb.lineB[2] = CurrentMusicLevel(); cb.lineB[3] = 0.0f;
         cb.glowGrid[0] = (float)g_glowGrid.ox; cb.glowGrid[1] = (float)g_glowGrid.oy; cb.glowGrid[2] = (float)g_glowGrid.oz;
         cb.glowGrid[3] = g_glowLit && g_glowSRV ? 1.0f : 0.0f;
+        // Grass glowing where fliers fell (fliers.h).
+        memset(cb.spots, 0, sizeof(cb.spots)); memset(cb.spotInfo, 0, sizeof(cb.spotInfo));
+        {
+            const std::vector<NutrientSpot>& spots = g_fliers.Spots();
+            for (size_t k = 0; k < spots.size() && k < 8; k++) {
+                cb.spots[k][0] = spots[k].x; cb.spots[k][1] = spots[k].y; cb.spots[k][2] = spots[k].z; cb.spots[k][3] = g_flierTuning.spotRadius;
+                cb.spotInfo[k][0] = spots[k].hue; cb.spotInfo[k][1] = FlierSystem::SpotStrength(spots[k], g_flierTuning);
+            }
+        }
         UpdateCBuffer(cb);
         g_context->VSSetShader(g_vs, nullptr, 0);
         g_context->PSSetShader(g_ps, nullptr, 0);
@@ -1182,6 +1208,7 @@ void RenderScene(World& w, const Mat4& view, const Mat4& proj, Vec3 eye, Vec3 fo
         DrawChunks(w, frustum, true);
         if (g_lineDebug) DrawLineDebug(viewProj, eye);
         DrawPulses(viewProj, eye);
+        DrawFliers(viewProj, eye);
         // See-through blocks last: same shader, told by params.z to shade
         // as glass. Rebind the world pipeline (the debug lines change it).
         cb.params[2] = 1.0f;
@@ -1992,6 +2019,70 @@ static void DrawPulses(const Mat4& viewProj, Vec3 eye) {
         }
     }
     if (v.empty()) return;
+    D3D11_MAPPED_SUBRESOURCE mapped;
+    g_context->Map(g_pulseVB, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
+    memcpy(mapped.pData, v.data(), v.size() * sizeof(DebugVertex));
+    g_context->Unmap(g_pulseVB, 0);
+    g_context->Map(g_debugCB, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
+    memcpy(mapped.pData, &viewProj, sizeof(Mat4));
+    g_context->Unmap(g_debugCB, 0);
+    g_context->VSSetShader(g_debugVS, nullptr, 0);
+    g_context->PSSetShader(g_debugPS, nullptr, 0);
+    g_context->IASetInputLayout(g_debugLayout);
+    g_context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    g_context->VSSetConstantBuffers(0, 1, &g_debugCB);
+    UINT stride = sizeof(DebugVertex), offset = 0;
+    g_context->IASetVertexBuffers(0, 1, &g_pulseVB, &stride, &offset);
+    g_context->Draw((UINT)v.size(), 0);
+}
+
+// Fliers (fliers.h): a slim dark body and two wings -- one pair of planes,
+// part butterfly, part dragonfly -- beating at 4 a second (movement, not a
+// flash: the colour doesn't change), in each flier's own hue. A handful of
+// triangles each, through the same small buffer and plain-colour pipeline
+// as the pulses (a fresh upload after theirs).
+static void DrawFliers(const Mat4& viewProj, Vec3 eye) {
+    if (!g_debugVS || !g_debugPS || !g_debugLayout || !g_pulseVB || !g_debugCB) return;
+    const std::vector<Flier>& fl = g_fliers.Fliers();
+    if (fl.empty()) return;
+    static std::vector<DebugVertex> v;
+    v.clear();
+    auto tri = [&](const float* a, const float* b, const float* c, const float* col) {
+        v.push_back({ a[0], a[1], a[2], col[0], col[1], col[2], 0.0f });
+        v.push_back({ b[0], b[1], b[2], col[0], col[1], col[2], 0.0f });
+        v.push_back({ c[0], c[1], c[2], col[0], col[1], col[2], 0.0f });
+    };
+    for (const Flier& f : fl) {
+        float dx = f.x - eye.x, dy = f.y - eye.y, dz = f.z - eye.z;
+        if (dx * dx + dy * dy + dz * dz > 64.0f * 64.0f) continue;
+        float fx = cosf(f.heading), fz = sinf(f.heading); // forward
+        float rx = -fz, rz = fx;                         // right (horizontal)
+        float h = f.hue;
+        float wing[3] = { fabsf(fmodf(h * 6.0f, 6.0f) - 3.0f) - 1.0f, 2.0f - fabsf(fmodf(h * 6.0f + 4.0f, 6.0f) - 3.0f), 2.0f - fabsf(fmodf(h * 6.0f + 2.0f, 6.0f) - 3.0f) };
+        for (float& c : wing) c = 0.35f + 0.6f * (c < 0 ? 0 : (c > 1 ? 1 : c));
+        const float wingDark[3] = { wing[0] * 0.7f, wing[1] * 0.7f, wing[2] * 0.7f };
+        const float body[3] = { 0.10f, 0.09f, 0.08f };
+        // Body: a thin diamond along the heading.
+        const float len = 0.16f, thick = 0.025f;
+        float head[3] = { f.x + fx * len, f.y, f.z + fz * len }, tail[3] = { f.x - fx * len * 1.6f, f.y, f.z - fz * len * 1.6f };
+        float up[3] = { f.x, f.y + thick, f.z }, dn[3] = { f.x, f.y - thick, f.z };
+        float lf[3] = { f.x - rx * thick, f.y, f.z - rz * thick }, rt[3] = { f.x + rx * thick, f.y, f.z + rz * thick };
+        tri(head, up, rt, body); tri(head, rt, dn, body); tri(head, dn, lf, body); tri(head, lf, up, body);
+        tri(tail, rt, up, body); tri(tail, dn, rt, body); tri(tail, lf, dn, body); tri(tail, up, lf, body);
+        // Wings: each a broad fore-lobe and a narrower hind-lobe, hinged at
+        // the body and raised by the beat.
+        float beat = 0.9f * sinf(f.flapPhase);
+        for (float side : { -1.0f, 1.0f }) {
+            float lift = sinf(beat), out = cosf(beat);
+            float span = 0.28f;
+            float tip[3] = { f.x + rx * side * span * out + fx * 0.06f, f.y + span * lift, f.z + rz * side * span * out + fz * 0.06f };
+            float hind[3] = { f.x + rx * side * span * 0.7f * out - fx * 0.14f, f.y + span * 0.7f * lift, f.z + rz * side * span * 0.7f * out - fz * 0.14f };
+            float root[3] = { f.x, f.y, f.z }, fore[3] = { f.x + fx * 0.07f, f.y, f.z + fz * 0.07f }, back[3] = { f.x - fx * 0.12f, f.y, f.z - fz * 0.12f };
+            tri(fore, tip, root, wing);
+            tri(root, hind, back, wingDark);
+        }
+    }
+    if (v.empty() || v.size() > PULSE_VB_CAPACITY) return;
     D3D11_MAPPED_SUBRESOURCE mapped;
     g_context->Map(g_pulseVB, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
     memcpy(mapped.pData, v.data(), v.size() * sizeof(DebugVertex));

@@ -391,6 +391,26 @@ def m_meadow():
     return f
 
 
+def m_mold():
+    # Mold on bare dirt or wood where a flier fell: soft pale colonies,
+    # fuzzy-edged, over the dark ground, a few with a greenish bloom.
+    n = fbm(262, (4, 8, 16))
+    colonies = scatter(303, 0.85, 1.6, 3.2)
+    specks = scatter(264, 0.5, 0.35, 1.0)
+    def f(u, v):
+        t = n(u, v)
+        c, cid = colonies(u, v)
+        s, _ = specks(u, v)
+        if c > 0.05:
+            fuzz = sstep(0.05, 0.5, c + 0.25 * (t - 0.5))
+            pal = ["8a9078", "a8ae94", "c8ccb4", "e2e4d2"] if cid < 0.7 else ["6e8a5a", "8aa46e", "a8c088", "c4d8a4"]
+            return ramp(pal, 0.2 + 0.7 * fuzz), 1, 0.35 + 0.4 * fuzz, 0.05, 0
+        if s > 0.2:
+            return ramp(["9a9e88", "b4b8a2"], s), 1, 0.3, 0.04, 0
+        return ramp(["2a2218", "342a1e", "3e3224", "4a3c2c"], 0.3 + 0.5 * t), 1, 0.15 + 0.2 * t, 0.02, 0
+    return f
+
+
 def m_water():
     warp = lattice_noise(261, 4)
     fine = fbm(262, (4, 8, 16))
@@ -889,6 +909,7 @@ TEXTURES = [
     ("fern_frond", "Fern frond (plant card)", m_fern()),
     ("thorn_bramble", "Thorn bramble (plant card)", m_bramble()),
     ("reed_grass", "Reeds (plant card)", m_reeds()),
+    ("mold", "Mold: soft pale colonies over dark ground, where a flier fell", m_mold()),
 ]
 PLANTS = ("wildflower_yellow", "wildflower_blue", "glow_mushroom_cluster", "fern_frond", "thorn_bramble", "reed_grass")
 SINGLE = ("stone", "dirt", "wood", "snow", "sand", "cracked_earth", "clay", "basalt", "magma_rock", "moss",

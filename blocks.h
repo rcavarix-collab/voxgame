@@ -114,6 +114,7 @@ enum BlockID : uint8_t {
     BLOCK_PULSE_PIPE_CW,   // twisted pipes: they give pulse a clockwise or anticlockwise spin
     BLOCK_PULSE_PIPE_CCW,
     BLOCK_PULSE_DIFFUSER,  // takes pulse of any spin and spends it widening The Line's band
+    BLOCK_MOLD_PATCH,      // grows where a flier dies on bare dirt or wood (Part XXI)
     BLOCK_COUNT
 };
 
@@ -344,6 +345,7 @@ inline const BlockDef g_blocks[BLOCK_COUNT] = {
     { "pulse_pipe_cw",         true,  true,  true,  false, false, SHAPE_PULSE_PIPE,    PLACE_CLICKED_AXIS, GLOW_NONE,  false, TEX("pulse_pipe_cw", nullptr, nullptr, nullptr, nullptr) },
     { "pulse_pipe_ccw",        true,  true,  true,  false, false, SHAPE_PULSE_PIPE,    PLACE_CLICKED_AXIS, GLOW_NONE,  false, TEX("pulse_pipe_ccw", nullptr, nullptr, nullptr, nullptr) },
     { "pulse_diffuser",        true,  true,  true,  false, false, SHAPE_BEVEL_CUBE,    PLACE_PLAIN,        GLOW_NONE,  false, TEX("pulse_diffuser_side", "pulse_diffuser_top", "pulse_plate", nullptr, nullptr) },
+    { "mold_patch",            true,  true,  true,  false, false, SHAPE_SWELL_BREAKER, PLACE_CLICKED_AXIS, GLOW_NONE,  false, TEX("mold", nullptr, nullptr, nullptr, nullptr) },
 };
 #undef TEX
 

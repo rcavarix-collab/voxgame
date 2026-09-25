@@ -37,7 +37,10 @@ extern ID3D11Buffer* g_chunkCBuffer;          // per-draw chunk origin (b1)
 extern ID3D11ShaderResourceView* g_blockTexSRV; // Texture2DArray: one layer per block face texture, mipped
 extern ID3D11ShaderResourceView* g_iconSRV;     // hotbar icon strip, one cell per BlockID
 
-struct CBData { Mat4 mvp; Mat4 lightViewProj; float params[4]; float lineA[4]; float lineB[4]; float glowGrid[4]; }; // world shader b0 (192 bytes)
+// World shader b0. spots/spotInfo: up to eight patches of grass glowing
+// where a flier fell (fliers.h): xyz centre + radius; hue, strength.
+struct CBData { Mat4 mvp; Mat4 lightViewProj; float params[4]; float lineA[4]; float lineB[4]; float glowGrid[4];
+                float spots[8][4]; float spotInfo[8][4]; };
 
 // UVs of block `id`'s cell in the icon strip.
 static inline void IconRect(BlockID id, float& u0, float& v0, float& u1, float& v1) {

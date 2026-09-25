@@ -19,6 +19,7 @@
 #include "../sky.h"
 #include "../theline.h"
 #include "../pulse.h"
+#include "../fliers.h"
 #include "../essence.h"
 #include "../essencemap.h"
 #include "../music_synth.h"
@@ -147,7 +148,7 @@ static void TestBlockTextures() {
     BlockTextureSet t;
     BuildBlockTextures(none, t);
     CHECK(t.warnings.empty());
-    CHECK(t.layerCount == 14 + 53); // 14 procedural (foundation .. crystal) + 53 more names only the generated art provides (magenta without it)
+    CHECK(t.layerCount == 14 + 54); // 14 procedural (foundation .. crystal) + 54 more names only the generated art provides (magenta without it)
 
     // The natural materials' art in the repo loads cleanly and covers
     // every natural block (no magenta fallback), with seamless wrap.
@@ -159,7 +160,7 @@ static void TestBlockTextures() {
             while ((got = fread(buf, 1, sizeof buf, fp)) > 0) text.append(buf, got);
             fclose(fp);
             VtexSet nat; ParseVtex(text, "natural.vtex", nat);
-            CHECK(nat.errors.empty() && nat.textures.size() == 46 && nat.blocks.size() == 44);
+            CHECK(nat.errors.empty() && nat.textures.size() == 47 && nat.blocks.size() == 44);
             for (auto& tx : nat.textures) CHECK(tx.size == 32 && !tx.height.empty()); // one density for everything (32), all with relief
             // ...with the pulse-logistics set beside it (industry.vtex, Part VI).
             FILE* fi = fopen("../assets/textures/industry.vtex", "rb");
@@ -1350,6 +1351,51 @@ static void TestGrassCover() {
     ClearScheduledUpdates();
 }
 
+static void TestFliers() {
+    printf("fliers\n");
+    const float dt = 1.0f / 60.0f;
+    auto ground = [](World& w, BlockID top) { for (int x = -48; x < 48; x++) for (int z = -48; z < 48; z++) { w.Set(x, 9, z, BLOCK_DIRT); w.Set(x, 10, z, top); } };
+    FlierTuning t;
+    {   // A population appears around the player, low over the ground.
+        World w; ground(w, BLOCK_MEADOW_GRASS);
+        FlierSystem f; f.Reset(7);
+        for (int i = 0; i < 60 * 20; i++) f.Tick(w, t, 0.5f, 11.0f, 0.5f, dt);
+        bool low = true;
+        for (const Flier& fl : f.Fliers()) low = low && fl.y > 11.0f + t.minHeight - 0.5f && fl.y < 11.0f + t.maxHeight + 0.6f;
+        printf("    %zu fliers, low over the grass: %d\n", f.Fliers().size(), (int)low);
+        CHECK((int)f.Fliers().size() == t.population && low);
+    }
+    {   // One game day of life at normal time; on The Line (30x) about two minutes.
+        World w; ground(w, BLOCK_MEADOW_GRASS);
+        FlierSystem f; f.Reset(11);
+        FlierTuning one = t; one.population = 1;
+        f.Tick(w, one, 0.5f, 11.0f, 0.5f, dt);
+        float start = f.Fliers().empty() ? 0.0f : f.Fliers()[0].age;
+        float left = (one.lifeSeconds - start) / 30.0f;
+        int ticks = 0;
+        while (f.deaths == 0 && ticks < 60 * 200) { f.Tick(w, one, 0.5f, 11.0f, 0.5f, dt, [](float, float, float) { return 30.0f; }); ticks++; }
+        printf("    on the line: died after %.0f s (expected %.0f), by the line %d\n", ticks * dt, left, f.deathsByLine);
+        CHECK(f.deaths == 1 && f.deathsByLine == 1 && fabsf(ticks * dt - left) < 1.0f);
+        // It fell on grass: a glowing patch, which fades and goes.
+        CHECK(f.Spots().size() == 1 && fabsf(f.Spots()[0].y - 11.0f) < 1e-3f);
+        FlierTuning none = one; none.population = 0;
+        for (int i = 0; i < 60 * 5; i++) f.Tick(w, none, 0.5f, 11.0f, 0.5f, dt);
+        CHECK(FlierSystem::SpotStrength(f.Spots()[0], none) > 0.99f);
+        for (int i = 0; i < (int)(60 * none.spotSeconds); i++) f.Tick(w, none, 0.5f, 11.0f, 0.5f, dt);
+        CHECK(f.Spots().empty());
+    }
+    {   // On bare dirt, mold grows where it fell.
+        World w; ground(w, BLOCK_DIRT);
+        FlierSystem f; f.Reset(13);
+        FlierTuning one = t; one.population = 1;
+        int ticks = 0;
+        while (f.deaths == 0 && ticks < 60 * 300) { f.Tick(w, one, 0.5f, 11.0f, 0.5f, dt, [](float, float, float) { return 60.0f; }); ticks++; }
+        int mold = 0;
+        for (int x = -48; x < 48; x++) for (int z = -48; z < 48; z++) mold += w.Get(x, 11, z) == BLOCK_MOLD_PATCH;
+        CHECK(f.deaths >= 1 && f.molds >= 1 && mold == f.molds && f.Spots().empty());
+    }
+}
+
 static void TestTheLine() {
     printf("the line\n");
     LineTuning t;
@@ -1998,6 +2044,7 @@ int main() {
     TestTheLine();
     TestPulse();
     TestGrassCover();
+    TestFliers();
     TestEssence();
     TestMusicHarmony();
     TestSoundPalette();

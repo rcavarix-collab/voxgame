@@ -671,3 +671,14 @@ Wanted, not scheduled. Each entry notes what it would build on so it can be pick
 - **Hand-authored decorative set** from the first art batch (porcelain, rune shrine, stained glass as a see-through block) — parked.
 
 - **Crafting brainstorm — owner's seeds, to discuss after the playtest** (no design yet). The owner wants to give the crafting system great personal consideration: the natural surroundings as the route to higher advancement (tools, abilities and more). Still to decide together: what the first machine gathers, how that is represented in the game, and what it's used for; item logistics may follow from the answers. Seed idea: what's gathered is a metaphor for **microbes and germs** — gathered as **essence**, each with a colour or "flavour" set by what the source material's biological makeup would contribute chemically and energetically (so a moss, a peat bog, a coral and a flesh block would each yield something different).
+
+---
+
+## Part XXI — Fliers
+
+A few small two-winged creatures (`fliers.h/.cpp`, native tests) — part butterfly, part dragonfly, owner's idea — wander low over the surface near the player: five at a time, 0.8–2.6 blocks above the ground under them, bobbing, drifting in smooth random turns, veering and climbing away from anything solid ahead, leaning back toward the player's surroundings if they stray, and simply gone (replaced by a new one) past 64 blocks.
+
+- **One game day of life**, aged by the local rate of time — the same `LineTimeRateAt` that speeds harvesters — so The Line cuts a flier's day short: on the line (30×) it lives about two minutes. They fly low enough for the line's band to catch them. New fliers come in every age, so natural deaths happen within a session too.
+- **They drop nothing; their death feeds the ground.** On grass, the patch glows in vivid colour — the grass taking in the fallen nutrients: the tops of the ground within 2.5 blocks take on that flier's hue (drifting slightly across the ground) and glow a little, swelling in over a few seconds and fading over the last of four minutes. Drawn as eight per-frame constants in the world shader (centre, radius, hue, strength), no per-block data; strength only ever changes slowly, so nothing flickers. On bare dirt or wood, **mold** grows where it fell (a flat mold patch, `mold_patch`). Mold sprouting a mushroom after a game day or after rain is next (S057), once weather exists.
+- **Drawn** as a slim dark body and one pair of wings (a broad fore-lobe and a narrower hind-lobe each side) beating four times a second — movement, not a flash: the colour never changes — in each flier's own hue, through the pulse pipeline (a few dozen triangles each).
+- **Transient**: not saved; a load or a new world starts a fresh population. F3 shows how many there are, how many have died (and how many by the line), glowing patches and mold.

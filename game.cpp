@@ -15,6 +15,7 @@
 #include "persist.h"
 #include "profiler.h"
 #include "pulse.h"
+#include "fliers.h"
 #include "theline.h"
 #include "essence.h"
 #include "essencemap.h"
@@ -797,6 +798,7 @@ static void ResetWorldForNewGame() {
     g_worldGen = DefaultNewWorldGen(); // TerrainHeight below reads it
     ResetLine(g_line); // a new world has no history to pivot around
     g_pulse.Reset();   // ...and nothing in its pipes
+    g_fliers.Reset(g_worldGen.seed); // a fresh population, of every age
     g_essence.Reset(g_worldGen.seed); // nothing discovered yet
     // Start standing on the surface (terrain height is a pure function
     // of x/z, so this needs no generated chunks), taking the highest of
@@ -1780,6 +1782,9 @@ void RenderUIPass() {
             // Pulse logistics (Part VI): totals, and what's held by the block in view.
             snprintf(buf, sizeof(buf), "PULSE %d HARVESTING %d MOVING %lld IN %lld LOST",
                      g_pulse.Harvesters(), g_pulse.InFlight(), g_pulse.delivered, g_pulse.lost);
+            lines.push_back(buf);
+            snprintf(buf, sizeof(buf), "FLIERS %d  DIED %d (%d BY THE LINE)  GLOWING %d  MOLD %d",
+                     (int)g_fliers.Fliers().size(), g_fliers.deaths, g_fliers.deathsByLine, (int)g_fliers.Spots().size(), g_fliers.molds);
             lines.push_back(buf);
             Vec3 f, r, u;
             GetCameraVectors(g_player, f, r, u);
