@@ -1,6 +1,6 @@
 // profiler.h
 //
-// Frame-time instrumentation (docs/ARCHITECTURE.md 1.4; carried from Voxistics): how long each engine
+// Frame-time instrumentation (DESIGN.md Part XVI): how long each engine
 // system took this frame, plus a few load counters, rolled into a short
 // window of history so the overlay can show both the typical cost and
 // the worst frame. "Lagless" is only a design priority if it can be
@@ -14,16 +14,25 @@
 #include <string>
 
 enum ProfSection {
-    PROF_SIM,       // the fixed-step tick: mech, sun exposure (and later weapons, props, fire)
-    PROF_TERRAIN,   // keeping chunks resident around the mech
-    PROF_MESH,      // terrain meshing + GPU uploads (budgeted per frame)
-    PROF_WORLD,     // sky + terrain draw submission (CPU side)
+    // Cacophony seam: its own simulation rows in place of Voxistics' block-world ones.
+    PROF_TERRAIN,   // keeping terrain chunks resident around the mech
+    PROF_PHYSICS,   // the mech: movement, ground, sun exposure
+    PROF_COMBAT,    // weapons, the wanderer, props, debris, pickups
+    PROF_FIRE,      // fire spread (budgeted)
+    PROF_MUSIC,     // music chunk synthesis
+    PROF_SOUND,     // soundscape census + world sound palette
+    PROF_MESH,      // chunk mesh rebuilds + GPU uploads
+    PROF_SHADOW,    // shadow map re-render (only when stale)
+    PROF_WORLD,     // sky + world draw submission (CPU side)
+    PROF_POST,      // post pass (outlines, SSAO, bloom)
     PROF_UI,        // UI build + draw submission
     PROF_PRESENT,   // Present(): mostly vsync wait, not work
-    // GPU time, from timestamp queries read back three frames late (so it
+    // GPU time, from timestamp queries read back two frames late (so it
     // never stalls): what the graphics card spent on each pass. Measures only
     // our own drawing; nothing about the machine is read.
+    PROF_GPU_SHADOW,
     PROF_GPU_WORLD,
+    PROF_GPU_POST,
     PROF_GPU_UI,
     PROF_COUNT
 };
@@ -33,11 +42,14 @@ enum ProfCounter {
     PCOUNT_CHUNKS_DRAWN,
     PCOUNT_TRIANGLES_DRAWN,
     PCOUNT_MESHES_BUILT,
-    PCOUNT_MESH_WAITING,
+    PCOUNT_DIRTY_WAITING,   // terrain chunks waiting to be meshed
+    PCOUNT_FIRES_BURNING,   // Cacophony seam: in place of columns / block updates waiting
+    PCOUNT_DEBRIS,
+    PCOUNT_SHADOW_RENDERS,
     PCOUNT_COUNT
 };
 
-extern bool g_showProfiler; // overlay visibility (settings.cfg / F3)
+extern bool g_showProfiler; // overlay visibility (settings.cfg, Display settings / F3)
 
 void ProfBeginFrame();
 void ProfAdd(ProfSection s, int64_t ticks);
@@ -71,7 +83,7 @@ struct ProfReport {
 };
 const ProfReport& ProfGetReport();
 
-// Start-up timeline: how long the game took to boot, phase by
+// Start-up timeline (Part XVI): how long the game took to boot, phase by
 // phase, so a slow start can be pinned on its cause. ProfBootMark ends
 // the phase running since the previous mark (the first phase runs from
 // the moment Windows created the process: loading the exe and its DLLs).
@@ -81,7 +93,7 @@ void ProfBootNote(const std::string& note); // extra detail, e.g. the shader cac
 std::string ProfBootSummary(bool multiLine);
 const char* ProfSectionName(ProfSection s);
 
-// Performance capture (Ctrl+F3): records every frame for
+// Performance capture (Ctrl+F3, Part XVI): records every frame for
 // `seconds`, then builds a plain-text report -- frame and work time
 // percentiles, hitches and what caused the worst of them, per-system
 // costs, load peaks -- for the owner to save and send. `header` (build,

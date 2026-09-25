@@ -131,11 +131,6 @@ static const int MIN_CLIENT_W = 960;
 static const int MIN_CLIENT_H = 680;
 extern int g_screenW, g_screenH;
 
-// The block registry (IDs, names, per-face textures) lives in blocks.h;
-// Cacophony uses it as its texture library (blocktex.h): each ground type
-// and prop surface names the block whose faces it wears.
-#include "blocks.h"
-
 // ---------------------------------------------------------------------
 // Cacophony additions: helpers its game systems (terrain, mech, props,
 // weapons) use on top of Voxistics' set. The world's axes are the same

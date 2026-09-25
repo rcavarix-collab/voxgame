@@ -1,63 +1,167 @@
 // render.h
 //
-// Direct3D 11 presentation (docs/ARCHITECTURE.md 1.2): the device and swap
-// chain, the compiled-shader cache (carried from Voxistics: bytecode kept
-// in Documents\My Games\Cacophony\ShaderCache, compiled at most once per
-// machine), the sky and terrain passes, and a small immediate-mode 2D
-// layer for text and shapes.
-//
-// Cost: terrain chunk buffers are created only when a chunk's mesh
-// changes (its version bumps) and freed when it leaves; drawing is one
-// call per visible chunk after frustum culling. GPU time per pass is
-// measured with timestamp queries read three frames late, so measuring
-// never stalls.
+// D3D11 device/pipeline state, chunk meshing, and the procedural sky
+// mesh. Owns every ID3D11* global -- both main.cpp's frame
+// loop and game.cpp's UI pass reach into these directly (the same
+// unencapsulated-globals design the project has always used; this
+// split relocates that design into files, it doesn't redesign it).
 
 #pragma once
 
-#ifndef NOMINMAX
-#define NOMINMAX
+#ifndef NOMINMAX // also set project-wide (Voxistics.vcxproj)
+#define NOMINMAX // MSVC's windows.h (pulled in via d3d11.h) defines min/max macros unless this precedes it
 #endif
-#include <windows.h>
-#include <string>
 #include "common.h"
-#include "prims.h"
+#include "world.h"
+#include "mesher.h"
+#include <d3d11.h>
+#include <cstdint>
 #include <vector>
+#include <string>
 
-class Terrain;
-class Props;
+// ---- Core device/pipeline objects (world pass) ----
+extern HWND g_hwnd;
+extern ID3D11Device* g_device;
+extern ID3D11DeviceContext* g_context;
+extern IDXGISwapChain* g_swapChain;
+extern ID3D11RenderTargetView* g_rtv;
+extern ID3D11DepthStencilView* g_dsv;
+extern ID3D11VertexShader* g_vs;
+extern ID3D11PixelShader* g_ps;
+extern ID3D11InputLayout* g_layout;
+extern ID3D11Buffer* g_cbuffer;
+extern ID3D11SamplerState* g_sampler;
+extern ID3D11RasterizerState* g_rasterState;
+extern ID3D11DepthStencilState* g_depthState;
+extern ID3D11Buffer* g_chunkCBuffer;          // per-draw chunk origin (b1)
+extern ID3D11ShaderResourceView* g_blockTexSRV; // Texture2DArray: one layer per block face texture, mipped
+extern ID3D11ShaderResourceView* g_iconSRV;     // hotbar icon strip, one cell per BlockID
 
-bool InitRender(HWND hwnd);
-void ShutdownRender();
-void ResizeRender(int w, int h);          // follows the client area; ignores 0x0 (minimised)
-const std::string& ShaderErrors();        // compiler complaints, if any (also in shader_errors.txt)
+// World shader b0. spots/spotInfo: up to eight patches of grass glowing
+// where a flier fell (fliers.h): xyz centre + radius; hue, strength.
+struct CBData { Mat4 mvp; Mat4 lightViewProj; float params[4]; float lineA[4]; float lineB[4]; float glowGrid[4];
+                float spots[8][4]; float spotInfo[8][4]; };
 
-struct FrameView {
-    Mat4 view, proj;
-    Vec3 eye, right, up, forward;
-    float tanHalfFovX, tanHalfFovY;
-    float dayTime;
-};
+// UVs of block `id`'s cell in the icon strip.
+static inline void IconRect(BlockID id, float& u0, float& v0, float& u1, float& v1) {
+    const float e = 1.0f / 64.0f / 64.0f; // 1/64 texel: float-error guard only
+    u0 = (float)id / BLOCK_COUNT + e; u1 = (float)(id + 1) / BLOCK_COUNT - e;
+    v0 = e; v1 = 1.0f - e;
+}
 
-// Creates/frees GPU buffers for chunks whose meshes changed. Returns how many uploaded.
-int SyncTerrain(const Terrain& t);
+// ---- UI pass objects (Section 4.6): own shaders/layout/cbuffer/
+// sampler/blend/depth state, fully separate from the world pass's. ----
+extern ID3D11VertexShader* g_uiVS;
+extern ID3D11PixelShader* g_uiPS;
+extern ID3D11InputLayout* g_uiLayout;
+extern ID3D11Buffer* g_uiCBuffer;
+extern ID3D11SamplerState* g_uiSampler;
+extern ID3D11BlendState* g_uiBlendState;
+extern ID3D11DepthStencilState* g_uiDepthState;
+extern ID3D11ShaderResourceView* g_uiSRV; // font-glyph + white-cell atlas
+extern ID3D11Buffer* g_uiVB;              // dynamic, re-mapped per UI draw batch
+static const UINT UI_VB_CAPACITY = 4096;   // vertices
+
+// Font-glyph atlas layout (Section 4.6). Text is drawn 1:1 -- one atlas
+// texel per screen pixel, point-sampled, snapped to whole pixels -- so
+// glyphs stay crisp instead of being resampled from one master size. To
+// still offer several text sizes, the atlas holds the full ASCII 32..126
+// set baked once per size ("band"), each in a 16 x 6 grid; a requested
+// scale picks the nearest band. Each glyph sits centred in a cell padded
+// UI_GLYPH_PAD px each side, but advances only by the font's own
+// monospace advance, so letters sit at normal text spacing rather than a
+// full cell apart. The top UI_WHITE_H rows are solid white: untextured
+// tinted rectangles sample their centre (Section 4.6).
+// The struct and these helpers live here (not in game.h, where the
+// UIDraw* helper *functions* that use them live) because InitD3D needs
+// UIVertex to size g_uiVB and InitTextures needs the atlas dimensions
+// to generate it -- both purely rendering concerns.
+static const int UI_ATLAS_COLS = 16;
+static const int UI_ATLAS_ROWS = 6;
+static const int UI_GLYPH_PAD = 2;
+static const int UI_WHITE_H = 8;
+static const int UI_FONT_BAND_COUNT = 6;
+// Cell height of each band; scale 1.0 == 28 px, the old single size.
+static const int UI_BAND_CELL_H[UI_FONT_BAND_COUNT] = { 14, 18, 22, 28, 34, 44 };
+struct UIFontBand { int cellW, cellH, advance, atlasY; float fontPx; };
+static inline UIFontBand UIGetFontBand(int band) {
+    UIFontBand b = {};
+    int y = UI_WHITE_H;
+    for (int i = 0; i <= band; i++) {
+        b.cellH = UI_BAND_CELL_H[i];
+        b.fontPx = b.cellH * 0.62f;
+        // Consolas' advance is 0.55 em; round up and keep 1px of air.
+        b.advance = (int)(b.fontPx * 0.55f + 0.999f) + 1;
+        b.cellW = b.advance + 2 * UI_GLYPH_PAD;
+        b.atlasY = y;
+        y += UI_ATLAS_ROWS * b.cellH;
+    }
+    return b;
+}
+static inline int UIAtlasWidth() { return UI_ATLAS_COLS * UIGetFontBand(UI_FONT_BAND_COUNT - 1).cellW; }
+static inline int UIAtlasHeight() {
+    UIFontBand last = UIGetFontBand(UI_FONT_BAND_COUNT - 1);
+    return last.atlasY + UI_ATLAS_ROWS * last.cellH;
+}
+struct UIVertex { float x, y, u, v, r, g, b, a; };
+
+// ---- Sky pass objects (a third pass: depth off, drawn before the
+// world so opaque geometry always overdraws it) ----
+struct SkyVertex { float x, y, z; };
+extern ID3D11VertexShader* g_skyVS;
+extern ID3D11PixelShader* g_skyPS;
+extern ID3D11InputLayout* g_skyLayout;
+extern ID3D11Buffer* g_skyCBuffer;
+extern ID3D11Buffer* g_skyVB;
+extern ID3D11Buffer* g_skyIB;
+extern UINT g_skyIndexCount;
+
+bool InitD3D(HWND hwnd);
+// Follows the window's client size (WM_SIZE); ignores a minimised (0x0) window.
+void ResizeRenderTargets(int w, int h);
+// Whether each optional effect compiled and was set up on this machine
+// (the Graphics menu shows the ones that didn't as unavailable), and the
+// compiler's complaints if any (also written to shader_errors.txt).
+bool ShadowsAvailable();
+bool PostEffectsAvailable();
+bool BloomAvailable();
+const std::string& ShaderErrors();
+// Builds block textures (authored .vtex art from assets/textures plus
+// procedural fallbacks) and the UI atlas. `problems` receives a one-line
+// summary if any .vtex file had errors (details are written to
+// assets/textures/_errors.txt), else stays empty.
+bool InitTextures(std::string& problems);
+void BuildSkyMesh();
+void UpdateCBuffer(const CBData& data);
+// The whole 3D frame: shadow map (when stale), sky, world, and the post
+// pass when an effect is on. The UI pass draws over the result.
+void RenderScene(World& w, const Mat4& view, const Mat4& proj, Vec3 eye, Vec3 forward, Vec3 up, float dayTime);
+// In place of RenderScene when a full-screen screen (the essence map)
+// covers the world: just clears the backbuffer for the UI pass.
+void RenderEmptyScene();
+
+// Capped per-frame chunk mesh rebuild (Section 4.2/4-perf) -- see
+// render.cpp for the full reasoning; this is the single entry point
+// the game loop calls once per frame.
+void RebuildDirtyChunks(World& w, int camCx, int camCy, int camCz);
+// GPU timing (profiler.h PROF_GPU_*): bracket the frame's passes with
+// timestamp queries; results two frames old are added to the profiler.
 void GpuFrameBegin();
-void RenderWorld(const Terrain& t, const FrameView& v);
-// Props (baked per tile, uploaded only when a tile's mesh changes) and this
-// frame's dynamic meshes (debris, the wanderer, rockets, tracers, flames,
-// fireballs), drawn after the terrain with the same light and fog.
-int SyncProps(const Props& p);
-void RenderMeshes(const FrameView& v, const std::vector<MeshVertex>& dynamic);
-// Where a world point lands on screen (pixels); false if behind the eye.
-bool ProjectToScreen(const FrameView& v, Vec3 p, float& sx, float& sy);
-void GpuMarkWorldDone();
-void GpuFrameEnd();
-void PresentFrame(bool vsync);
+void GpuMarkUIDone(); // after the UI pass
+void GpuFrameEnd();   // before Present
 
-// ---- 2D, in pixels from the top-left; drawn over the world in order ----
-void UIBegin();
-void UIRect(float x, float y, float w, float h, uint32_t rgba);            // 0xRRGGBBAA, sRGB
-void UIText(float x, float y, const char* text, uint32_t rgba);           // debug and menus only (DESIGN.md §7)
-float UITextWidth(const char* text);
-float UILineHeight();
-void UIRing(float cx, float cy, float radius, float thickness, uint32_t rgba, int segments = 48);
-void UIEnd();
+// ---- View-frustum culling (Section 4.2-perf) ----
+//
+// Six planes extracted directly from the combined view-projection
+// matrix (Gribb/Hartmann), each as (a,b,c,d) with "inside" meaning
+// a*x + b*y + c*z + d >= 0 -- world-space coordinates plug in directly,
+// with no per-chunk transform needed to test against them. Keeps the
+// world draw loop's GPU submissions to what the camera can actually see
+// rather than every resident chunk around the player.
+struct FrustumPlane { float a, b, c, d; };
+struct Frustum { FrustumPlane planes[6]; };
+Frustum ExtractFrustum(const Mat4& viewProj);
+// True if the AABB is at least partially inside the frustum (a
+// conservative test -- may pass a few actually-outside chunks near the
+// frustum's edges, but never rejects one that's actually visible).
+bool FrustumIntersectsAABB(const Frustum& f, Vec3 minB, Vec3 maxB);

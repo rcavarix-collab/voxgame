@@ -1,6 +1,6 @@
 // profiler.cpp -- see profiler.h.
 
-#ifndef NOMINMAX // also set project-wide (Cacophony.vcxproj)
+#ifndef NOMINMAX // also set project-wide (Voxistics.vcxproj)
 #define NOMINMAX
 #endif
 #include <windows.h>
@@ -91,6 +91,7 @@ void ProfBeginFrame() {
     g_counters[PCOUNT_CHUNKS_DRAWN] = 0;
     g_counters[PCOUNT_TRIANGLES_DRAWN] = 0;
     g_counters[PCOUNT_MESHES_BUILT] = 0;
+    g_counters[PCOUNT_SHADOW_RENDERS] = 0;
 }
 
 void ProfAdd(ProfSection s, int64_t ticks) { g_current[s] += ticks; }
@@ -123,14 +124,15 @@ const ProfReport& ProfGetReport() { return g_report; }
 
 const char* ProfSectionName(ProfSection s) {
     static const char* names[PROF_COUNT] = {
-        "SIM", "TERRAIN", "MESH", "WORLD DRAW", "UI", "PRESENT", "GPU WORLD", "GPU UI",
+        "TERRAIN", "MECH", "COMBAT", "FIRE", "MUSIC", "WORLD SOUND", "MESH", "SHADOW MAP", "WORLD DRAW", "POST", "UI", "PRESENT",
+        "GPU SHADOW", "GPU WORLD", "GPU POST", "GPU UI",
     };
     return names[s];
 }
 
 const char* ProfCounterName(ProfCounter c) {
     static const char* names[PCOUNT_COUNT] = {
-        "CHUNKS RESIDENT", "CHUNKS DRAWN", "TRIANGLES", "MESHES BUILT", "MESH WAITING",
+        "CHUNKS RESIDENT", "CHUNKS DRAWN", "TRIANGLES", "MESHES BUILT", "MESHES WAITING", "FIRES BURNING", "DEBRIS", "SHADOW RENDERS",
     };
     return names[c];
 }

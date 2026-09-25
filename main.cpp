@@ -1,217 +1,308 @@
 // main.cpp
 //
-// Cacophony: entry point only (docs/ARCHITECTURE.md 1.3). The window
-// (per-monitor DPI aware, resizable, borderless fullscreen on F11), mouse
-// capture with raw input while playing, and the loop: a fixed 60-tick
-// simulation (at most five ticks a frame, so a stall never feeds itself),
-// then one frame of meshing, drawing and presenting, capped to the chosen
-// frame rate. Everything the loop drives lives in its own file.
+// Voxistics - Milestone 1 prototype. Entry point only: window creation,
+// startup sequencing, and the fixed-timestep game loop. Everything the
+// loop drives lives in its own module now (world.h/world.cpp,
+// render.h/render.cpp, audio.h/audio.cpp, persist.h/persist.cpp,
+// game.h/game.cpp) -- see DESIGN.md for the full design and Part XV for
+// the build.
 
-#ifndef NOMINMAX
+// MSVC's windows.h defines min/max function-like macros unless this is
+// set first -- without it, any bare std::min/std::max call anywhere in
+// this project would silently break at the token that happens to be
+// followed by '('.
+#ifndef NOMINMAX // also set project-wide (Voxistics.vcxproj)
 #define NOMINMAX
 #endif
 #include <windows.h>
-#include <mmsystem.h> // timeBeginPeriod
+#include <d3d11.h>
+#include <cmath>
+
 #include "common.h"
-#include "game.h"
-#include "input.h"
-#include "persist.h"
-#include "profiler.h"
+#include <mmsystem.h> // timeBeginPeriod
+#pragma comment(lib, "winmm.lib")
+#include "world.h"
 #include "render.h"
-
-namespace {
-HWND g_hwnd = nullptr;
-bool g_captured = false;
-WINDOWPLACEMENT g_windowedPlacement = {}; // .length set before use
-
-// Mouse capture: hidden cursor held inside the window, movement from raw
-// input. Released whenever the game pauses or loses focus, so the cursor is
-// never stolen from other programs (Prismative.cpp's flaw, not repeated).
-void Capture(bool on) {
-    if (on == g_captured) return;
-    g_captured = on;
-    if (on) {
-        RECT rc; GetClientRect(g_hwnd, &rc);
-        POINT tl = { rc.left, rc.top }, br = { rc.right, rc.bottom };
-        ClientToScreen(g_hwnd, &tl); ClientToScreen(g_hwnd, &br);
-        RECT clip = { tl.x, tl.y, br.x, br.y };
-        ClipCursor(&clip);
-        while (ShowCursor(FALSE) >= 0) {}
-    } else {
-        ClipCursor(nullptr);
-        while (ShowCursor(TRUE) < 0) {}
-    }
-}
-
-void SetPaused(bool paused) {
-    GameSetPaused(paused);
-    Capture(!paused && GetForegroundWindow() == g_hwnd);
-}
-
-void ApplyFullscreen(bool on) {
-    DWORD style = (DWORD)GetWindowLongPtrW(g_hwnd, GWL_STYLE);
-    if (on) {
-        g_windowedPlacement.length = sizeof(WINDOWPLACEMENT);
-        GetWindowPlacement(g_hwnd, &g_windowedPlacement);
-        MONITORINFO mi = {};
-        mi.cbSize = sizeof mi;
-        GetMonitorInfoW(MonitorFromWindow(g_hwnd, MONITOR_DEFAULTTOPRIMARY), &mi);
-        SetWindowLongPtrW(g_hwnd, GWL_STYLE, (style & ~WS_OVERLAPPEDWINDOW) | WS_POPUP);
-        SetWindowPos(g_hwnd, HWND_TOP, mi.rcMonitor.left, mi.rcMonitor.top, mi.rcMonitor.right - mi.rcMonitor.left,
-                     mi.rcMonitor.bottom - mi.rcMonitor.top, SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
-    } else {
-        SetWindowLongPtrW(g_hwnd, GWL_STYLE, (style & ~WS_POPUP) | WS_OVERLAPPEDWINDOW);
-        SetWindowPlacement(g_hwnd, &g_windowedPlacement);
-        SetWindowPos(g_hwnd, nullptr, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
-    }
-    if (g_captured) { Capture(false); Capture(true); } // re-clip to the new client area
-}
-
-LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
-    switch (msg) {
-    case WM_SIZE:
-        ResizeRender(LOWORD(lParam), HIWORD(lParam));
-        if (g_captured) { Capture(false); Capture(true); }
-        return 0;
-    case WM_ACTIVATE:
-        if (LOWORD(wParam) == WA_INACTIVE) { Capture(false); InputReleaseAll(); if (!GamePaused()) SetPaused(true); }
-        return 0;
-    case WM_KILLFOCUS:
-        Capture(false);
-        InputReleaseAll();
-        return 0;
-    case WM_INPUT: {
-        if (!g_captured) break;
-        RAWINPUT ri;
-        UINT size = sizeof ri;
-        if (GetRawInputData((HRAWINPUT)lParam, RID_INPUT, &ri, &size, sizeof(RAWINPUTHEADER)) != (UINT)-1 &&
-            ri.header.dwType == RIM_TYPEMOUSE && !(ri.data.mouse.usFlags & MOUSE_MOVE_ABSOLUTE))
-            InputMouseMove(ri.data.mouse.lLastX, ri.data.mouse.lLastY);
-        break; // DefWindowProc must still see WM_INPUT
-    }
-    case WM_KEYDOWN: case WM_SYSKEYDOWN: {
-        bool repeat = (lParam & (1 << 30)) != 0;
-        int vk = (int)wParam;
-        if (vk == VK_F11 && !repeat) { g_fullscreen = !g_fullscreen; ApplyFullscreen(g_fullscreen); SaveSettings(); return 0; }
-        if (vk == VK_F4 && msg == WM_SYSKEYDOWN) break; // Alt+F4 closes as usual
-        if (!repeat && vk == g_bindings[ACT_PAUSE]) { SetPaused(!GamePaused()); return 0; }
-        if (!repeat) GameDebugKey(vk, (GetKeyState(VK_CONTROL) & 0x8000) != 0);
-        if (!GamePaused()) InputKey(vk, true, repeat);
-        return 0;
-    }
-    case WM_KEYUP: case WM_SYSKEYUP:
-        InputKey((int)wParam, false, false);
-        return 0;
-    case WM_LBUTTONDOWN: case WM_RBUTTONDOWN: case WM_MBUTTONDOWN: {
-        if (GamePaused()) { SetPaused(false); return 0; } // a click returns to the game (and isn't also a shot)
-        int code = msg == WM_LBUTTONDOWN ? MOUSE_LEFT : msg == WM_RBUTTONDOWN ? MOUSE_RIGHT : MOUSE_MIDDLE;
-        InputMouseButton(code, true);
-        return 0;
-    }
-    case WM_LBUTTONUP: InputMouseButton(MOUSE_LEFT, false); return 0;
-    case WM_RBUTTONUP: InputMouseButton(MOUSE_RIGHT, false); return 0;
-    case WM_MBUTTONUP: InputMouseButton(MOUSE_MIDDLE, false); return 0;
-    case WM_MOUSEWHEEL:
-        if (!GamePaused()) InputWheel(GET_WHEEL_DELTA_WPARAM(wParam) / WHEEL_DELTA);
-        return 0;
-    case WM_DESTROY:
-        Capture(false);
-        PostQuitMessage(0);
-        return 0;
-    }
-    return DefWindowProcW(hwnd, msg, wParam, lParam);
-}
-} // namespace
+#include "audio.h"
+#include "worldsound.h"
+#include "persist.h"
+#include "game.h"
+#include "profiler.h"
+#include "pulse.h"
+#include "fliers.h"
+#include "theline.h"
+#include "essence.h"
 
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
-    ProfBootMark("LAUNCH");
-    {
-        // Per-monitor DPI aware, so Windows never blurs the window on a
-        // scaled display (V2 context where available, the old call otherwise).
-        typedef BOOL(WINAPI * SetCtxFn)(HANDLE);
-        HMODULE user32 = GetModuleHandleW(L"user32.dll");
-        SetCtxFn setCtx = user32 ? (SetCtxFn)(void*)GetProcAddress(user32, "SetProcessDpiAwarenessContext") : nullptr;
-        if (!setCtx || !setCtx((HANDLE)-4)) SetProcessDPIAware();
-    }
+    ProfBootMark("LAUNCH"); // Windows loading the exe and its DLLs, and static set-up
+    // Wide (W-suffixed) throughout, deliberately -- mixing an ANSI-
+    // registered window (RegisterClassA/CreateWindowA) with the wide
+    // DefWindowProcW that the project's Unicode character-set setting
+    // makes the unsuffixed DefWindowProc macro expand to is a known
+    // Win32 mismatch that corrupts non-client text (the title bar):
+    // it's what produced the garbled CJK-looking title before this.
     WNDCLASSW wc = {};
     wc.lpfnWndProc = WndProc;
     wc.hInstance = hInstance;
-    wc.lpszClassName = L"CacophonyWindow";
-    wc.hCursor = LoadCursorW(nullptr, (LPCWSTR)IDC_ARROW);
+    wc.lpszClassName = L"VoxisticsWindowClass";
+    wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
     RegisterClassW(&wc);
+
+    // Per-monitor DPI aware, so Windows never bitmap-stretches (blurs) the
+    // window on a scaled display. Looked up dynamically: the V2 context
+    // needs Windows 10 1703+, with the Vista-era call as the fallback.
+    {
+        typedef BOOL (WINAPI *SetCtxFn)(HANDLE);
+        HMODULE user32 = GetModuleHandleW(L"user32.dll");
+        SetCtxFn setCtx = user32 ? (SetCtxFn)(void*)GetProcAddress(user32, "SetProcessDpiAwarenessContext") : nullptr;
+        if (!setCtx || !setCtx((HANDLE)-4 /* DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 */)) SetProcessDPIAware();
+    }
+
     RECT wr = { 0, 0, DEFAULT_WINDOW_W, DEFAULT_WINDOW_H };
-    AdjustWindowRect(&wr, WS_OVERLAPPEDWINDOW, FALSE);
-    g_hwnd = CreateWindowW(L"CacophonyWindow", L"Cacophony", WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT,
-                           wr.right - wr.left, wr.bottom - wr.top, nullptr, nullptr, hInstance, nullptr);
-    if (!g_hwnd) return 1;
-    RECT rc; GetClientRect(g_hwnd, &rc);
-    ResizeRender(rc.right - rc.left, rc.bottom - rc.top);
+    DWORD style = WS_OVERLAPPEDWINDOW; // resizable and maximisable; the backbuffer follows (WM_SIZE)
+    AdjustWindowRect(&wr, style, FALSE);
+    g_hwnd = CreateWindowW(L"VoxisticsWindowClass", L"Voxistics",
+                            style, CW_USEDEFAULT, CW_USEDEFAULT,
+                            wr.right - wr.left, wr.bottom - wr.top,
+                            nullptr, nullptr, hInstance, nullptr);
+    if (!g_hwnd) return -1;
     ShowWindow(g_hwnd, nCmdShow);
     ProfBootMark("WINDOW");
-    LoadSettings();
+
+    LoadSettings(); // before anything reads g_sensitivityMultX/g_loadRadius/g_masterVolume/etc.
+    MigrateLegacySingleSaveIfPresent(); // before the title screen's slot picker can show slot 1
     ProfBootMark("SETTINGS");
 
-    if (!InitRender(g_hwnd)) {
-        MessageBoxW(g_hwnd, L"Cacophony couldn't start its graphics.\nshader_errors.txt in Documents\\My Games\\Cacophony may say why.",
-                    L"Cacophony", MB_OK | MB_ICONERROR);
-        return 1;
-    }
-    if (g_fullscreen) ApplyFullscreen(true);
-    RAWINPUTDEVICE rid = { 0x01, 0x02, 0, g_hwnd }; // generic desktop mouse
-    RegisterRawInputDevices(&rid, 1, sizeof rid);
-    GameInit(20260925u);
-    ProfBootMark("WORLD");
-    Capture(GetForegroundWindow() == g_hwnd);
+    // XAudio2Create requires COM initialized on the calling thread.
+    // Nothing else in this file has needed that so far (SHGetKnownFolderPath
+    // manages its own COM state internally), so this is the first call
+    // that actually needs it.
+    HRESULT comHr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    bool comInitialized = SUCCEEDED(comHr);
 
-    timeBeginPeriod(1); // 1 ms sleeps, so the frame cap is precise
-    LARGE_INTEGER freq, last;
+    if (!InitD3D(g_hwnd)) return -1;
+    if (g_fullscreen) ApplyFullscreen(true); // saved preference
+    std::string textureProblems;
+    if (!InitTextures(textureProblems)) return -1;
+    ProfBootMark("TEXTURES");
+    // One toast (a second would replace the first).
+    std::string startupProblems = textureProblems;
+    if (!ShaderErrors().empty())
+        startupProblems += (startupProblems.empty() ? "" : "  /  ") + std::string("SOME GRAPHICS EFFECTS FAILED TO LOAD - SEE SHADER_ERRORS.TXT");
+    if (!startupProblems.empty()) ShowToast(startupProblems, 8.0f);
+    InitAudio(); // a machine with no usable audio device still gets a silent but playable game (Section 10)
+    BuildSkyMesh();
+    ProfBootMark("AUDIO");
+    bool firstFrame = true;
+
+    // 1 ms timer resolution while running, so the frame cap's Sleep is precise.
+    timeBeginPeriod(1);
+    LARGE_INTEGER freq, lastTime;
     QueryPerformanceFrequency(&freq);
-    QueryPerformanceCounter(&last);
-    const float TICK = 1.0f / 60.0f;
-    float accumulator = 0;
-    bool first = true, running = true;
+    QueryPerformanceCounter(&lastTime);
+    const float FIXED_DT = 1.0f / 60.0f;
+    float accumulator = 0.0f;
+
+    bool running = true;
     while (running) {
         MSG msg;
-        while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
-            if (msg.message == WM_QUIT) running = false;
+        while (PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE)) {
+            if (msg.message == WM_QUIT) { running = false; }
             TranslateMessage(&msg);
-            DispatchMessageW(&msg);
+            DispatchMessage(&msg);
         }
         if (!running) break;
+
         LARGE_INTEGER now;
         QueryPerformanceCounter(&now);
-        float dt = (float)(now.QuadPart - last.QuadPart) / (float)freq.QuadPart;
-        last = now;
-        ProfEndFrame(dt); // the true frame length: a hitch is what it's there to show
+        float dt = (float)(now.QuadPart - lastTime.QuadPart) / (float)freq.QuadPart;
+        lastTime = now;
+        // The profiler closes the previous frame with its true, unclamped
+        // length -- a hitch is exactly what it is there to show.
+        ProfEndFrame(dt);
+        PollPerfCapture();
         ProfBeginFrame();
-        if (dt > 0.25f) dt = 0.25f;
-        if (GamePaused()) accumulator = 0; // paused: the world waits, and no catch-up burst on return
-        else {
-            accumulator += dt;
-            int ticks = 0;
-            while (accumulator >= TICK && ticks++ < 5) { GameTick(TICK); accumulator -= TICK; }
-            if (accumulator >= TICK) accumulator = fmodf(accumulator, TICK);
+        if (dt > 0.25f) dt = 0.25f; // clamp huge stalls (e.g. window drag)
+        accumulator += dt;
+
+        TickAutosave(dt);
+        if (g_toastTimer > 0.0f) {
+            g_toastTimer -= dt;
+            if (g_toastTimer < 0.0f) g_toastTimer = 0.0f;
         }
-        GameFrame(dt);
-        GameRender();
+        if (g_confirmOverwriteSlot != -1) {
+            g_confirmOverwriteTimer -= dt;
+            if (g_confirmOverwriteTimer <= 0.0f) g_confirmOverwriteSlot = -1; // armed confirm expired; next click re-arms instead of overwriting
+        }
+
+        UpdateDebugTimeScrub(dt); // debug time control (F8, ] / [ or Page Up / Down)
+
+        g_fpsFrameCount++;
+        g_fpsTimer += dt;
+        if (g_fpsTimer >= 1.0f) {
+            g_fpsDisplay = g_fpsFrameCount;
+            g_fpsFrameCount = 0;
+            g_fpsTimer -= 1.0f;
+        }
+
+        // The foreground check is defense-in-depth alongside the
+        // WM_KILLFOCUS handler above: without it, a focus change this
+        // same frame that WM_KILLFOCUS hasn't been dispatched for yet
+        // would still let this recenter the real cursor into the
+        // window while some other application is what's actually
+        // focused.
+        if (g_mouseCaptured && GetForegroundWindow() == g_hwnd) {
+            POINT cursor; GetCursorPos(&cursor);
+            RECT rc; GetClientRect(g_hwnd, &rc);
+            POINT center = { (rc.right - rc.left) / 2, (rc.bottom - rc.top) / 2 };
+            ClientToScreen(g_hwnd, &center);
+            int dx = cursor.x - center.x, dy = cursor.y - center.y;
+            float sensX = BASE_MOUSE_SENS * g_sensitivityMultX;
+            float sensY = BASE_MOUSE_SENS * g_sensitivityMultY;
+            g_player.yaw += (g_invertX ? -dx : dx) * sensX;
+            g_player.pitch += (g_invertY ? dy : -dy) * sensY;
+            if (g_player.pitch > 1.55f) g_player.pitch = 1.55f;
+            if (g_player.pitch < -1.55f) g_player.pitch = -1.55f;
+            SetCursorPos(center.x, center.y);
+        }
+
+        // Fixed-timestep simulation, decoupled from render/present rate
+        // (Section 5.3's recommended accumulator approach). While the
+        // pause menu is open the world is frozen and the accumulator is
+        // dropped rather than left to build up, so resuming doesn't
+        // trigger a burst of catch-up ticks for however long it was paused.
+        if (g_menuScreen != MenuScreen::None) {
+            accumulator = 0.0f;
+        } else {
+            // At most five ticks a frame: after a stall (a window drag, a
+            // slow disk), running every missed tick at once makes the next
+            // frame slow too, and that one the next -- a hitch that feeds
+            // itself. Past five, the backlog is let go (the world runs a
+            // touch behind real time for that moment instead).
+            const int MAX_TICKS_PER_FRAME = 5;
+            int ticks = 0;
+            while (accumulator >= FIXED_DT && ticks++ < MAX_TICKS_PER_FRAME) {
+                // Day clock (Section 13): advances only here, gated
+                // identically to every other simulation system -- the
+                // single authoritative source of "what time is it,"
+                // which the music (Part XIV) reads directly rather than
+                // tracking its own independent notion of time.
+                g_dayTimeSeconds = fmodf(g_dayTimeSeconds + FIXED_DT, DAY_LENGTH_SECONDS);
+
+                int pcx = FloorDiv16((int)floor(g_player.x));
+                int pcz = FloorDiv16((int)floor(g_player.z));
+                {
+                    ProfScope prof(PROF_TERRAIN);
+                    EnsureChunksLoaded(pcx, pcz);
+                    ProcessColumnGeneration(g_world);
+                }
+                {
+                    ProfScope prof(PROF_EVICT);
+                    ProcessColumnEviction(g_world);
+                }
+
+                MoveInput in;
+                in.fwd = IsActionDown(ACT_FORWARD); in.back = IsActionDown(ACT_BACK);
+                in.left = IsActionDown(ACT_LEFT); in.right = IsActionDown(ACT_RIGHT);
+                in.jump = IsActionDown(ACT_JUMP);
+                in.sprint = IsActionDown(ACT_SPRINT); in.crouch = IsActionDown(ACT_CROUCH);
+                {
+                    ProfScope prof(PROF_PHYSICS);
+                    UpdatePlayerPhysics(g_world, g_player, FIXED_DT, in);
+                }
+                {
+                    ProfScope prof(PROF_UPDATES);
+                    ProcessScheduledUpdates(g_world);
+                }
+                {
+                    // Harvesters gather steadily, faster where The Line bends time.
+                    ProfScope prof(PROF_PULSE);
+                    g_pulse.Tick(g_world, g_pulseTuning, FIXED_DT, [](int x, int y, int z) {
+                        return LineTimeRateAt(g_line, g_lineTuning, x + 0.5f, y + 0.5f, z + 0.5f);
+                    });
+                    FeedLine(g_line, g_pulse.TakeDiffused()); // diffusers widen the line's band
+                }
+                {
+                    // Fliers age by the local rate of time: The Line burns their day away.
+                    ProfScope prof(PROF_UPDATES);
+                    g_fliers.Tick(g_world, g_flierTuning, g_player.x, g_player.y, g_player.z, FIXED_DT, [](float x, float y, float z) {
+                        return LineTimeRateAt(g_line, g_lineTuning, x, y, z);
+                    });
+                }
+                UpdateLine(g_line, g_lineTuning, g_player.x, g_player.y, g_player.z, FIXED_DT);
+                WorldSoundTick(FIXED_DT); // footfalls, landings, slides, The Line passing
+                g_essence.Update(g_player.x, g_player.z); // discovery (Part XIX)
+
+                accumulator -= FIXED_DT;
+            }
+            if (accumulator >= FIXED_DT) accumulator = fmodf(accumulator, FIXED_DT);
+        }
+
+        // Once per frame, not per tick: after a stall the tick loop runs
+        // many catch-up ticks in one frame, and each would otherwise
+        // generate another music chunk on top of the stall.
+        if (g_menuScreen == MenuScreen::None) {
+            ProfScope prof(PROF_MUSIC);
+            RefillMusicQueueIfNeeded();
+        }
+        if (IsInGame()) {
+            // The soundscape census and the world sound palette's queue
+            // (UI sounds still play in the library and map).
+            ProfScope prof(PROF_SOUND);
+            WorldSoundFrame(dt, g_menuScreen == MenuScreen::None);
+        }
+        {
+            ProfScope prof(PROF_MESH);
+            RebuildDirtyChunks(g_world, FloorDiv16((int)floorf(g_player.x)),
+                               FloorDiv16((int)floorf(g_player.y + g_player.eyeHeight)), FloorDiv16((int)floorf(g_player.z)));
+        }
+        ProfSetCounter(PCOUNT_CHUNKS_RESIDENT, (int64_t)g_world.chunks.size());
+        ProfSetCounter(PCOUNT_DIRTY_WAITING, (int64_t)g_world.dirtyChunks.size());
+        ProfSetCounter(PCOUNT_COLUMNS_WAITING, (int64_t)g_pendingColumns.size());
+        ProfSetCounter(PCOUNT_UPDATES_WAITING, (int64_t)ScheduledUpdateCount());
+        Vec3 f, r, u;
+        GetCameraVectors(g_player, f, r, u);
+        Vec3 eye = { g_player.x, g_player.y + g_player.eyeHeight, g_player.z };
+        Mat4 view = MatLookToLH(eye, f, u);
+        // g_fov (Accessibility, Section 11) is stored in degrees since
+        // that's the meaningful unit for a player-facing slider.
+        float fovRadians = g_fov * (3.14159265359f / 180.0f);
+        Mat4 proj = MatPerspectiveFovLH(fovRadians, (float)g_screenW / g_screenH, 0.1f, 500.0f);
+        // The essence map covers the whole screen: skip the world (and its
+        // post effects) entirely while it's open rather than draw it unseen.
+        GpuFrameBegin();
+        if (g_menuScreen == MenuScreen::Map) RenderEmptyScene();
+        else RenderScene(g_world, view, proj, eye, f, u, g_dayTimeSeconds);
+
+        {
+            ProfScope prof(PROF_UI);
+            RenderUIPass();
+        }
+        GpuMarkUIDone();
+        GpuFrameEnd();
+
         {
             ProfScope prof(PROF_PRESENT);
-            PresentFrame(g_vsync);
-            if (first) { first = false; ProfBootMark("FIRST FRAME"); }
-            // With vsync on, the display paces the frames; the cap applies without it
-            // (a cap that isn't a divisor of the refresh rate would make frames judder).
-            if (!g_vsync) {
-                double target = 1.0 / (double)g_frameLimit;
-                for (;;) {
-                    LARGE_INTEGER t; QueryPerformanceCounter(&t);
-                    double left = target - (double)(t.QuadPart - now.QuadPart) / (double)freq.QuadPart;
-                    if (left <= 0) break;
-                    if (left > 0.002) Sleep((DWORD)((left - 0.0015) * 1000.0));
-                }
+            g_swapChain->Present(g_vsync ? 1 : 0, 0);
+            if (firstFrame) { firstFrame = false; ProfBootMark("FIRST FRAME"); }
+            // The frame-rate cap (Graphics, 30-200): sleep off whatever is
+            // left of this frame's share, then a short spin for precision.
+            // The simulation runs on a fixed step, so the cap changes only
+            // how often we draw -- never how fast the world moves.
+            double target = 1.0 / (double)(g_frameLimit < 30 ? 30 : g_frameLimit);
+            LARGE_INTEGER t;
+            for (;;) {
+                QueryPerformanceCounter(&t);
+                double spent = (double)(t.QuadPart - now.QuadPart) / (double)freq.QuadPart;
+                double left = target - spent;
+                if (left <= 0.0) break;
+                if (left > 0.002) Sleep((DWORD)((left - 0.0015) * 1000.0));
             }
         }
     }
+
     timeEndPeriod(1);
-    ShutdownRender();
+    ShutdownAudio();
+    if (comInitialized) CoUninitialize();
     return 0;
 }
