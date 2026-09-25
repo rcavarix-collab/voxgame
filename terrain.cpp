@@ -288,10 +288,12 @@ void Terrain::Mesh(const ChunkKey& k, TerrainChunk& c) const {
 // Change
 // ---------------------------------------------------------------------
 float Terrain::Blast(Vec3 centre, float radius) {
+    // A blast only ever removes ground (owner: "it should remove material,
+    // not scoot it around"). Thrown soil is a change of surface type around
+    // the hole, never added volume.
     const float scorch = 1.5f;          // metres of blackened ground beyond the hole
-    const float rimW = 0.7f * radius;   // the lip of thrown-up ground around it...
-    const float rimH = 0.22f * radius;  // ...and its height at the crest
-    const float reach = radius + std::max(scorch, rimW * 1.4f) + CELL;
+    const float soilW = 0.8f * radius;  // the ring where thrown soil lands on the grass
+    const float reach = radius + std::max(scorch, soilW) + CELL;
     int g0x = (int)floorf((centre.x - reach) / CELL), g1x = (int)ceilf((centre.x + reach) / CELL);
     int g0y = (int)floorf((centre.y - reach) / CELL), g1y = (int)ceilf((centre.y + reach) / CELL);
     int g0z = (int)floorf((centre.z - reach) / CELL), g1z = (int)ceilf((centre.z + reach) / CELL);
@@ -309,7 +311,7 @@ float Terrain::Blast(Vec3 centre, float radius) {
                 for (int y = 0; y < CHUNK; y++) for (int z = 0; z < CHUNK; z++) for (int x = 0; x < CHUNK; x++)
                     ch.samples[((size_t)y * CHUNK + z) * CHUNK + x] = Generate(cx * CHUNK + x, cy * CHUNK + y, cz * CHUNK + z);
             }
-    for (int gy = g0y; gy <= g1y; gy++) // bottom up: a raised sample can take its soil from the one below
+    for (int gy = g0y; gy <= g1y; gy++)
         for (int gz = g0z; gz <= g1z; gz++)
             for (int gx = g0x; gx <= g1x; gx++) {
                 TerrainChunk& ch = m_chunks[{ FloorDiv(gx, CHUNK), FloorDiv(gy, CHUNK), FloorDiv(gz, CHUNK) }];
@@ -319,16 +321,10 @@ float Terrain::Blast(Vec3 centre, float radius) {
                 bool wasSolid = s.d > 0;
                 if (dist < radius) {
                     int8_t carved = PackDensity(dist - radius);
-                    if (carved < s.d) s.d = carved;
+                    if (carved < s.d) s.d = carved; // only ever lower: nothing is added anywhere
                     if (wasSolid && s.d <= 0) removed++;
-                } else if (dist < radius + rimW && s.d > -(int)((rimH + CELL) * DENSITY_SCALE) && s.d < (int)(CELL * DENSITY_SCALE)) {
-                    // The rim: ground thrown up and out, a lip that rises and falls away.
-                    float h = rimH * sinf(kPi * (dist - radius) / rimW);
-                    int d = s.d + (int)(h * DENSITY_SCALE);
-                    s.d = (int8_t)(d > 127 ? 127 : d);
-                    if (!wasSolid && s.d > 0) s.mat = SoilUnder(gx, gy, gz);
                 }
-                if (s.d > 0 && dist < radius + rimW * 1.4f && GroundIsGrass(s.mat) && Hash01(gx, gy, gz, m_seed + 90) < 0.75f)
+                if (s.d > 0 && dist < radius + soilW && GroundIsGrass(s.mat) && Hash01(gx, gy, gz, m_seed + 90) < 0.75f)
                     s.mat = (uint8_t)(GroundSoil(s.mat) | (s.mat & GROUND_SCORCHED)); // thrown soil covers the grass, patchily
                 if (s.d > 0 && dist < radius + scorch + CELL) s.mat |= GROUND_SCORCHED;
             }

@@ -45,7 +45,7 @@ Chosen: **faceted smooth.** The ground is stored as voxels, and its surface is d
   - sun shadows, which also feed solar charging (§4);
   - ambient occlusion read from the density field;
   - no outlines.
-- **Craters** have a raised lip of thrown-up ground, with soil scattered over the grass around them and a scorched ring.
+- **Craters** only remove ground (owner: a blast removes material, it doesn't push it around). Soil is scattered over the grass around them as a change of surface, not added volume, with a scorched ring.
 - **Ground variety (owner).** The starting map has clumps of several grass and dirt types, like the archive's patchwork plain, so the look can be judged side by side. They lie in organic meadows (large irregular regions with interpenetrating borders), smaller islands of another grass, and scattered bare patches of loam, clay and gravel. Each voxel sample carries its ground type; each type has its own texture and its own footstep sound.
 - **Props:**
   - Trees, rocks and plants are built from our primitive shapes (owner): low-poly objects, not voxels.

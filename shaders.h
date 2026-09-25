@@ -25,7 +25,10 @@ cbuffer SkyCB : register(b0) {
 struct VSOut { float4 pos : SV_POSITION; float2 ndc : TEXCOORD0; };
 VSOut VSMain(uint id : SV_VertexID) {
     VSOut o;
-    float2 p = float2((id == 1) ? 3.0 : -1.0, (id == 2) ? 3.0 : -1.0);
+    // (-1,-1), (-1,3), (3,-1): clockwise on screen, the front winding the
+    // culling rasterizer keeps. (The other order was culled: no sky, and the
+    // back buffer kept old frames.)
+    float2 p = float2((id == 2) ? 3.0 : -1.0, (id == 1) ? 3.0 : -1.0);
     o.pos = float4(p, 1.0, 1.0);
     o.ndc = p;
     return o;

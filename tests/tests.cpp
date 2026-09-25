@@ -90,6 +90,9 @@ static void TestBlast() {
     Terrain t; t.Reset(7);
     BuildAll(t, { 0, 0, 0 }, 100);
     Vec3 c = { 10, 1, 10 };
+    // Remember the field's densities around the hole, to prove the blast adds nothing.
+    std::vector<int> before;
+    for (int gy = -8; gy <= 4; gy++) for (int gz = -4; gz <= 14; gz++) for (int gx = -4; gx <= 14; gx++) before.push_back(t.SampleAt(gx, gy, gz).d);
     float removed = t.Blast(c, 6.0f);
     CHECK(removed > 100.0f);
     CHECK(!t.Solid({ 10, -2, 10 }));        // the hole
@@ -114,12 +117,16 @@ static void TestBlast() {
         for (auto& v : kv.second.verts)
             if (v.y < -3.0f && !GroundIsGrass(v.mat)) sawSoil = true;
     CHECK(sawSoil);
-    // The rim: ground thrown up around the hole, higher than the field, then falling away.
-    float rimY = 0, farY = 0;
-    CHECK(t.GroundBelow(10 + 6.0f + 2.0f, 10, 20, 50, rimY));  // radius + about half the lip's width
-    CHECK(t.GroundBelow(10 + 6.0f + 12.0f, 10, 20, 50, farY));
-    CHECK(rimY > 1.4f);
-    NEAR(farY, 1.0f, 0.05f);
+    // A blast only removes: no sample anywhere around it gained density
+    // (owner: no ground pushed up or moved around), and the field beside it
+    // stays at its height.
+    size_t i = 0; int gained = 0;
+    for (int gy = -8; gy <= 4; gy++) for (int gz = -4; gz <= 14; gz++) for (int gx = -4; gx <= 14; gx++)
+        if (t.SampleAt(gx, gy, gz).d > before[i++]) gained++;
+    CHECK(gained == 0);
+    float besideY = 0;
+    CHECK(t.GroundBelow(10 + 6.0f + 3.0f, 10, 20, 50, besideY));
+    NEAR(besideY, 1.0f, 0.05f);
     // Thrown soil covers some of the grass on the rim.
     int soilOnRim = 0;
     for (int a = 0; a < 16; a++) {

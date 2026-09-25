@@ -470,6 +470,10 @@ void RenderWorld(const Terrain& t, const FrameView& v) {
     g_ctx->ClearDepthStencilView(g_dsv, D3D11_CLEAR_DEPTH, 1.0f, 0);
     g_ctx->RSSetState(g_rasterSolid);
     SkyLight sky = SkyAt(v.dayTime);
+    // Cleared first even though the sky covers every pixel: if the sky ever
+    // fails to draw, the screen shows a plain horizon colour, not old frames.
+    float clear[4] = { sky.horizon.x, sky.horizon.y, sky.horizon.z, 1 };
+    g_ctx->ClearRenderTargetView(g_rtv, clear);
     Vec3 sun = SunDirection(v.dayTime);
     float strength = SunStrength(v.dayTime);
 
@@ -487,9 +491,6 @@ void RenderWorld(const Terrain& t, const FrameView& v) {
         g_ctx->PSSetShader(g_skyPS, nullptr, 0);
         g_ctx->PSSetConstantBuffers(0, 1, &g_skyCB);
         g_ctx->Draw(3, 0);
-    } else {
-        float clear[4] = { sky.horizon.x, sky.horizon.y, sky.horizon.z, 1 };
-        g_ctx->ClearRenderTargetView(g_rtv, clear);
     }
 
     // Terrain.

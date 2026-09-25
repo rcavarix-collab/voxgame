@@ -10,7 +10,8 @@ const char* g_actionNames[ACT_COUNT] = {
     "forward", "back", "left", "right", "jump", "boost", "fire", "next_weapon", "lock", "shield", "pause",
 };
 int g_bindings[ACT_COUNT] = {
-    'W', 'S', 'A', 'D', VK_SPACE, VK_SHIFT, MOUSE_LEFT, 'Q', MOUSE_RIGHT, 'F', VK_ESCAPE,
+    // F switches weapons (owner's expectation; the wheel does too); E is the shield.
+    'W', 'S', 'A', 'D', VK_SPACE, VK_SHIFT, MOUSE_LEFT, 'F', MOUSE_RIGHT, 'E', VK_ESCAPE,
 };
 
 namespace {
