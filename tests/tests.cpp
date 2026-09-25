@@ -148,7 +148,7 @@ static void TestBlockTextures() {
     BlockTextureSet t;
     BuildBlockTextures(none, t);
     CHECK(t.warnings.empty());
-    CHECK(t.layerCount == 14 + 54); // 14 procedural (foundation .. crystal) + 54 more names only the generated art provides (magenta without it)
+    CHECK(t.layerCount == 14 + 90); // 14 procedural (foundation .. crystal) + 90 more names only the generated art provides (magenta without it)
 
     // The natural materials' art in the repo loads cleanly and covers
     // every natural block (no magenta fallback), with seamless wrap.
@@ -172,6 +172,17 @@ static void TestBlockTextures() {
                 size_t before = nat.textures.size();
                 ParseVtex(itext, "industry.vtex", nat);
                 CHECK(nat.errors.empty() && nat.textures.size() == before + 10);
+            }
+            // ...and the September trial batch (batch_sept.vtex): textures named after their blocks.
+            FILE* fb = fopen("../assets/textures/batch_sept.vtex", "rb");
+            CHECK(fb != nullptr);
+            if (fb) {
+                std::string btext;
+                while ((got = fread(buf, 1, sizeof buf, fb)) > 0) btext.append(buf, got);
+                fclose(fb);
+                size_t before = nat.textures.size();
+                ParseVtex(btext, "batch_sept.vtex", nat);
+                CHECK(nat.errors.empty() && nat.textures.size() == before + 36);
             }
             BlockTextureSet nt; BuildBlockTextures(nat, nt);
             CHECK(nt.warnings.empty());
