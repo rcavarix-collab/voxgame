@@ -1,37 +1,52 @@
-# Voxistics — working notes for Claude
+# Working notes for Claude
 
-The design of record is `DESIGN.md`; read the relevant part before changing a system.
+A new game, started September 2026. No title yet (the owner will name it).
 
-## What the game is reaching for
-The owner's touchstones: Minecraft (the block world, building), Satisfactory and FactoryTown (production chains, logistics), BuildCraft and IndustrialCraft (machines, pipes, power), Equivalent Exchange (transmutation by value), Sandustry (simulated materials that fall, flow and react). The shape: a factory game grounded in a living, simulated world, with The Line and the essence network as the strange layer on top — essence is the natural candidate for a transmutation economy. Theme: industry isn't the monster — its byproducts are real, and running it well keeps the land healthy (DESIGN.md Part XX). The threat is abstract, not combat: neglected land opens rifts of creeping ooze with real loss, pushed back by management and light. Take their *mechanics* (genre ground); never their names, terms, items or art.
+## The game so far
+- The player drives a **mech suit** across a **fully destructible voxel world**. Digging into the earth matters to the owner; that is why the world is voxels.
+- **Two layers of display:**
+  - the **cockpit**: physical controls and live dials, in the foreground;
+  - the **holographic HUD**, projected in front of it.
+  Keep them distinct: the cockpit shows the mech's own state; the HUD shows the world and targets.
+- **First playable milestone:**
+  - a simple cockpit with mech controls and active dials;
+  - one target that doesn't fire back: lock on and fire missiles, test machine-gun fire, destroy it.
+  - No enemies that shoot back yet.
+- **Before that milestone:** lock in the look. That means the voxel shape (cubes are out: see `prototypes/voxel_shapes/`) and the textures.
+- Mech movement is fast, like combat. Rendering must hold up at speed, so cost per chunk and mesh rebuild time are design inputs, not afterthoughts.
+- Not this game: time distortion, The Line, pulse logistics. Those were Voxistics.
 
-## Scope: docs/SCOPE_MOSCOW.xlsx
-The owner keeps scope with MoSCoW (Must / Should / Could / Won't) against a stated horizon (the "How to use" sheet). Before starting work, check it: new work needs a row; new ideas enter as Could or Won't, marked "Claude (proposed)" in Decided by, until the owner decides. Only the owner sets Must. Won't = not this horizon (the dev pile), not rejected. Update Status as work lands (edit with openpyxl, keeping its formatting; LibreOffice can't recalculate in the cloud sandbox, so the workbook calculates on open).
+## Layout
+- `archive/voxistics/`: the previous game, frozen (git tag `voxistics-final`). It still builds and its tests still pass.
+  - Read it for proven pieces worth bringing over deliberately: shader cache, F3 profiler, boot timeline, GPU timing, sfx and music synths, save format.
+  - Bring a piece over on purpose, with tests. Never copy the whole thing.
+- `prototypes/`: offline experiments (renders, studies). Nothing in the game depends on them.
+- Seed files at the root: Prismative.cpp, drillder.cpp, LG2.cpp, cc_2_2_2.cpp. These are the owner's hand-tested prototypes; consult them first.
+  - Take ideas, never code.
+  - cc_2_2_2.cpp's texture generators are the technique library for procedural textures.
+  - drillder.cpp is a digging prototype.
 
-## Standing priorities
-- **Target machine: an outdated, modest Windows PC** (the owner's own). Design every feature to run well there; never read or report the player's hardware (no GPU/CPU/spec queries) — assume the modest machine instead.
-- **Privacy.** No telemetry, analytics, crash reporting, update checks or any network use; nothing about the player or their machine is collected or leaves it. Quality comes from testing before release. Debug aids (F3, the Ctrl+F3 report) only ever act when pressed and only write local files.
-- **Lagless efficiency.** Cost scales with what's on screen or what changed, never with world size. Budget per-tick work; rebuild only on change; measure with the F3 profiler.
-- **Fast boot.** Start-up is part of efficiency: nothing slow happens at launch that could be cached, deferred or done once. Check the boot timeline (F3 / the Ctrl+F3 report) after any change to start-up.
-- **Organization and careful annotation.** Keep code where a reader would look for it (one system per file, the project file as the source list), and annotate the *why*: every system opens with a header comment saying what it is, what it costs and where its design lives (DESIGN.md section), and non-obvious lines say what they guard against.
-- **Fake it convincingly, cheaply.** Visual effects are per-pixel tricks driven by small per-frame constants, not extra passes or per-block data (DESIGN.md 4.8–4.12).
-- **Photosensitivity.** Nothing flashes faster than 3 times a second (musiclevel.h shows how).
-- **Nothing anyone owns — no stepping on toes.** Everything in the game is original or genuinely free to use:
-  - no brands, logos, trademarks, product or company names, real currencies or crypto symbols, official insignia or emblems;
-  - no copyrighted art, music, melodies, text or characters, and nothing recreated from another game (its textures, creatures, item names, distinctive look or UI art) — shared genre mechanics are fine, their specific expression is not;
-  - traditional public-domain motifs (knotwork, florals, geometric and sacred-geometry figures) and natural materials are fine;
-  - code: the seed files are the owner's own; outside code is read for ideas only (DESIGN.md Part VIII — nothing copied, no copyleft); fonts are the player's installed system fonts, rendered at load, never shipped.
-  When unsure, make it more original rather than less.
-- **Minimal text.** Most players don't enjoy reading: show, don't tell, and keep words few and plain enough for non-native English speakers to pick up through play. No translation for now (owner's call); English only.
-- **No numbers in player-facing displays** where a band or feel will do; keep debug UI minimal (F3, F7, F8).
+## Standing priorities (carried over from Voxistics; they're the owner's, not the old game's)
+- **Target machine: an outdated, modest Windows PC** (the owner's own). Design every feature to run well there. Never read or report the player's hardware (no GPU/CPU/spec queries); assume the modest machine instead.
+- **Privacy.** No telemetry, analytics, crash reporting, update checks or any network use. Nothing about the player or their machine is collected or leaves it. Debug aids act only when pressed and write only local files.
+- **Lagless efficiency.** Cost scales with what's on screen or what changed, never with world size. Budget per-tick work, rebuild only on change, and measure with a profiler.
+- **Fast boot.** Nothing slow happens at launch that could be cached, deferred or done once.
+- **Organisation and careful annotation.** One system per file, and the project file is the source list. Every system opens with a header comment saying what it is, what it costs and where its design lives. Non-obvious lines say what they guard against.
+- **Fake it convincingly, cheaply.** Visual effects are per-pixel tricks driven by small per-frame constants, not extra passes or per-block data.
+- **Photosensitivity.** Nothing flashes faster than 3 times a second. This covers muzzle flash, explosions, warning lights and HUD blinks.
+- **Nothing anyone owns: no stepping on toes.** Everything is original or genuinely free to use.
+  - No brands, logos, trademarks, product or company names, real currencies or crypto symbols, or official or military insignia.
+  - No copyrighted art, music, text or characters, and nothing recreated from another game or show: no mech designs, cockpit layouts, HUD art or names from existing franchises. Shared genre mechanics are fine; their specific expression is not.
+  - Traditional public-domain motifs and natural materials are fine.
+  - Outside code is read for ideas only (nothing copied, no copyleft).
+  - Fonts are the player's installed system fonts, rendered at load, never shipped.
+  - When unsure, make it more original.
+- **Minimal text.** Show, don't tell. Keep words few and plain. English only for now.
+- **No numbers in player-facing displays** where a band, needle or feel will do. Dials suit this.
 
-## The seed files — consult them first
-Prismative.cpp, drillder.cpp, LG2.cpp and cc_2_2_2.cpp (repo root) are the owner's hand-tested prototypes. Before designing a feature, texture, block behaviour or view, check them for an idea that already works — take the idea, never copy the code. DESIGN.md Part VIII indexes what each still offers: cc_2_2_2.cpp's 145 texture generators are the technique library for new procedural textures (see `tools/natural_textures.py` for how a set is made); LG2.cpp's cellular-automaton behaviours (spreading grass, fire, water, trees) map onto the scheduled-update queue.
+## Scope
+Voxistics' MoSCoW sheet is archived with it. A new sheet starts once the concept is settled. Until then, new ideas are proposals and the owner decides.
 
 ## Building and checking
-- The owner builds with Visual Studio (x64, C++17, SDL checks on). Debug builds optimise the hot loops per file (Voxistics.vcxproj); judge performance in Release.
-- Native tests: `bash tests/run.sh` (no Windows needed; stubs in tests/stub).
-- Shaders: `python3 tools/check_shaders.py` (glslangValidator HLSL front end, every variant).
-- New .cpp files go into Voxistics.vcxproj (and .filters) — the project file is the source list.
-- Sound: the world sound palette (docs/SOUND_PALETTE.md) is harmony-locked to the music; any new sound goes through `sfx_synth.cpp` with pitches from the safe sets, and `bash tools/sound_demo.sh analyze` must stay clean (demo WAVs: `tools/sound_demo.sh demo DIR`).
-- Art: `.vtex` files in assets/textures (spec: assets/textures/TEXTURE_BRIEF.md). Natural set: regenerate with `python3 tools/natural_textures.py`.
+- The owner builds with Visual Studio (x64, C++17, SDL checks on). Judge performance in Release.
+- The archive's checks still run: `bash archive/voxistics/tests/run.sh` and `python3 archive/voxistics/tools/check_shaders.py`.
