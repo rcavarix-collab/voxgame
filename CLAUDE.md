@@ -22,7 +22,7 @@
   - **Owner's rule: reuse the working Voxistics code; never rewrite it.** Its engine is Cacophony's base: main loop, window procedure, menus and UI (game.cpp), settings (persist), renderer (render.cpp: atmosphere, sky with clouds, stars and moon, .vtex textures with surface maps, shadows, SSAO, outlines, bloom), audio (the day-cycle music and the sound palette), the profiler. Carry files across as they are and change only the seams where Cacophony's game (the faceted terrain, mech, weapons, props) replaces the block world, marking each seam in a comment. A "fresh draft that takes what we learned" is exactly what the owner does not want: rewrites bring transcription errors and bugs the working code never had.
   - What stays behind is only what belongs to Voxistics' own game: the block world, The Line, pulses, essence, fliers, the block library and hotbar.
 - `prototypes/`: offline experiments (renders, studies). Nothing in the game depends on them.
-- `seeds/`: Prismative.cpp, drillder.cpp, LG2.cpp, cc_2_2_2.cpp. These are the owner's hand-tested prototypes; consult them first. Reviewed in full in docs/SEED_REVIEW.md.
+- The seed prototypes, in `archive/voxistics/`: Prismative.cpp, drillder.cpp, LG2.cpp, cc_2_2_2.cpp. These are the owner's hand-tested prototypes; consult them first. Reviewed in full in docs/SEED_REVIEW.md.
   - Take ideas, never code.
   - cc_2_2_2.cpp's texture generators are the technique library for procedural textures.
   - drillder.cpp is a digging prototype.
