@@ -17,7 +17,7 @@ A new game, started September 2026. No title yet (the owner will name it).
 - Not this game: time distortion, The Line, pulse logistics. Those were Voxistics.
 
 ## Layout
-- `archive/voxistics/`: the previous game, frozen (git tag `voxistics-final`). It still builds and its tests still pass.
+- `archive/voxistics/`: the previous game, frozen (its last live commit is d081e19). It still builds and its tests still pass.
   - Read it for proven pieces worth bringing over deliberately: shader cache, F3 profiler, boot timeline, GPU timing, sfx and music synths, save format.
   - Bring a piece over on purpose, with tests. Never copy the whole thing.
 - `prototypes/`: offline experiments (renders, studies). Nothing in the game depends on them.
