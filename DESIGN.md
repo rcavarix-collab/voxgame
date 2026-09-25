@@ -1,4 +1,4 @@
-# Design (working, no title yet)
+# Cacophony: design (working)
 
 This is the design of record for the new game, built up from the owner's decisions as they're made. Proposals are marked **(proposed)** until the owner confirms them.
 
@@ -16,6 +16,9 @@ This is the design of record for the new game, built up from the owner's decisio
   - the weapons and effects in the foreground.
 
   The terrain stays large and dynamic around it. Voxel size relative to eye height is one tuning setting.
+- **The mech is large: its view is above the treeline** (owner). Trees (8–12 m) are below eye level, so the land reads as a landscape to stride across.
+  - (proposed) Eye height about 15 m, walking about 10 m/s, boosting to about 30 m/s, and a jump of about 8 m.
+  - A higher view sees farther, so view distance and far detail (coarser facets far away) matter from the start.
 - Movement is fast, like combat. Rendering must hold up at that speed.
 
 ## 2. The world's look
@@ -44,7 +47,7 @@ Chosen: **faceted smooth.** The ground is stored as voxels, and its surface is d
   - no outlines.
 - **Ground variety (owner).** The starting map has clumps of several grass and dirt types, like the archive's patchwork plain, so the look can be judged side by side. Each voxel sample carries its ground type; each type has its own texture and its own footstep sound.
 - **Props:**
-  - Trees and rocks are low-poly objects, not voxels.
+  - Trees, rocks and plants are built from our primitive shapes (owner): low-poly objects, not voxels.
   - When destroyed, they break into their own facets: shards, splinters, a stump.
 
 ## 3. Weapons and destruction
@@ -53,6 +56,11 @@ Chosen: **faceted smooth.** The ground is stored as voxels, and its surface is d
 - Other weapons and abilities will come along the way.
 - **Weapon locking** can be toggled.
 - **Damage to the mech:** blasts too close and flying debris hurt it, unless it's shielded.
+- **Fire** (owner):
+  - Rocket blasts and explosions (the wanderer's, or the mech's own when it's destroyed) start weak fires.
+  - Certain ground types and props are flammable and are destroyed as fire spreads: dry grass and trees burn, and trees leave charred trunks; soil, gravel and rock don't burn.
+  - It spreads by a budgeted rule on a sparse set of burning cells, LG2's idea re-implemented safely (docs/SEED_REVIEW.md §2).
+  - Fire glows and flickers slowly, never strobing.
 - **Photosensitivity:** muzzle flash, explosions and warning lights never flash faster than 3 times a second. Sustained fire reads as a steady glow with a slow pulse, not a strobe.
 
 ## 4. The mech
@@ -62,6 +70,8 @@ Chosen: **faceted smooth.** The ground is stored as voxels, and its surface is d
   - Energy recharges only in **direct sunlight on the mech**. Shadow from trees, cliffs, tunnels or your own craters blocks charging.
   - (proposed) The test is a few samples of the sun's shadow at the mech's panels, taken each tick from the same shadow data that lights the scene, so it costs almost nothing.
   - Play shows it: step into the open to charge; a tunnel is shelter that starves you.
+- **The shield is powered** (owner). While up, it draws energy, competing with jump and boost.
+- **The sun moves: a one-hour day** (owner, like Voxistics). Charge follows the sun: strong at noon, long shadows and weak charge at dusk, none at night. Nights are for conserving energy.
 
 ## 5. Sound and music
 - Different ground makes different sounds underfoot (§2).
@@ -85,6 +95,7 @@ Chosen: **faceted smooth.** The ground is stored as voxels, and its surface is d
 3. The mech: movement, strafe, jump, boost; solar energy.
 4. A cockpit with its dials.
 5. A target that doesn't fire back:
+   - The target is **a slow walking wanderer** (owner).
    - lock on and fire missiles;
    - machine-gun it;
    - blow holes through the ground around it;

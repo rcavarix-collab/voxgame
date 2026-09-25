@@ -173,7 +173,7 @@ Anything taken is re-implemented from the idea and bug-checked; nothing is copie
   - a key to reset the field;
   - a key to toggle an outside view of the mech (for tuning only);
   - an infinite-energy toggle.
-- **Deferred:** fire and regrowth (LG2), saving, menus beyond pause, enemies that fire back, the music engine, hills.
+- **Deferred:** regrowth (LG2), saving, menus beyond pause, enemies that fire back, the music engine, hills.
 
 ### 4.4 Test checklist (for the owner's playtest)
 1. Walk, strafe, jump and boost across the clumps. Does it feel heavy but quick? Is the scale right from the cockpit?
@@ -201,7 +201,16 @@ Each step is committed, tested and runnable before the next.
 
 ---
 
-## 6. Questions for the owner
+## 6. Owner's answers (September 2026)
+- **Props:** trees, rocks and plants built from our primitives.
+- **Mech:** large, with its view above the treeline.
+- **Shield:** powered; it draws energy.
+- **Sun:** the one-hour day, moving.
+- **Target:** a slow walking wanderer.
+- **Title:** "Cacophony".
+- **Fire:** in the first test. Rockets and explosions start weak fires, and flammable ground and props burn.
+
+## 7. The questions as asked
 1. **Mech scale and speed.** Eye height about 4 m (person-sized-and-up)? Walking at about 8 m/s, boosting to about 25 m/s?
 2. **Shield.** Is a toggle that draws solar energy right, or should the shield be passive and recharge on its own?
 3. **The sun.** Fixed for the test (simplest), or a slow day cycle, so charging changes over time?

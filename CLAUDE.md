@@ -1,6 +1,6 @@
 # Working notes for Claude
 
-A new game, started September 2026. No title yet (the owner will name it). The design of record is `DESIGN.md`; read the relevant part before changing a system.
+**Cacophony** (working title; the owner's irony, since the sound will be well organized). Started September 2026. The design of record is `DESIGN.md`; read the relevant part before changing a system.
 
 ## The game so far
 - The player drives a **mech suit** across a **fully destructible voxel world**. Digging into the earth matters to the owner; that is why the world is voxels.
@@ -44,8 +44,12 @@ A new game, started September 2026. No title yet (the owner will name it). The d
 - **Minimal text.** Show, don't tell. Keep words few and plain. English only for now.
 - **No numbers in player-facing displays** where a band, needle or feel will do. Dials suit this.
 
-## Scope
-Voxistics' MoSCoW sheet is archived with it. A new sheet starts once the concept is settled. Until then, new ideas are proposals and the owner decides.
+## Scope: docs/SCOPE_MOSCOW.xlsx
+The owner keeps scope with MoSCoW (Must / Should / Could / Won't) against the horizon on the "How to use" sheet.
+- Before starting work, check it. New work needs a row.
+- New ideas enter as Could or Won't, marked "Claude (proposed)" in Decided by, until the owner decides.
+- Only the owner sets Must. Won't means not this horizon, not rejected.
+- Update Status as work lands. Edit with openpyxl and keep the formatting; the workbook calculates on open.
 
 ## Building and checking
 - The owner builds with Visual Studio (x64, C++17, SDL checks on). Judge performance in Release.
