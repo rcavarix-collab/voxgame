@@ -35,3 +35,21 @@ float SunExposure(const Terrain& terrain, const Vec3* points, int count, float d
     }
     return strength * (float)lit / (float)count;
 }
+
+namespace {
+Vec3 Mix(Vec3 a, Vec3 b, float t) { return a + (b - a) * t; }
+}
+
+SkyLight SkyAt(float dayTime) {
+    float y = SunDirection(dayTime).y;
+    float day = Clamp((y + 0.05f) / 0.35f, 0.0f, 1.0f);             // night -> full day
+    float dusk = Clamp(1.0f - fabsf(y - 0.02f) / 0.22f, 0.0f, 1.0f); // near the horizon
+    SkyLight s;
+    s.zenith = Mix({ 0.004f, 0.006f, 0.018f }, { 0.16f, 0.32f, 0.72f }, day);
+    s.horizon = Mix({ 0.010f, 0.014f, 0.030f }, { 0.52f, 0.63f, 0.80f }, day);
+    s.horizon = Mix(s.horizon, { 0.80f, 0.42f, 0.20f }, dusk * 0.7f);
+    s.ambient = Mix({ 0.030f, 0.040f, 0.075f }, { 0.34f, 0.40f, 0.52f }, day); // moonlit enough to move by
+    s.sun = Mix({ 2.4f, 2.2f, 1.9f }, { 2.2f, 1.1f, 0.45f }, dusk) * SunStrength(dayTime);
+    s.ground = s.horizon * 0.55f;
+    return s;
+}

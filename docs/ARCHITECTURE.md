@@ -87,7 +87,7 @@ These come from CLAUDE.md, applied to this game.
 ---
 
 ## 2. What to carry from the Voxistics archive
-All of this is our own code. Each piece comes over deliberately, adapted, with its tests.
+Voxistics now lives only in git history (last live commit `d081e19`; read files with `git show d081e19:<file>`). All of this is our own code. Each piece comes over deliberately, adapted, with its tests.
 
 **Carry (engine, proven):**
 - **Window and loop:** per-monitor DPI, resize, borderless fullscreen (F11), fixed step with the 5-tick cap, frame limiter. (main.cpp)

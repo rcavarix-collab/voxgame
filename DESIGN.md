@@ -112,7 +112,9 @@ Chosen: **faceted smooth.** The ground is stored as voxels, and its surface is d
 - **Holographic HUD** (projected): the world and targets, such as lock-on brackets and the aim point.
 - The two stay distinct.
 
-## 8. Setting (open, owner to decide)
+## 8. Setting (parked, owner: "a distracting tangent" for now)
+**For now (owner):** the mech's interior is like the inside of an old tractor, so dieselpunk by default. The look and time period of the player and the mech are decided later; the terrain comes first. The notes below are kept for when the question returns.
+
 The cockpit's look depends on the game's time and place. The owner is weighing diesel-punk, steam-punk, near future, forgotten past, or something like "made of carbon and powered by positrons".
 - **Constraints already chosen:** solar power, a holographic HUD, faceted land, heavy-metal music.
 - **(proposed) A forgotten future:** a machine built by a lost civilisation, recovered and piloted.

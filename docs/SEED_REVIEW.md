@@ -1,6 +1,6 @@
 # Seed file review
 
-September 2026. All four of the owner's seed files were read in full, every line, for the new mech game. For each file:
+September 2026. All four of the owner's seed files (now in `seeds/`) were read in full, every line, for the new mech game. For each file:
 - what it is;
 - the ideas worth taking (ideas only; the code stays the owner's);
 - the flaws found.

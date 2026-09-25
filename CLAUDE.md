@@ -17,11 +17,12 @@
 - Not this game: time distortion, The Line, pulse logistics. Those were Voxistics.
 
 ## Layout
-- `archive/voxistics/`: the previous game, frozen (its last live commit is d081e19). It still builds and its tests still pass.
-  - Read it for proven pieces worth bringing over deliberately: shader cache, F3 profiler, boot timeline, GPU timing, sfx and music synths, save format.
+- **Voxistics (the previous game) lives only in git history**, kept safe there rather than in the tree (owner). Its last live commit is `d081e19`, with everything at the root.
+  - Read a file with `git show d081e19:sfx_synth.cpp`, or check the whole game out into a scratch folder with `git worktree add <dir> d081e19`.
+  - It holds proven pieces worth bringing over deliberately: sfx and music synths, the texture pipeline, the save format.
   - Bring a piece over on purpose, with tests. Never copy the whole thing.
 - `prototypes/`: offline experiments (renders, studies). Nothing in the game depends on them.
-- Seed files at the root: Prismative.cpp, drillder.cpp, LG2.cpp, cc_2_2_2.cpp. These are the owner's hand-tested prototypes; consult them first.
+- `seeds/`: Prismative.cpp, drillder.cpp, LG2.cpp, cc_2_2_2.cpp. These are the owner's hand-tested prototypes; consult them first. Reviewed in full in docs/SEED_REVIEW.md.
   - Take ideas, never code.
   - cc_2_2_2.cpp's texture generators are the technique library for procedural textures.
   - drillder.cpp is a digging prototype.
@@ -57,4 +58,3 @@ The owner keeps scope with MoSCoW (Must / Should / Could / Won't) against the ho
 - Native tests: `bash tests/run.sh`. These cover the pure systems (terrain, mech, sun) and also run `tools/check_msvc.sh`.
 - Shaders: `python3 tools/check_shaders.py` (glslangValidator HLSL front end, every entry point in shaders.h).
 - Cross-compile check off Windows: MinGW, `x86_64-w64-mingw32-g++`, with the sources from the vcxproj.
-- The archive's checks still run: `bash archive/voxistics/tests/run.sh` and `python3 archive/voxistics/tools/check_shaders.py`.
