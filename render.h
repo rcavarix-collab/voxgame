@@ -20,8 +20,11 @@
 #include <windows.h>
 #include <string>
 #include "common.h"
+#include "prims.h"
+#include <vector>
 
 class Terrain;
+class Props;
 
 bool InitRender(HWND hwnd);
 void ShutdownRender();
@@ -39,6 +42,13 @@ struct FrameView {
 int SyncTerrain(const Terrain& t);
 void GpuFrameBegin();
 void RenderWorld(const Terrain& t, const FrameView& v);
+// Props (baked per tile, uploaded only when a tile's mesh changes) and this
+// frame's dynamic meshes (debris, the wanderer, rockets, tracers, flames,
+// fireballs), drawn after the terrain with the same light and fog.
+int SyncProps(const Props& p);
+void RenderMeshes(const FrameView& v, const std::vector<MeshVertex>& dynamic);
+// Where a world point lands on screen (pixels); false if behind the eye.
+bool ProjectToScreen(const FrameView& v, Vec3 p, float& sx, float& sy);
 void GpuMarkWorldDone();
 void GpuFrameEnd();
 void PresentFrame(bool vsync);

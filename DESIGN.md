@@ -67,6 +67,7 @@ Chosen: **faceted smooth.** The ground is stored as voxels, and its surface is d
   - Both are governed so they can never become too numerous or expensive.
   - Each comes from a fixed-size pool with a hard cap. Nearby items merge into one, old ones fade, and the oldest is recycled when the pool is full.
   - Cost stays bounded however wild things get.
+  - **First items (owner):** the wanderer sheds armour plates as it's hurt (one per stage, two when destroyed). The mech collects them by walking over them and keeps them; they aren't used yet. A plate icon row on the HUD shows how many.
 - **Photosensitivity:** muzzle flash, explosions and warning lights never flash faster than 3 times a second. Sustained fire reads as a steady glow with a slow pulse, not a strobe.
 
 ## 4. The mech

@@ -49,6 +49,7 @@ struct Mech {
     bool shield = false;
     bool boosting = false;
     float energy = 1.0f;
+    float health = 1.0f;           // blasts, debris and fire take it; the glue handles destruction
     float sun = 0.0f;              // last sun exposure, 0..1 (the charge dial)
     float strideLeft = 0.0f;       // metres until the next footfall
     int footfalls = 0;             // counts up; the game turns changes into sounds

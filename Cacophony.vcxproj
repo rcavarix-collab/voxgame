@@ -106,6 +106,13 @@
     </ClCompile>
     <ClCompile Include="mech.cpp" />
     <ClCompile Include="sun.cpp" />
+    <ClCompile Include="prims.cpp" />
+    <ClCompile Include="props.cpp" />
+    <ClCompile Include="fire.cpp" />
+    <ClCompile Include="debris.cpp" />
+    <ClCompile Include="pickups.cpp" />
+    <ClCompile Include="wanderer.cpp" />
+    <ClCompile Include="weapons.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="common.h" />
@@ -119,6 +126,14 @@
     <ClInclude Include="terrain.h" />
     <ClInclude Include="mech.h" />
     <ClInclude Include="sun.h" />
+    <ClInclude Include="prims.h" />
+    <ClInclude Include="props.h" />
+    <ClInclude Include="fire.h" />
+    <ClInclude Include="debris.h" />
+    <ClInclude Include="pickups.h" />
+    <ClInclude Include="wanderer.h" />
+    <ClInclude Include="weapons.h" />
+    <ClInclude Include="events.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

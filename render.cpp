@@ -3,6 +3,7 @@
 #include "render.h"
 #include "shaders.h"
 #include "terrain.h"
+#include "props.h"
 #include "sun.h"
 #include "persist.h"
 #include "profiler.h"
@@ -31,9 +32,11 @@ ID3D11DeviceContext* g_ctx = nullptr;
 ID3D11RenderTargetView* g_rtv = nullptr;
 ID3D11DepthStencilView* g_dsv = nullptr;
 
-ID3D11VertexShader *g_skyVS = nullptr, *g_terrainVS = nullptr, *g_uiVS = nullptr;
-ID3D11PixelShader *g_skyPS = nullptr, *g_terrainPS = nullptr, *g_uiPS = nullptr;
-ID3D11InputLayout *g_terrainLayout = nullptr, *g_uiLayout = nullptr;
+ID3D11VertexShader *g_skyVS = nullptr, *g_terrainVS = nullptr, *g_meshVS = nullptr, *g_uiVS = nullptr;
+ID3D11PixelShader *g_skyPS = nullptr, *g_terrainPS = nullptr, *g_meshPS = nullptr, *g_uiPS = nullptr;
+ID3D11InputLayout *g_terrainLayout = nullptr, *g_meshLayout = nullptr, *g_uiLayout = nullptr;
+ID3D11Buffer* g_dynVB = nullptr;
+UINT g_dynCapacity = 0; // vertices
 ID3D11Buffer *g_skyCB = nullptr, *g_frameCB = nullptr, *g_uiCB = nullptr, *g_uiVB = nullptr;
 ID3D11RasterizerState *g_rasterSolid = nullptr, *g_rasterNoCull = nullptr;
 ID3D11DepthStencilState *g_depthOn = nullptr, *g_depthOff = nullptr;
@@ -55,6 +58,10 @@ struct ChunkGpu {
     bool seen = false;
 };
 std::unordered_map<ChunkKey, ChunkGpu, ChunkKeyHash> g_chunks;
+
+// ---- prop tile buffers (same idea: re-created only when a tile's mesh changes) ----
+struct TileGpu { ID3D11Buffer* vb = nullptr; UINT count = 0; uint32_t version = 0xFFFFFFFFu; bool seen = false; };
+std::unordered_map<PropTileKey, TileGpu, PropTileKeyHash> g_propTiles;
 
 struct TerrainVertexGpu { float x, y, z; uint8_t mat, ao, a, b; };
 static_assert(sizeof(TerrainVertexGpu) == sizeof(TerrainVertex), "terrain vertex layout");
@@ -136,6 +143,7 @@ void PrepareShaders() {
     ShaderJob list[] = {
         { g_skyShaderSrc, "VSMain", "vs_4_0", "sky", 0, nullptr, {} }, { g_skyShaderSrc, "PSMain", "ps_4_0", "sky", 0, nullptr, {} },
         { g_terrainShaderSrc, "VSMain", "vs_4_0", "terrain", 0, nullptr, {} }, { g_terrainShaderSrc, "PSMain", "ps_4_0", "terrain", 0, nullptr, {} },
+        { g_meshShaderSrc, "VSMain", "vs_4_0", "meshes", 0, nullptr, {} }, { g_meshShaderSrc, "PSMain", "ps_4_0", "meshes", 0, nullptr, {} },
         { g_uiShaderSrc, "VSMain", "vs_4_0", "ui", 0, nullptr, {} }, { g_uiShaderSrc, "PSMain", "ps_4_0", "ui", 0, nullptr, {} },
     };
     std::vector<size_t> todo;
@@ -302,6 +310,15 @@ bool InitRender(HWND hwnd) {
         g_dev->CreateInputLayout(ie, 2, b->GetBufferPointer(), b->GetBufferSize(), &g_terrainLayout);
     }
     if ((b = Shader(g_terrainShaderSrc, "PSMain"))) g_dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &g_terrainPS);
+    if ((b = Shader(g_meshShaderSrc, "VSMain"))) {
+        g_dev->CreateVertexShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &g_meshVS);
+        D3D11_INPUT_ELEMENT_DESC ie[] = {
+            { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+            { "COLOR", 0, DXGI_FORMAT_R8G8B8A8_UNORM, 0, 12, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+        };
+        g_dev->CreateInputLayout(ie, 2, b->GetBufferPointer(), b->GetBufferSize(), &g_meshLayout);
+    }
+    if ((b = Shader(g_meshShaderSrc, "PSMain"))) g_dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &g_meshPS);
     if ((b = Shader(g_uiShaderSrc, "VSMain"))) {
         g_dev->CreateVertexShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &g_uiVS);
         D3D11_INPUT_ELEMENT_DESC ie[] = {
@@ -364,6 +381,10 @@ bool InitRender(HWND hwnd) {
 void ShutdownRender() {
     for (auto& kv : g_chunks) { SafeRelease(kv.second.vb); SafeRelease(kv.second.ib); }
     g_chunks.clear();
+    for (auto& kv : g_propTiles) SafeRelease(kv.second.vb);
+    g_propTiles.clear();
+    SafeRelease(g_dynVB);
+    SafeRelease(g_meshLayout); SafeRelease(g_meshPS); SafeRelease(g_meshVS);
     for (GpuFrame& f : g_gpu) { SafeRelease(f.disjoint); SafeRelease(f.t0); SafeRelease(f.t1); SafeRelease(f.t2); }
     SafeRelease(g_atlasSRV); SafeRelease(g_pointSampler); SafeRelease(g_blendAlpha);
     SafeRelease(g_depthOn); SafeRelease(g_depthOff); SafeRelease(g_rasterSolid); SafeRelease(g_rasterNoCull);
@@ -504,6 +525,82 @@ void RenderWorld(const Terrain& t, const FrameView& v) {
     }
     ProfAddCounter(PCOUNT_CHUNKS_DRAWN, drawn);
     ProfAddCounter(PCOUNT_TRIANGLES_DRAWN, tris);
+}
+
+int SyncProps(const Props& p) {
+    int uploaded = 0;
+    for (auto& kv : g_propTiles) kv.second.seen = false;
+    for (const auto& kv : p.Tiles()) {
+        const PropTile& t = kv.second;
+        if (!t.meshed || t.mesh.empty()) continue;
+        TileGpu& g = g_propTiles[kv.first];
+        g.seen = true;
+        if (g.version == t.version) continue;
+        SafeRelease(g.vb);
+        g.vb = MakeBuffer((UINT)(t.mesh.size() * sizeof(MeshVertex)), D3D11_BIND_VERTEX_BUFFER, D3D11_USAGE_IMMUTABLE, t.mesh.data());
+        g.count = (UINT)t.mesh.size();
+        g.version = t.version;
+        uploaded++;
+    }
+    for (auto it = g_propTiles.begin(); it != g_propTiles.end();) {
+        if (!it->second.seen) { SafeRelease(it->second.vb); it = g_propTiles.erase(it); }
+        else ++it;
+    }
+    return uploaded;
+}
+
+void RenderMeshes(const FrameView& v, const std::vector<MeshVertex>& dynamic) {
+    ProfScope prof(PROF_WORLD);
+    if (!g_meshVS || !g_meshPS || !g_meshLayout) return;
+    g_ctx->OMSetDepthStencilState(g_depthOn, 0);
+    g_ctx->RSSetState(g_rasterSolid);
+    g_ctx->IASetInputLayout(g_meshLayout);
+    g_ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    g_ctx->VSSetShader(g_meshVS, nullptr, 0);
+    g_ctx->PSSetShader(g_meshPS, nullptr, 0);
+    g_ctx->VSSetConstantBuffers(0, 1, &g_frameCB); // RenderWorld filled it this frame
+    g_ctx->PSSetConstantBuffers(0, 1, &g_frameCB);
+    Plane planes[6];
+    Frustum(MatMul(v.view, v.proj), planes);
+    UINT stride = sizeof(MeshVertex), offset = 0;
+    long long tris = 0;
+    for (auto& kv : g_propTiles) {
+        Vec3 mn = { kv.first.x * Props::TILE - 12, -20, kv.first.z * Props::TILE - 12 };  // fallen trees reach past their tile
+        Vec3 mx = { mn.x + Props::TILE + 24, 30, mn.z + Props::TILE + 24 };
+        if (!BoxVisible(planes, mn, mx)) continue;
+        g_ctx->IASetVertexBuffers(0, 1, &kv.second.vb, &stride, &offset);
+        g_ctx->Draw(kv.second.count, 0);
+        tris += kv.second.count / 3;
+    }
+    if (!dynamic.empty()) {
+        UINT n = (UINT)dynamic.size();
+        const UINT MAX_DYNAMIC = 300000; // governed: a wild frame can't ask for more
+        if (n > MAX_DYNAMIC) n = MAX_DYNAMIC - MAX_DYNAMIC % 3;
+        if (n > g_dynCapacity) {
+            SafeRelease(g_dynVB);
+            g_dynCapacity = n + n / 2 + 3000;
+            if (g_dynCapacity > MAX_DYNAMIC) g_dynCapacity = MAX_DYNAMIC;
+            g_dynVB = MakeBuffer(g_dynCapacity * sizeof(MeshVertex), D3D11_BIND_VERTEX_BUFFER, D3D11_USAGE_DYNAMIC, nullptr);
+        }
+        D3D11_MAPPED_SUBRESOURCE m;
+        if (g_dynVB && SUCCEEDED(g_ctx->Map(g_dynVB, 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) {
+            memcpy(m.pData, dynamic.data(), n * sizeof(MeshVertex));
+            g_ctx->Unmap(g_dynVB, 0);
+            g_ctx->IASetVertexBuffers(0, 1, &g_dynVB, &stride, &offset);
+            g_ctx->Draw(n, 0);
+            tris += n / 3;
+        }
+    }
+    ProfAddCounter(PCOUNT_TRIANGLES_DRAWN, tris);
+}
+
+bool ProjectToScreen(const FrameView& v, Vec3 p, float& sx, float& sy) {
+    Vec3 d = p - v.eye;
+    float z = Dot(d, v.forward);
+    if (z < 0.5f) return false;
+    sx = g_screenW * 0.5f * (1.0f + Dot(d, v.right) / (z * v.tanHalfFovX));
+    sy = g_screenH * 0.5f * (1.0f - Dot(d, v.up) / (z * v.tanHalfFovY));
+    return true;
 }
 
 void PresentFrame(bool vsync) { g_swap->Present(vsync ? 1 : 0, 0); }

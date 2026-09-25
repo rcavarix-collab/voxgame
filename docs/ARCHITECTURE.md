@@ -34,12 +34,15 @@ These come from CLAUDE.md, applied to this game.
 | | `noise.h` | Value noise, fbm (generator, placement, textures) |
 | | `profiler.h/.cpp` | F3 timings, boot timeline, Ctrl+F3 report, GPU timings |
 | **Simulation** (pure, tested) | `terrain.h/.cpp` | Density field; 2 m hand-cut facets; blasts; ground queries; raycasts. A first draft is in `prototypes/terrain_draft/` |
-| | `props.h/.cpp` | Trees and rocks: placement from the generator, health, felling, shattering |
+| | `prims.h/.cpp` | Primitive solids (prism, cone, box, faceted rock) written into coloured vertex lists |
+| | `props.h/.cpp` | Pines, broadleaves, bushes, rocks: placement from the ground type, health, felling, shattering, trampling, burning; baked per 32 m tile |
+| | `fire.h/.cpp` | Weak fire on a sparse set of burning 2 m cells: budgeted spread, props catch, burnt ground scorches |
 | | `debris.h/.cpp` | Fixed pool of shards, splinters and clods: fly, bounce, settle, fade; hurt the mech |
 | | `sun.h/.cpp` | Sun direction; "is this point in direct sun?" (rays through terrain and props) for solar charging |
 | | `mech.h/.cpp` | Movement (walk, strafe, jump, boost), ground contact, energy, heat, damage, shield |
-| | `weapons.h/.cpp` | Weapon definitions, switching, lock-on, rockets (projectiles), machine gun (hitscan with tracers) |
-| | `target.h/.cpp` | The practice target: parts, health, destroyed state |
+| | `weapons.h/.cpp` | Weapon definitions, switching, lock-on, rockets (projectiles), machine gun (hitscan with tracers); `Explode` joins a blast to terrain, props, fire, debris, the wanderer and the mech |
+| | `wanderer.h/.cpp` | The practice target: a slow walker with legs; health in stages, sheds plates, respawns |
+| | `pickups.h/.cpp` | Capped pool of things to collect (armour plates for now; kept, not used yet) |
 | | `events.h` | The per-tick list of what happened, read by everything below |
 | Glue | `game.h/.cpp` | Owns the world, runs the tick in order, hands events on, pause/reset |
 | **Presentation** | `render.h/.cpp` | D3D11 device, shader cache, passes, frustum culling |
@@ -56,13 +59,17 @@ These come from CLAUDE.md, applied to this game.
 ### 1.3 The tick and the frame
 
 **Each tick (1/60 s), in order:**
-1. input to mech intent;
-2. mech (move, ground, energy from sun);
-3. weapons: fire, spawn rockets, trace bullets;
-4. rockets fly and hit (terrain blast, props, target);
-5. debris;
-6. target;
-7. events are handed on.
+1. input to mech intent; sun exposure;
+2. mech (move, ground, energy from sun); the mech tramples props;
+3. the wanderer walks (and tramples, or waits to respawn);
+4. weapons: switch, lock, fire, trace bullets; rockets fly and explode;
+5. props (falling trees, burn timers), fire spread;
+6. debris (and its damage to the mech), fire damage to the mech;
+7. pickups settle, merge and are collected;
+8. events are handed on (effects, plates dropped, the target's end); the mech's own destruction and respawn;
+9. the day advances.
+
+(Where each piece lives today: `game.cpp` `GameTick`.) `effects`, `cockpit` and `hud` below are still inside `game.cpp` for the prototype and split out once they settle.
 
 **Each frame:**
 1. The tick loop.
@@ -188,7 +195,7 @@ Anything taken is re-implemented from the idea and bug-checked; nothing is copie
 ---
 
 ## 5. Build order
-Each step is committed, tested and runnable before the next. **Status:** steps 1–3 are in the first build (foundation, flat faceted field, mech with energy and a moving sun), awaiting the owner's run on Windows.
+Each step is committed, tested and runnable before the next. **Status:** steps 1–5 are built and awaiting the owner's run on Windows: foundation, flat faceted field, mech with energy and a moving sun, props with debris and mech damage, weapons with the wanderer, plus fire and collectable plates. Step 6 has its holographic half (reticle, lock brackets, bands); the cockpit dials are next after the owner's run.
 1. **Foundation:** window, loop, input, settings, profiler, D3D11 and shader cache, sky, debug text. (From the archive, adapted.)
 2. **Terrain:** density, 2 m facets, clumps, blasts, chunk rendering, shadows. The draft exists; native tests.
 3. **Mech:** movement, cockpit camera, ground contact, sun test, energy, shield. Native tests.

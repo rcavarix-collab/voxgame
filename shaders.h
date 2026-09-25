@@ -102,6 +102,40 @@ float4 PSMain(VSOut i) : SV_TARGET {
 }
 )";
 
+// ---- Meshes built from primitives (props, debris, the wanderer, effects) ----
+// Same frame constants and lighting as the terrain; flat-shaded; colour per
+// vertex. Alpha below one half marks a glowing surface, drawn unlit.
+static const char* g_meshShaderSrc = R"(
+cbuffer FrameCB : register(b0) {
+    row_major float4x4 viewProj;
+    float4 eye;
+    float4 sunDir;
+    float4 sunColor;
+    float4 ambient;
+    float4 fogColor;
+    float4 fogParams;
+};
+struct VSIn { float3 pos : POSITION; float4 col : COLOR0; };
+struct VSOut { float4 pos : SV_POSITION; float3 wpos : TEXCOORD0; nointerpolation float4 col : COLOR0; };
+VSOut VSMain(VSIn v) {
+    VSOut o;
+    o.pos = mul(float4(v.pos, 1.0), viewProj);
+    o.wpos = v.pos;
+    o.col = v.col;
+    return o;
+}
+float4 PSMain(VSOut i) : SV_TARGET {
+    float dist = length(i.wpos - eye.xyz);
+    float f = saturate((dist - fogParams.x) * fogParams.y) * fogParams.z;
+    if (i.col.a < 0.5) return float4(lerp(i.col.rgb * 2.2, fogColor.rgb, f * 0.6), 1.0); // glowing: fire, embers, tracers
+    float3 n = normalize(cross(ddx(i.wpos), ddy(i.wpos)));
+    if (dot(n, eye.xyz - i.wpos) < 0.0) n = -n;
+    float ndl = saturate(dot(n, sunDir.xyz)) * sunDir.w;
+    float3 lit = i.col.rgb * (ambient.rgb * (0.6 + 0.4 * n.y) * 0.85 + sunColor.rgb * ndl);
+    return float4(lerp(lit, fogColor.rgb, f), 1.0);
+}
+)";
+
 // ---- UI: pixel-space quads, textured from the text atlas (white = its top rows) ----
 static const char* g_uiShaderSrc = R"(
 cbuffer UICB : register(b0) { float4 screen; };  // xy = 2/width, 2/height

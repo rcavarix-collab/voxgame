@@ -98,11 +98,15 @@ public:
     uint8_t GroundAt(Vec3 p) const;
     // Height of the untouched ground: the generator's surface.
     float OriginalHeight(float x, float z) const;
+    // The generator's ground type at the surface of (x, z) (props are placed by it).
+    uint8_t SurfaceAt(float x, float z) const { return SurfaceType(x, z); }
 
     // ---- change ----
     // Removes a sphere of ground and scorches what's left around it.
     // Returns how much solid volume went (m^3, roughly), for effects and debris.
     float Blast(Vec3 centre, float radius);
+    // Blackens the ground's top at (x, z) (burnt-out fire). Cheap to call repeatedly.
+    void Scorch(float x, float z);
 
     // ---- per frame ----
     // Keeps chunks around `focus` resident (nearest first) and drops

@@ -27,6 +27,11 @@
   - cc_2_2_2.cpp's texture generators are the technique library for procedural textures.
   - drillder.cpp is a digging prototype.
 
+## The owner's order when ideas compete
+1. **Performance.**
+2. **Pizzazz:** spectacle and feel. Things that are fun to watch and do.
+3. **Pandering:** crowd-pleasing features players love (the owner's own joke about their design approach).
+
 ## Standing priorities (carried over from Voxistics; they're the owner's, not the old game's)
 - **Target machine: an outdated, modest Windows PC** (the owner's own). Design every feature to run well there. Never read or report the player's hardware (no GPU/CPU/spec queries); assume the modest machine instead.
 - **Privacy.** No telemetry, analytics, crash reporting, update checks or any network use. Nothing about the player or their machine is collected or leaves it. Debug aids act only when pressed and write only local files.

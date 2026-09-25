@@ -344,6 +344,31 @@ float Terrain::Blast(Vec3 centre, float radius) {
     return removed * CELL * CELL * CELL;
 }
 
+void Terrain::Scorch(float x, float z) {
+    float gy;
+    if (!GroundBelow(x, z, OriginalHeight(x, z) + 8.0f, 24.0f, gy)) return;
+    int gx = (int)floorf(x / CELL + 0.5f), gz = (int)floorf(z / CELL + 0.5f);
+    for (int iy = (int)floorf(gy / CELL); iy >= (int)floorf(gy / CELL) - 1; iy--) {
+        Sample s = SampleAt(gx, iy, gz);
+        if (s.d <= 0) continue;
+        if (s.mat & GROUND_SCORCHED) return; // already black: nothing to rebuild
+        ChunkKey k = { FloorDiv(gx, CHUNK), FloorDiv(iy, CHUNK), FloorDiv(gz, CHUNK) };
+        TerrainChunk& ch = m_chunks[k];
+        if (!ch.Modified()) {
+            ch.samples.resize((size_t)CHUNK * CHUNK * CHUNK);
+            for (int y = 0; y < CHUNK; y++) for (int zz = 0; zz < CHUNK; zz++) for (int xx = 0; xx < CHUNK; xx++)
+                ch.samples[((size_t)y * CHUNK + zz) * CHUNK + xx] = Generate(k.x * CHUNK + xx, k.y * CHUNK + y, k.z * CHUNK + zz);
+        }
+        ch.samples[((size_t)Mod(iy, CHUNK) * CHUNK + Mod(gz, CHUNK)) * CHUNK + Mod(gx, CHUNK)].mat |= GROUND_SCORCHED;
+        // This sample's material shows in its own chunk and its neighbours' rims.
+        for (int dz = -1; dz <= 1; dz++) for (int dx = -1; dx <= 1; dx++) {
+            ChunkKey n = { FloorDiv(gx + dx * PAD, CHUNK), k.y, FloorDiv(gz + dz * PAD, CHUNK) };
+            if (m_chunks.count(n)) Queue(n);
+        }
+        return;
+    }
+}
+
 uint8_t Terrain::SoilUnder(int gx, int gy, int gz) const {
     Sample below = SampleAt(gx, gy - 1, gz);
     return below.d > 0 ? GroundSoil(below.mat) : (uint8_t)GROUND_LOAM;

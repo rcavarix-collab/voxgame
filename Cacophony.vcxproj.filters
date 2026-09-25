@@ -48,6 +48,27 @@
     <ClCompile Include="ui_font.cpp">
       <Filter>Presentation</Filter>
     </ClCompile>
+    <ClCompile Include="prims.cpp">
+      <Filter>Simulation</Filter>
+    </ClCompile>
+    <ClCompile Include="props.cpp">
+      <Filter>Simulation</Filter>
+    </ClCompile>
+    <ClCompile Include="fire.cpp">
+      <Filter>Simulation</Filter>
+    </ClCompile>
+    <ClCompile Include="debris.cpp">
+      <Filter>Simulation</Filter>
+    </ClCompile>
+    <ClCompile Include="pickups.cpp">
+      <Filter>Simulation</Filter>
+    </ClCompile>
+    <ClCompile Include="wanderer.cpp">
+      <Filter>Simulation</Filter>
+    </ClCompile>
+    <ClCompile Include="weapons.cpp">
+      <Filter>Simulation</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="input.h">
@@ -82,6 +103,30 @@
     </ClInclude>
     <ClInclude Include="shaders.h">
       <Filter>Presentation</Filter>
+    </ClInclude>
+    <ClInclude Include="prims.h">
+      <Filter>Simulation</Filter>
+    </ClInclude>
+    <ClInclude Include="props.h">
+      <Filter>Simulation</Filter>
+    </ClInclude>
+    <ClInclude Include="fire.h">
+      <Filter>Simulation</Filter>
+    </ClInclude>
+    <ClInclude Include="debris.h">
+      <Filter>Simulation</Filter>
+    </ClInclude>
+    <ClInclude Include="pickups.h">
+      <Filter>Simulation</Filter>
+    </ClInclude>
+    <ClInclude Include="wanderer.h">
+      <Filter>Simulation</Filter>
+    </ClInclude>
+    <ClInclude Include="weapons.h">
+      <Filter>Simulation</Filter>
+    </ClInclude>
+    <ClInclude Include="events.h">
+      <Filter>Simulation</Filter>
     </ClInclude>
   </ItemGroup>
 </Project>
