@@ -350,6 +350,7 @@ static void Shade(std::vector<Img>& imgs, const std::vector<Cam>& cams, const Sh
     }
 }
 
+#ifndef SHAPES3_NO_MAIN
 int main(int argc, char** argv) {
     const char* out = argc > 1 ? argv[1] : ".";
     int SS = 2, W = 720, H = 480;
@@ -399,3 +400,4 @@ int main(int argc, char** argv) {
     }
     fclose(sf);
 }
+#endif
