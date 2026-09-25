@@ -120,6 +120,8 @@ public:
 
 private:
     Sample Generate(int gx, int gy, int gz) const;
+    uint8_t SurfaceType(float x, float z) const;
+    uint8_t SoilUnder(int gx, int gy, int gz) const; // the soil a raised rim sample is made of
     bool ChunkHasSurface(const ChunkKey& k) const;
     void Queue(const ChunkKey& k);
 

@@ -29,8 +29,8 @@ Cam MakeCam(Vec3 pos, float yaw, float pitch, float fovYDeg, int W, int H) {
 
 // ---- the terrain shader, in C++ (shaders.h g_terrainShaderSrc) ----
 const Vec3 kGround[8] = {
-    { 0.140f, 0.270f, 0.075f }, { 0.300f, 0.290f, 0.110f }, { 0.085f, 0.190f, 0.070f }, { 0.110f, 0.300f, 0.110f },
-    { 0.200f, 0.125f, 0.065f }, { 0.290f, 0.150f, 0.080f }, { 0.240f, 0.225f, 0.200f }, { 0.220f, 0.215f, 0.210f } };
+    { 0.105f, 0.190f, 0.058f }, { 0.205f, 0.185f, 0.085f }, { 0.068f, 0.132f, 0.052f }, { 0.088f, 0.205f, 0.078f },
+    { 0.118f, 0.080f, 0.050f }, { 0.165f, 0.098f, 0.062f }, { 0.150f, 0.142f, 0.128f }, { 0.150f, 0.146f, 0.140f } };
 const int kSoil[8] = { 4, 5, 4, 4, 4, 5, 6, 7 };
 float ShaderHash(Vec3 p) {
     uint32_t qx = (uint32_t)(int32_t)floorf(p.x * 7.0f + 1000.0f), qy = (uint32_t)(int32_t)floorf(p.y * 7.0f + 1000.0f), qz = (uint32_t)(int32_t)floorf(p.z * 7.0f + 1000.0f);
@@ -77,7 +77,7 @@ void DrawTerrain(Img& im, const Cam& cam, const Terrain& t, float dayTime) {
             uint8_t mat = v[0]->mat;
             int g = mat & 0x7F; if (g > 7) g = 7;
             if (g <= 3 && n.y < 0.72f) g = kSoil[g];
-            Vec3 c = kGround[g] * (0.90f + 0.20f * ShaderHash(p[0]));
+            Vec3 c = kGround[g] * (0.94f + 0.12f * ShaderHash(p[0]));
             if (mat & 0x80) c = Mix(c, { 0.030f, 0.026f, 0.024f }, 0.6f);
             float ao = v[0]->ao / 255.0f;
             float ndl = std::max(0.0f, Dot(n, sun)) * strength;

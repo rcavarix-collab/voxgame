@@ -29,10 +29,60 @@ float Terrain::OriginalHeight(float, float) const {
     return m_groundY; // flat test world for now (owner); hills come back through here
 }
 
+namespace {
+// Nearest and second-nearest of a grid of jittered points (Worley), with
+// the cells they belong to: the skeleton of organic, irregular clumps.
+struct Worley { float f1, f2; int ax, az, bx, bz; };
+Worley NearestPoints(float x, float z, float cell, uint32_t seed) {
+    int cx = (int)floorf(x / cell), cz = (int)floorf(z / cell);
+    Worley w = { 1e9f, 1e9f, 0, 0, 0, 0 };
+    for (int dz = -1; dz <= 1; dz++)
+        for (int dx = -1; dx <= 1; dx++) {
+            int ix = cx + dx, iz = cz + dz;
+            float px = (ix + 0.1f + 0.8f * Hash01(ix, 11, iz, seed)) * cell;
+            float pz = (iz + 0.1f + 0.8f * Hash01(ix, 12, iz, seed)) * cell;
+            float d = sqrtf((px - x) * (px - x) + (pz - z) * (pz - z));
+            if (d < w.f1) { w.f2 = w.f1; w.bx = w.ax; w.bz = w.az; w.f1 = d; w.ax = ix; w.az = iz; }
+            else if (d < w.f2) { w.f2 = d; w.bx = ix; w.bz = iz; }
+        }
+    return w;
+}
+}
+
+// The ground type at the surface of (x, z). Three layers, all warped by a
+// slow noise so no edge runs straight:
+//   meadows: large irregular regions (~64 m cells), one grass each, whose
+//     borders interpenetrate over ~7 m instead of meeting on a line;
+//   patches: smaller islands (~20 m cells) of another grass inside them;
+//   bare ground: scattered soil patches (loam, clay, now and then gravel).
+uint8_t Terrain::SurfaceType(float x, float z) const {
+    float wx = x + 30.0f * (Fbm2(x / 55.0f, z / 55.0f, m_seed + 10) - 0.5f);
+    float wz = z + 30.0f * (Fbm2(x / 55.0f, z / 55.0f, m_seed + 20) - 0.5f);
+    Worley m = NearestPoints(wx, wz, 64.0f, m_seed + 30);
+    uint8_t type = (uint8_t)(Hash3(m.ax, 0, m.az, m_seed + 31) % 4);
+    float edge = m.f2 - m.f1; // metres from the border (roughly)
+    if (edge < 7.0f && ValueNoise2(x / 3.5f, z / 3.5f, m_seed + 32) > 0.5f + 0.5f * (edge / 7.0f))
+        type = (uint8_t)(Hash3(m.bx, 0, m.bz, m_seed + 31) % 4); // a tongue of the neighbour's grass
+    Worley p = NearestPoints(wx + 500.0f, wz, 20.0f, m_seed + 40);
+    if (Hash01(p.ax, 1, p.az, m_seed + 41) < 0.35f) {
+        float r = 4.0f + 5.0f * Hash01(p.ax, 2, p.az, m_seed + 41);
+        r *= 0.75f + 0.5f * ValueNoise2(x / 4.0f, z / 4.0f, m_seed + 42); // ragged
+        if (p.f1 < r) type = (uint8_t)((type + 1 + Hash3(p.ax, 3, p.az, m_seed + 41) % 3) % 4);
+    }
+    Worley b = NearestPoints(x + 9.0f * (Fbm2(x / 13.0f, z / 13.0f, m_seed + 50) - 0.5f), z, 34.0f, m_seed + 60);
+    if (Hash01(b.ax, 1, b.az, m_seed + 61) < 0.22f) {
+        float r = 3.0f + 5.0f * Hash01(b.ax, 2, b.az, m_seed + 61);
+        r *= 0.7f + 0.6f * ValueNoise2(x / 3.0f, z / 3.0f, m_seed + 62);
+        if (b.f1 < r) {
+            float k = Hash01(b.ax, 3, b.az, m_seed + 61);
+            type = k < 0.5f ? GROUND_LOAM : (k < 0.8f ? GROUND_CLAY : GROUND_GRAVEL);
+        }
+    }
+    return type;
+}
+
 // The generator: the untouched world. Ground type by depth: the surface
-// type in the top layer, its soil below, rock under that. Surface types
-// lie in clumps: a warped grid of ~24 m cells, each one grass type, with
-// bare soil patches scattered over it.
+// type in the top layer, its soil below, rock under that.
 Sample Terrain::Generate(int gx, int gy, int gz) const {
     float x = gx * CELL, y = gy * CELL, z = gz * CELL;
     float depth = OriginalHeight(x, z) - y;
@@ -41,25 +91,8 @@ Sample Terrain::Generate(int gx, int gy, int gz) const {
     s.mat = GROUND_ROCK;
     if (depth <= 0.0f) { s.mat = GROUND_MEADOW; return s; } // air: type unused
     if (depth > 8.0f) return s;
-    // Surface type at (x, z).
-    float wx = x + 22.0f * (Fbm2(x / 26.0f, z / 26.0f, m_seed + 10) - 0.5f);
-    float wz = z + 22.0f * (Fbm2(x / 26.0f, z / 26.0f, m_seed + 20) - 0.5f);
-    int cx = (int)floorf(wx / 24.0f), cz = (int)floorf(wz / 24.0f);
-    uint8_t surface = (uint8_t)(Hash3(cx, 0, cz, m_seed + 30) % 4); // one of the four grasses
-    {
-        // Bare patches: round-ish, ragged, on about one in five 16 m cells.
-        float px = x + 9.0f * (Fbm2(x / 11.0f, z / 11.0f, m_seed + 40) - 0.5f);
-        float pz = z + 9.0f * (Fbm2(x / 11.0f, z / 11.0f, m_seed + 50) - 0.5f);
-        int bx = (int)floorf(px / 16.0f), bz = (int)floorf(pz / 16.0f);
-        if (Hash01(bx, 1, bz, m_seed + 60) < 0.22f) {
-            float ccx = (bx + 0.3f + 0.4f * Hash01(bx, 2, bz, m_seed)) * 16.0f, ccz = (bz + 0.3f + 0.4f * Hash01(bx, 3, bz, m_seed)) * 16.0f;
-            float r = 4.0f + 3.0f * Hash01(bx, 4, bz, m_seed);
-            float dx = px - ccx, dz = pz - ccz;
-            if (dx * dx + dz * dz < r * r) surface = (uint8_t)(GROUND_LOAM + Hash3(bx, 5, bz, m_seed) % 3);
-        }
-    }
-    if (depth <= 1.2f * CELL) s.mat = surface;
-    else s.mat = GroundSoil(surface);
+    uint8_t surface = SurfaceType(x, z);
+    s.mat = depth <= 1.2f * CELL ? surface : GroundSoil(surface);
     return s;
 }
 
@@ -255,10 +288,13 @@ void Terrain::Mesh(const ChunkKey& k, TerrainChunk& c) const {
 // Change
 // ---------------------------------------------------------------------
 float Terrain::Blast(Vec3 centre, float radius) {
-    const float scorch = 1.5f; // metres of blackened ground beyond the hole
-    int g0x = (int)floorf((centre.x - radius - scorch) / CELL), g1x = (int)ceilf((centre.x + radius + scorch) / CELL);
-    int g0y = (int)floorf((centre.y - radius - scorch) / CELL), g1y = (int)ceilf((centre.y + radius + scorch) / CELL);
-    int g0z = (int)floorf((centre.z - radius - scorch) / CELL), g1z = (int)ceilf((centre.z + radius + scorch) / CELL);
+    const float scorch = 1.5f;          // metres of blackened ground beyond the hole
+    const float rimW = 0.7f * radius;   // the lip of thrown-up ground around it...
+    const float rimH = 0.22f * radius;  // ...and its height at the crest
+    const float reach = radius + std::max(scorch, rimW * 1.4f) + CELL;
+    int g0x = (int)floorf((centre.x - reach) / CELL), g1x = (int)ceilf((centre.x + reach) / CELL);
+    int g0y = (int)floorf((centre.y - reach) / CELL), g1y = (int)ceilf((centre.y + reach) / CELL);
+    int g0z = (int)floorf((centre.z - reach) / CELL), g1z = (int)ceilf((centre.z + reach) / CELL);
     g0y = std::max(g0y, CHUNK_Y_MIN * CHUNK + 1); // never through the bottom of the world
     g1y = std::min(g1y, (CHUNK_Y_MAX + 1) * CHUNK - 1);
     if (g0y > g1y) return 0.0f;
@@ -273,17 +309,27 @@ float Terrain::Blast(Vec3 centre, float radius) {
                 for (int y = 0; y < CHUNK; y++) for (int z = 0; z < CHUNK; z++) for (int x = 0; x < CHUNK; x++)
                     ch.samples[((size_t)y * CHUNK + z) * CHUNK + x] = Generate(cx * CHUNK + x, cy * CHUNK + y, cz * CHUNK + z);
             }
-    for (int gy = g0y; gy <= g1y; gy++)
+    for (int gy = g0y; gy <= g1y; gy++) // bottom up: a raised sample can take its soil from the one below
         for (int gz = g0z; gz <= g1z; gz++)
             for (int gx = g0x; gx <= g1x; gx++) {
                 TerrainChunk& ch = m_chunks[{ FloorDiv(gx, CHUNK), FloorDiv(gy, CHUNK), FloorDiv(gz, CHUNK) }];
                 Sample& s = ch.samples[((size_t)Mod(gy, CHUNK) * CHUNK + Mod(gz, CHUNK)) * CHUNK + Mod(gx, CHUNK)];
                 Vec3 p = { gx * CELL, gy * CELL, gz * CELL };
                 float dist = Length(p - centre);
-                int8_t carved = PackDensity(dist - radius);
                 bool wasSolid = s.d > 0;
-                if (carved < s.d) s.d = carved;
-                if (wasSolid && s.d <= 0) removed++;
+                if (dist < radius) {
+                    int8_t carved = PackDensity(dist - radius);
+                    if (carved < s.d) s.d = carved;
+                    if (wasSolid && s.d <= 0) removed++;
+                } else if (dist < radius + rimW && s.d > -(int)((rimH + CELL) * DENSITY_SCALE) && s.d < (int)(CELL * DENSITY_SCALE)) {
+                    // The rim: ground thrown up and out, a lip that rises and falls away.
+                    float h = rimH * sinf(kPi * (dist - radius) / rimW);
+                    int d = s.d + (int)(h * DENSITY_SCALE);
+                    s.d = (int8_t)(d > 127 ? 127 : d);
+                    if (!wasSolid && s.d > 0) s.mat = SoilUnder(gx, gy, gz);
+                }
+                if (s.d > 0 && dist < radius + rimW * 1.4f && GroundIsGrass(s.mat) && Hash01(gx, gy, gz, m_seed + 90) < 0.75f)
+                    s.mat = (uint8_t)(GroundSoil(s.mat) | (s.mat & GROUND_SCORCHED)); // thrown soil covers the grass, patchily
                 if (s.d > 0 && dist < radius + scorch + CELL) s.mat |= GROUND_SCORCHED;
             }
     // Rebuild every chunk whose padded block saw a change.
@@ -296,6 +342,11 @@ float Terrain::Blast(Vec3 centre, float radius) {
             }
     }
     return removed * CELL * CELL * CELL;
+}
+
+uint8_t Terrain::SoilUnder(int gx, int gy, int gz) const {
+    Sample below = SampleAt(gx, gy - 1, gz);
+    return below.d > 0 ? GroundSoil(below.mat) : (uint8_t)GROUND_LOAM;
 }
 
 void Terrain::Queue(const ChunkKey& k) {

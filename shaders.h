@@ -72,8 +72,8 @@ VSOut VSMain(VSIn v) {
 }
 // Ground types (terrain.h Ground): meadow, dry grass, moss, clover, loam, clay, gravel, rock.
 static const float3 kGround[8] = {
-    float3(0.140, 0.270, 0.075), float3(0.300, 0.290, 0.110), float3(0.085, 0.190, 0.070), float3(0.110, 0.300, 0.110),
-    float3(0.200, 0.125, 0.065), float3(0.290, 0.150, 0.080), float3(0.240, 0.225, 0.200), float3(0.220, 0.215, 0.210)
+    float3(0.105, 0.190, 0.058), float3(0.205, 0.185, 0.085), float3(0.068, 0.132, 0.052), float3(0.088, 0.205, 0.078),
+    float3(0.118, 0.080, 0.050), float3(0.165, 0.098, 0.062), float3(0.150, 0.142, 0.128), float3(0.150, 0.146, 0.140)
 };
 static const uint kSoil[8] = { 4, 5, 4, 4, 4, 5, 6, 7 };
 float Hash(float3 p) {
@@ -92,7 +92,7 @@ float4 PSMain(VSOut i) : SV_TARGET {
     if (g <= 3u && n.y < 0.72) g = kSoil[g];
     float3 c = kGround[g];
     float h = Hash(i.fpos);
-    c *= 0.90 + 0.20 * h;                          // neighbouring facets read apart
+    c *= 0.94 + 0.12 * h;                          // neighbouring facets read apart, gently
     if ((i.mat & 0x80u) != 0u) c = lerp(c, float3(0.030, 0.026, 0.024), 0.6); // scorched
     float ndl = saturate(dot(n, sunDir.xyz)) * sunDir.w;
     float3 lit = c * (ambient.rgb * (0.55 + 0.45 * n.y) * (0.45 + 0.55 * i.ao) + sunColor.rgb * ndl);

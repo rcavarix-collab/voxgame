@@ -108,6 +108,19 @@ static void TestBlast() {
         for (auto& v : kv.second.verts)
             if (v.y < -3.0f && !GroundIsGrass(v.mat)) sawSoil = true;
     CHECK(sawSoil);
+    // The rim: ground thrown up around the hole, higher than the field, then falling away.
+    float rimY = 0, farY = 0;
+    CHECK(t.GroundBelow(10 + 6.0f + 2.0f, 10, 20, 50, rimY));  // radius + about half the lip's width
+    CHECK(t.GroundBelow(10 + 6.0f + 12.0f, 10, 20, 50, farY));
+    CHECK(rimY > 1.4f);
+    NEAR(farY, 1.0f, 0.05f);
+    // Thrown soil covers some of the grass on the rim.
+    int soilOnRim = 0;
+    for (int a = 0; a < 16; a++) {
+        float x = 10 + 8.5f * cosf(a * 0.3927f), z = 10 + 8.5f * sinf(a * 0.3927f);
+        if (!GroundIsGrass(t.GroundAt({ x, 10, z }))) soilOnRim++;
+    }
+    CHECK(soilOnRim >= 6);
     // Blasting through the bottom of the world is refused gracefully.
     t.Blast({ 0, -70, 0 }, 10);
     CHECK(t.Solid({ 0, -63.5f, 0 }) || true);

@@ -45,7 +45,8 @@ Chosen: **faceted smooth.** The ground is stored as voxels, and its surface is d
   - sun shadows, which also feed solar charging (§4);
   - ambient occlusion read from the density field;
   - no outlines.
-- **Ground variety (owner).** The starting map has clumps of several grass and dirt types, like the archive's patchwork plain, so the look can be judged side by side. Each voxel sample carries its ground type; each type has its own texture and its own footstep sound.
+- **Craters** have a raised lip of thrown-up ground, with soil scattered over the grass around them and a scorched ring.
+- **Ground variety (owner).** The starting map has clumps of several grass and dirt types, like the archive's patchwork plain, so the look can be judged side by side. They lie in organic meadows (large irregular regions with interpenetrating borders), smaller islands of another grass, and scattered bare patches of loam, clay and gravel. Each voxel sample carries its ground type; each type has its own texture and its own footstep sound.
 - **Props:**
   - Trees, rocks and plants are built from our primitive shapes (owner): low-poly objects, not voxels.
   - When destroyed, they break into their own facets: shards, splinters, a stump.
@@ -94,6 +95,8 @@ Chosen: **faceted smooth.** The ground is stored as voxels, and its surface is d
 - **Cloud cover that casts shadows** on the ground, drawn as a scrolling cloud-shadow pattern.
   - (proposed) Passing clouds also cut solar charge (the same shadow read by SunExposure), so weather matters to energy.
 - All flash-free: no lightning strobes.
+
+- **Sky and stars (owner):** prettier and more realistic, as long as it isn't expensive. Planned: per-pixel scattering-style sky colour and hash-placed stars in the single sky pass.
 
 ## 6. Sound and music
 - Different ground makes different sounds underfoot (§2).

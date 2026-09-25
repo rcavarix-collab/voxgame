@@ -27,3 +27,4 @@ settings.cfg
 settings.cfg.tmp
 perf_report.txt
 shader_errors.txt
+previews/
