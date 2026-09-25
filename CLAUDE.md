@@ -41,7 +41,7 @@
   - Outside code is read for ideas only (nothing copied, no copyleft).
   - Fonts are the player's installed system fonts, rendered at load, never shipped.
   - When unsure, make it more original.
-- **Minimal text.** Show, don't tell. Keep words few and plain. English only for now.
+- **No words or symbols in play** (owner). Text appears only in menus. The cockpit and HUD are purely visual: needles, bands, lamps, shapes, motion and sound. The F3 debug overlay is the exception, only when pressed. Menus keep words few and plain. English only for now.
 - **No numbers in player-facing displays** where a band, needle or feel will do. Dials suit this.
 
 ## Scope: docs/SCOPE_MOSCOW.xlsx
@@ -52,5 +52,9 @@ The owner keeps scope with MoSCoW (Must / Should / Could / Won't) against the ho
 - Update Status as work lands. Edit with openpyxl and keep the formatting; the workbook calculates on open.
 
 ## Building and checking
-- The owner builds with Visual Studio (x64, C++17, SDL checks on). Judge performance in Release.
+- The owner builds `Cacophony.sln` with Visual Studio (x64, C++17, SDL checks on). Judge performance in Release.
+- **The project file is the source list:** new .cpp files go into Cacophony.vcxproj (and .filters).
+- Native tests: `bash tests/run.sh`. These cover the pure systems (terrain, mech, sun) and also run `tools/check_msvc.sh`.
+- Shaders: `python3 tools/check_shaders.py` (glslangValidator HLSL front end, every entry point in shaders.h).
+- Cross-compile check off Windows: MinGW, `x86_64-w64-mingw32-g++`, with the sources from the vcxproj.
 - The archive's checks still run: `bash archive/voxistics/tests/run.sh` and `python3 archive/voxistics/tools/check_shaders.py`.

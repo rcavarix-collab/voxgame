@@ -1,25 +1,13 @@
 // terrain.cpp -- see terrain.h.
 
 #include "terrain.h"
+#include "noise.h"
 #include <algorithm>
 #include <cstring>
 
 namespace {
 inline int FloorDiv(int a, int b) { return a >= 0 ? a / b : -((-a + b - 1) / b); }
 inline int Mod(int a, int b) { int m = a % b; return m < 0 ? m + b : m; }
-
-// Smooth value noise in 2D, 0..1.
-float ValueNoise(float x, float z, uint32_t seed) {
-    int ix = (int)floorf(x), iz = (int)floorf(z);
-    float fx = x - ix, fz = z - iz;
-    fx = fx * fx * (3 - 2 * fx); fz = fz * fz * (3 - 2 * fz);
-    float a = Hash01(ix, 0, iz, seed), b = Hash01(ix + 1, 0, iz, seed);
-    float c = Hash01(ix, 0, iz + 1, seed), d = Hash01(ix + 1, 0, iz + 1, seed);
-    return Lerp(Lerp(a, b, fx), Lerp(c, d, fx), fz);
-}
-float Fbm(float x, float z, uint32_t seed) {
-    return 0.57f * ValueNoise(x, z, seed) + 0.29f * ValueNoise(x * 2.03f, z * 2.03f, seed + 1) + 0.14f * ValueNoise(x * 4.1f, z * 4.1f, seed + 2);
-}
 
 inline int8_t PackDensity(float metres) { return (int8_t)Clamp(roundf(metres * DENSITY_SCALE), -127.0f, 127.0f); }
 
@@ -54,14 +42,14 @@ Sample Terrain::Generate(int gx, int gy, int gz) const {
     if (depth <= 0.0f) { s.mat = GROUND_MEADOW; return s; } // air: type unused
     if (depth > 8.0f) return s;
     // Surface type at (x, z).
-    float wx = x + 22.0f * (Fbm(x / 26.0f, z / 26.0f, m_seed + 10) - 0.5f);
-    float wz = z + 22.0f * (Fbm(x / 26.0f, z / 26.0f, m_seed + 20) - 0.5f);
+    float wx = x + 22.0f * (Fbm2(x / 26.0f, z / 26.0f, m_seed + 10) - 0.5f);
+    float wz = z + 22.0f * (Fbm2(x / 26.0f, z / 26.0f, m_seed + 20) - 0.5f);
     int cx = (int)floorf(wx / 24.0f), cz = (int)floorf(wz / 24.0f);
     uint8_t surface = (uint8_t)(Hash3(cx, 0, cz, m_seed + 30) % 4); // one of the four grasses
     {
         // Bare patches: round-ish, ragged, on about one in five 16 m cells.
-        float px = x + 9.0f * (Fbm(x / 11.0f, z / 11.0f, m_seed + 40) - 0.5f);
-        float pz = z + 9.0f * (Fbm(x / 11.0f, z / 11.0f, m_seed + 50) - 0.5f);
+        float px = x + 9.0f * (Fbm2(x / 11.0f, z / 11.0f, m_seed + 40) - 0.5f);
+        float pz = z + 9.0f * (Fbm2(x / 11.0f, z / 11.0f, m_seed + 50) - 0.5f);
         int bx = (int)floorf(px / 16.0f), bz = (int)floorf(pz / 16.0f);
         if (Hash01(bx, 1, bz, m_seed + 60) < 0.22f) {
             float ccx = (bx + 0.3f + 0.4f * Hash01(bx, 2, bz, m_seed)) * 16.0f, ccz = (bz + 0.3f + 0.4f * Hash01(bx, 3, bz, m_seed)) * 16.0f;
@@ -137,7 +125,7 @@ bool Terrain::Raycast(Vec3 o, Vec3 dir, float maxDist, Vec3& hit) const {
 
 uint8_t Terrain::GroundAt(Vec3 p) const {
     float gy;
-    if (!GroundBelow(p.x, p.z, p.y + 0.5f, 8.0f, gy)) return GROUND_ROCK;
+    if (!GroundBelow(p.x, p.z, p.y + 0.5f, 80.0f, gy)) return GROUND_ROCK;
     int ix = (int)floorf(p.x / CELL + 0.5f), iz = (int)floorf(p.z / CELL + 0.5f);
     for (int iy = (int)floorf(gy / CELL); iy >= (int)floorf(gy / CELL) - 2; iy--) {
         Sample s = SampleAt(ix, iy, iz);
@@ -317,10 +305,11 @@ void Terrain::Queue(const ChunkKey& k) {
 }
 
 bool Terrain::ChunkHasSurface(const ChunkKey& k) const {
-    // Pristine: the generator's surface is flat at m_groundY (one test
-    // covers hills later: the column's height range against the chunk's).
-    float y0 = k.y * CHUNK * CELL - PAD * CELL, y1 = (k.y + 1) * CHUNK * CELL + PAD * CELL;
-    return m_groundY >= y0 && m_groundY <= y1;
+    // Pristine flat ground: the surface's quads are based at the grid row
+    // just under it, so exactly one chunk row holds them. (Hills later:
+    // the column's height range against the chunk's rows.)
+    int gy = (int)floorf(m_groundY / CELL);
+    return FloorDiv(gy, CHUNK) == k.y;
 }
 
 void Terrain::Update(Vec3 focus, float radius) {

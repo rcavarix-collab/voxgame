@@ -188,7 +188,7 @@ Anything taken is re-implemented from the idea and bug-checked; nothing is copie
 ---
 
 ## 5. Build order
-Each step is committed, tested and runnable before the next.
+Each step is committed, tested and runnable before the next. **Status:** steps 1–3 are in the first build (foundation, flat faceted field, mech with energy and a moving sun), awaiting the owner's run on Windows.
 1. **Foundation:** window, loop, input, settings, profiler, D3D11 and shader cache, sky, debug text. (From the archive, adapted.)
 2. **Terrain:** density, 2 m facets, clumps, blasts, chunk rendering, shadows. The draft exists; native tests.
 3. **Mech:** movement, cockpit camera, ground contact, sun test, energy, shield. Native tests.

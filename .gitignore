@@ -21,8 +21,9 @@ x86/
 *.VC.VC.opendb
 *.user
 
-# This prototype's runtime save files (Section 7) -- generated next to
-# the exe/project, never something to check in.
-voxelproto.sav
-voxelproto.sav.tmp
-voxelproto.sav.bak
+# Runtime files if Documents isn't available (they normally live in
+# Documents\My Games\Cacophony) -- never checked in.
+settings.cfg
+settings.cfg.tmp
+perf_report.txt
+shader_errors.txt

@@ -1,0 +1,87 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="Platform">
+      <UniqueIdentifier>{A1B2C3D4-0001-4000-8000-000000000001}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Core">
+      <UniqueIdentifier>{A1B2C3D4-0002-4000-8000-000000000002}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Simulation">
+      <UniqueIdentifier>{A1B2C3D4-0003-4000-8000-000000000003}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Glue">
+      <UniqueIdentifier>{A1B2C3D4-0004-4000-8000-000000000004}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Presentation">
+      <UniqueIdentifier>{A1B2C3D4-0005-4000-8000-000000000005}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="main.cpp">
+      <Filter>Platform</Filter>
+    </ClCompile>
+    <ClCompile Include="input.cpp">
+      <Filter>Platform</Filter>
+    </ClCompile>
+    <ClCompile Include="persist.cpp">
+      <Filter>Platform</Filter>
+    </ClCompile>
+    <ClCompile Include="profiler.cpp">
+      <Filter>Core</Filter>
+    </ClCompile>
+    <ClCompile Include="terrain.cpp">
+      <Filter>Simulation</Filter>
+    </ClCompile>
+    <ClCompile Include="mech.cpp">
+      <Filter>Simulation</Filter>
+    </ClCompile>
+    <ClCompile Include="sun.cpp">
+      <Filter>Simulation</Filter>
+    </ClCompile>
+    <ClCompile Include="game.cpp">
+      <Filter>Glue</Filter>
+    </ClCompile>
+    <ClCompile Include="render.cpp">
+      <Filter>Presentation</Filter>
+    </ClCompile>
+    <ClCompile Include="ui_font.cpp">
+      <Filter>Presentation</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="input.h">
+      <Filter>Platform</Filter>
+    </ClInclude>
+    <ClInclude Include="persist.h">
+      <Filter>Platform</Filter>
+    </ClInclude>
+    <ClInclude Include="common.h">
+      <Filter>Core</Filter>
+    </ClInclude>
+    <ClInclude Include="noise.h">
+      <Filter>Core</Filter>
+    </ClInclude>
+    <ClInclude Include="profiler.h">
+      <Filter>Core</Filter>
+    </ClInclude>
+    <ClInclude Include="terrain.h">
+      <Filter>Simulation</Filter>
+    </ClInclude>
+    <ClInclude Include="mech.h">
+      <Filter>Simulation</Filter>
+    </ClInclude>
+    <ClInclude Include="sun.h">
+      <Filter>Simulation</Filter>
+    </ClInclude>
+    <ClInclude Include="game.h">
+      <Filter>Glue</Filter>
+    </ClInclude>
+    <ClInclude Include="render.h">
+      <Filter>Presentation</Filter>
+    </ClInclude>
+    <ClInclude Include="shaders.h">
+      <Filter>Presentation</Filter>
+    </ClInclude>
+  </ItemGroup>
+</Project>
