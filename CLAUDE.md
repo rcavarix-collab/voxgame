@@ -1,6 +1,6 @@
 # Working notes for Claude
 
-A new game, started September 2026. No title yet (the owner will name it).
+A new game, started September 2026. No title yet (the owner will name it). The design of record is `DESIGN.md`; read the relevant part before changing a system.
 
 ## The game so far
 - The player drives a **mech suit** across a **fully destructible voxel world**. Digging into the earth matters to the owner; that is why the world is voxels.
@@ -12,7 +12,7 @@ A new game, started September 2026. No title yet (the owner will name it).
   - a simple cockpit with mech controls and active dials;
   - one target that doesn't fire back: lock on and fire missiles, test machine-gun fire, destroy it.
   - No enemies that shoot back yet.
-- **Before that milestone:** lock in the look. That means the voxel shape (cubes are out: see `prototypes/voxel_shapes/`) and the textures.
+- **Before that milestone:** lock in the look. The owner chose faceted smooth terrain (`prototypes/voxel_shapes/`). Facet size and textures are next.
 - Mech movement is fast, like combat. Rendering must hold up at speed, so cost per chunk and mesh rebuild time are design inputs, not afterthoughts.
 - Not this game: time distortion, The Line, pulse logistics. Those were Voxistics.
 

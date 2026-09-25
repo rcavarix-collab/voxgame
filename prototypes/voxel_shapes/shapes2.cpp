@@ -199,6 +199,7 @@ static void Draw(const std::vector<Cam>& cams, std::vector<Img>& imgs, bool smoo
     }
 }
 
+#ifndef SHAPES2_NO_MAIN
 int main(int argc, char** argv) {
     const char* out = argc > 1 ? argv[1] : ".";
     int SS = 2, W = 720, H = 480;
@@ -247,3 +248,4 @@ int main(int argc, char** argv) {
     }
     fclose(sf);
 }
+#endif
