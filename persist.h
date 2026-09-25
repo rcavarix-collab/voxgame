@@ -50,6 +50,7 @@ extern float g_fov; // degrees, vertical
 extern bool g_toggleMovement;
 extern bool g_highContrastUI; // higher-luminance-contrast menu palette
 extern bool g_monoAudio;
+extern int g_colourVision; // pulse_colours.h ColourVision (Accessibility)
 extern bool g_vsync;          // present in step with the display (Graphics)
 extern int g_frameLimit;      // frames per second cap, 30-200 (Graphics)      // world sounds centred: no stereo placement (Part XI)
 extern bool g_moveToggleLatch[ACT_COUNT]; // only ACT_FORWARD/BACK/LEFT/RIGHT indices are ever used

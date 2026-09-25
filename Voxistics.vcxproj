@@ -162,6 +162,7 @@
     <ClInclude Include="icons.h" />
     <ClInclude Include="theline.h" />
     <ClInclude Include="pulse.h" />
+    <ClInclude Include="pulse_colours.h" />
     <ClInclude Include="fliers.h" />
     <ClInclude Include="essencemap.h" />
     <ClInclude Include="glowlight.h" />

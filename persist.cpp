@@ -54,6 +54,7 @@ float g_fov = 45.0f;
 bool g_toggleMovement = false;
 bool g_highContrastUI = false;
 bool g_monoAudio = false;
+int g_colourVision = 0;
 bool g_vsync = true;
 int g_frameLimit = 60;
 bool g_moveToggleLatch[ACT_COUNT] = {};
@@ -207,6 +208,7 @@ bool SaveSettings() {
     ss << "toggleMovement=" << (g_toggleMovement ? 1 : 0) << "\n";
     ss << "highContrastUI=" << (g_highContrastUI ? 1 : 0) << "\n";
     ss << "monoAudio=" << (g_monoAudio ? 1 : 0) << "\n";
+    ss << "colourVision=" << g_colourVision << "\n";
     ss << "vsync=" << (g_vsync ? 1 : 0) << "\n";
     ss << "frameLimit=" << g_frameLimit << "\n";
     ss << "musicIntensity=" << g_musicIntensity << "\n";
@@ -290,6 +292,8 @@ void LoadSettings() {
     g_toggleMovement = getB("toggleMovement", g_toggleMovement);
     g_highContrastUI = getB("highContrastUI", g_highContrastUI);
     g_monoAudio = getB("monoAudio", g_monoAudio);
+    g_colourVision = getI("colourVision", g_colourVision);
+    if (g_colourVision < 0 || g_colourVision >= 5) g_colourVision = 0;
     g_vsync = getB("vsync", g_vsync);
     g_frameLimit = (int)getF("frameLimit", (float)g_frameLimit);
     if (g_frameLimit < 30) g_frameLimit = 30;

@@ -13,6 +13,7 @@
 #include "vtex.h"
 #include "glowlight.h"
 #include "pulse.h"
+#include "pulse_colours.h"
 #include "fliers.h"
 #include <filesystem>
 #include <fstream>
@@ -1965,7 +1966,8 @@ static void DrawPulses(const Mat4& viewProj, Vec3 eye) {
     g_pulse.Views(views);
     if (views.empty()) return;
     v.clear();
-    const float colour[3][3] = { { 1.0f, 0.82f, 0.40f }, { 0.22f, 0.42f, 1.0f }, { 1.0f, 0.20f, 0.18f } };
+    float colour[3][3]; // plain, clockwise, anticlockwise, for the player's colour vision (pulse_colours.h)
+    PulseColours(g_colourVision, colour);
     const float kSpinRate = 2.5f * 6.2831853f;  // turns a second, as rad/s
     const float kHelix = 0.16f;                 // how far the corkscrew strays from the line: just enough to notice
     auto octa = [&](float px, float py, float pz, float r, const float* dir, float angle, const float* c) {

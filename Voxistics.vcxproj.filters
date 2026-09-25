@@ -140,6 +140,9 @@
     <ClInclude Include="pulse.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="pulse_colours.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="fliers.h">
       <Filter>Header Files</Filter>
     </ClInclude>

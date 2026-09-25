@@ -20,6 +20,7 @@
 #include "../theline.h"
 #include "../pulse.h"
 #include "../fliers.h"
+#include "../pulse_colours.h"
 #include "../essence.h"
 #include "../essencemap.h"
 #include "../music_synth.h"
@@ -1407,6 +1408,39 @@ static void TestFliers() {
     }
 }
 
+// Each colour-vision mode keeps the three pulse colours apart as that kind
+// of vision sees them (simulated with the standard dichromat matrices;
+// "no colour" by brightness alone). For comparison: the typical colours hold
+// up fairly for the dichromats (they differ in brightness too), but by
+// brightness alone blue and red nearly merge -- which the no-colour mode fixes.
+static void TestColourVision() {
+    printf("colour vision\n");
+    const float M[4][3][3] = {
+        { { 0.152286f, 1.052583f, -0.204868f }, { 0.114503f, 0.786281f, 0.099216f }, { -0.003882f, -0.048116f, 1.051998f } }, // protan
+        { { 0.367322f, 0.860646f, -0.227968f }, { 0.280085f, 0.672501f, 0.047413f }, { -0.011820f, 0.042940f, 0.968881f } }, // deutan
+        { { 1.255528f, -0.076749f, -0.178779f }, { -0.078411f, 0.930809f, 0.147602f }, { 0.004733f, 0.691367f, 0.303900f } },  // tritan
+        { { 0.2126f, 0.7152f, 0.0722f }, { 0.2126f, 0.7152f, 0.0722f }, { 0.2126f, 0.7152f, 0.0722f } },                    // no colour
+    };
+    auto minGap = [&](int mode, int sim) {
+        float c[3][3], v[3][3];
+        PulseColours(mode, c);
+        for (int k = 0; k < 3; k++) for (int r = 0; r < 3; r++) v[k][r] = M[sim][r][0] * c[k][0] + M[sim][r][1] * c[k][1] + M[sim][r][2] * c[k][2];
+        float g = 1e9f;
+        for (int a = 0; a < 3; a++) for (int b = a + 1; b < 3; b++) {
+            float d = sqrtf((v[a][0] - v[b][0]) * (v[a][0] - v[b][0]) + (v[a][1] - v[b][1]) * (v[a][1] - v[b][1]) + (v[a][2] - v[b][2]) * (v[a][2] - v[b][2]));
+            g = std::min(g, d);
+        }
+        return g;
+    };
+    float tP = minGap(CV_TYPICAL, 0), tD = minGap(CV_TYPICAL, 1), tT = minGap(CV_TYPICAL, 2), tM = minGap(CV_TYPICAL, 3);
+    float red = minGap(CV_RED_WEAK, 0), green = minGap(CV_GREEN_WEAK, 1), blue = minGap(CV_BLUE_WEAK, 2), mono = minGap(CV_NO_COLOUR, 3);
+    printf("    closest pair, typical colours: red-weak %.2f, green-weak %.2f, blue-weak %.2f, no colour %.2f\n", tP, tD, tT, tM);
+    printf("    closest pair, own mode:        red-weak %.2f, green-weak %.2f, blue-weak %.2f, no colour %.2f\n", red, green, blue, mono);
+    CHECK(red > 0.4f && green > 0.4f && blue > 0.4f && mono > 0.3f);
+    CHECK(tM < 0.1f && mono > 5.0f * tM); // blue and red by brightness alone: nearly one; the no-colour mode parts them
+    CHECK(strcmp(ColourVisionName(CV_BLUE_WEAK), "BLUE-WEAK") == 0 && strcmp(ColourVisionName(99), "TYPICAL") == 0);
+}
+
 static void TestTheLine() {
     printf("the line\n");
     LineTuning t;
@@ -2056,6 +2090,7 @@ int main() {
     TestPulse();
     TestGrassCover();
     TestFliers();
+    TestColourVision();
     TestEssence();
     TestMusicHarmony();
     TestSoundPalette();
