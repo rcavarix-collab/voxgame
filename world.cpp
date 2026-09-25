@@ -75,9 +75,18 @@ void UpdateGravity(World& w, int x, int y, int z) {
     MaybeQueueFall(w, x, y - 1, z, 1); // keep falling if still unsupported
 }
 
+// Grass cover: grass that's been cut off from the sky since its check was
+// queued turns to dirt. Uncovered in the meantime, it lives.
+void UpdateGrassCover(World& w, int x, int y, int z) {
+    if (w.Get(x, y, z) != BLOCK_MEADOW_GRASS) return; // stale entry
+    if (OpenToSky(w, x, y, z)) return;
+    w.SetRaw(x, y, z, BLOCK_DIRT);
+}
+
 using UpdateHandler = void (*)(World&, int, int, int);
 const UpdateHandler kHandlers[UPD_KIND_COUNT] = {
     UpdateGravity,
+    UpdateGrassCover,
 };
 } // namespace
 
@@ -136,9 +145,29 @@ void MaybeQueueFall(World& w, int x, int y, int z, uint32_t delayTicks) {
     ScheduleUpdate(x, y, z, UPD_GRAVITY, delayTicks);
 }
 
+bool OpenToSky(World& w, int x, int y, int z) {
+    for (int yy = y + 1; yy <= Y_MAX && yy <= y + 64; yy++)
+        if (BlockShadesGrass(w.Get(x, yy, z))) return false;
+    return true;
+}
+
 void LiveEdit(World& w, int x, int y, int z, BlockID id, uint8_t state) {
     w.Set(x, y, z, id, state);
     MaybeQueueFall(w, x, y + 1, z);
+    // Placing something that keeps the sky off: the first grass below it
+    // (anything solid in between means it was shaded already) starts to
+    // die back -- checked minutes from now, each cell a little differently.
+    if (BlockShadesGrass(id)) {
+        for (int yy = y - 1; yy >= Y_MIN && yy >= y - 64; yy--) {
+            BlockID below = w.Get(x, yy, z);
+            if (below == BLOCK_AIR || !g_blocks[below].solid) continue; // air, plants
+            if (below == BLOCK_MEADOW_GRASS) {
+                uint32_t h = (uint32_t)x * 73856093u ^ (uint32_t)yy * 19349663u ^ (uint32_t)z * 83492791u;
+                ScheduleUpdate(x, yy, z, UPD_GRASS_COVER, GRASS_COVER_TICKS + (h % (GRASS_COVER_TICKS / 2)));
+            }
+            break;
+        }
+    }
 }
 
 // =======================================================================

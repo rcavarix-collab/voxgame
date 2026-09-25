@@ -264,6 +264,8 @@ The falling-block queue is now one case of a general **scheduled update queue** 
 
 A column with updates pending isn't evicted (a cascade must finish in its own column), and pending updates are **saved** with their remaining delays (save v6), so a save taken mid-collapse finishes collapsing after loading instead of leaving blocks floating. Long-delay updates — machine timers — will want to travel with their chunk (stored per chunk, resumed when the column returns) rather than pinning a column in memory; that's the planned extension when machines arrive.
 
+
+**Second kind: covered grass dies back** (`UPD_GRASS_COVER`). Placing a block that keeps the sky off (`BlockShadesGrass`: full opaque blocks, machines, slabs — not glass, plants or thin pieces like pipes) queues a check on the first grass below it, three to four and a half game minutes out (varying cell by cell, so a roof's shadow browns unevenly). If the grass is still cut off from the sky then (`OpenToSky`: nothing shading within 64 blocks above), it turns to dirt; uncovered in the meantime, it lives. Night isn't cover, so grass never dies overnight. Cost: one scan down on a placement, one scan up when a check comes due — nothing while nothing changes. (Grass creeping back over bare dirt in the open — LG2.cpp's spreading grass — is the natural counterpart, not built yet.)
 ## Part VI — Item Logistics: pulse
 
 ### 6.0 Pulse (built; owner's rules)

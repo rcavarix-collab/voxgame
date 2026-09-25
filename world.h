@@ -228,6 +228,7 @@ extern int g_loadRadius;
 
 enum UpdateKind : uint8_t {
     UPD_GRAVITY = 0,  // fall one cell if unsupported
+    UPD_GRASS_COVER,  // grass still cut off from the sky turns to dirt
     UPD_KIND_COUNT
 };
 
@@ -258,8 +259,21 @@ void RestoreScheduledUpdates(const std::vector<PendingUpdate>& updates);
 // Schedules a gravity check for the block at (x, y, z) if it's a block
 // that can fall and currently has nothing under it.
 void MaybeQueueFall(World& w, int x, int y, int z, uint32_t delayTicks = 0);
-// A live world edit that could have removed support underneath a block.
+// A live world edit that could have removed support underneath a block
+// (or, placing, cut grass below off from the sky: GRASS_COVER_TICKS).
 void LiveEdit(World& w, int x, int y, int z, BlockID id, uint8_t state = 0);
+// Grass cut off from the sky dies back to dirt after this long (plus up to
+// half as much again, varying cell by cell) -- minutes, never overnight:
+// night isn't cover. See BlockShadesGrass.
+static const uint32_t GRASS_COVER_TICKS = 180 * 60;
+// Whether a block keeps the sky off what's below it: full opaque blocks,
+// machines, slabs. Glass, plants and thin pieces (pipes, props) don't.
+static inline bool BlockShadesGrass(BlockID id) {
+    BlockShape s = g_blocks[id].shape;
+    return BlockOpaqueCube(id) || ((s == SHAPE_BEVEL_CUBE || s == SHAPE_SLAB) && !g_blocks[id].translucent);
+}
+// Nothing above (x, y, z), up to 64 blocks, keeps the sky off it.
+bool OpenToSky(World& w, int x, int y, int z);
 
 // =======================================================================
 // World generation and chunk loading -- deterministic terrain, bypassing

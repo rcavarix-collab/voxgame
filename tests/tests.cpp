@@ -1319,6 +1319,37 @@ static void TestPulse() {
     }
 }
 
+static void TestGrassCover() {
+    printf("covered grass dies back\n");
+    auto settle = [](World& w) { for (uint32_t i = 0; i < GRASS_COVER_TICKS * 3 / 2 + 2; i++) ProcessScheduledUpdates(w); };
+    {   // Built over: dirt, after minutes (not at once).
+        World w; ClearScheduledUpdates();
+        w.Set(0, 10, 0, BLOCK_MEADOW_GRASS); w.Set(0, 9, 0, BLOCK_DIRT);
+        LiveEdit(w, 0, 13, 0, BLOCK_STONE); // a roof three blocks up
+        for (int i = 0; i < 60 * 60; i++) ProcessScheduledUpdates(w); // an hour of night would be 10 min; one minute here
+        CHECK(w.Get(0, 10, 0) == BLOCK_MEADOW_GRASS);
+        settle(w);
+        CHECK(w.Get(0, 10, 0) == BLOCK_DIRT);
+    }
+    {   // Glass lets the light through; a pipe or a plant hardly shades.
+        World w; ClearScheduledUpdates();
+        w.Set(0, 10, 0, BLOCK_MEADOW_GRASS); w.Set(2, 10, 0, BLOCK_MEADOW_GRASS);
+        LiveEdit(w, 0, 12, 0, BLOCK_GLASS);
+        LiveEdit(w, 2, 12, 0, BLOCK_PULSE_PIPE, FACE_POS_X);
+        settle(w);
+        CHECK(w.Get(0, 10, 0) == BLOCK_MEADOW_GRASS && w.Get(2, 10, 0) == BLOCK_MEADOW_GRASS);
+    }
+    {   // Uncovered again before its time: it lives.
+        World w; ClearScheduledUpdates();
+        w.Set(0, 10, 0, BLOCK_MEADOW_GRASS);
+        LiveEdit(w, 0, 11, 0, BLOCK_WOOD);
+        LiveEdit(w, 0, 11, 0, BLOCK_AIR);
+        settle(w);
+        CHECK(w.Get(0, 10, 0) == BLOCK_MEADOW_GRASS);
+    }
+    ClearScheduledUpdates();
+}
+
 static void TestTheLine() {
     printf("the line\n");
     LineTuning t;
@@ -1966,6 +1997,7 @@ int main() {
     TestSky();
     TestTheLine();
     TestPulse();
+    TestGrassCover();
     TestEssence();
     TestMusicHarmony();
     TestSoundPalette();
